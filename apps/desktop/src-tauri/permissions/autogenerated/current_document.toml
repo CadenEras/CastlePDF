@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-current-document"
+description = "Enables the current_document command without any pre-configured scope."
+commands.allow = ["current_document"]
+
+[[permission]]
+identifier = "deny-current-document"
+description = "Denies the current_document command without any pre-configured scope."
+commands.deny = ["current_document"]

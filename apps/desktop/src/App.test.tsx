@@ -2,17 +2,28 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import type { JobEvent } from "./ipc";
+import type { DocumentEvent, JobEvent, PageSize } from "./ipc";
 
 // Mocks the IPC layer only: this does not prove the Tauri binary works.
 const ipc = vi.hoisted(() => ({
   handler: null as ((event: JobEvent) => void) | null,
+  documents: null as ((event: DocumentEvent) => void) | null,
+  currentDocument: vi.fn<() => Promise<DocumentEvent | null>>(),
+  pageSize: vi.fn<(document: number, page: number, scale: number) => Promise<PageSize>>(),
   runSyntheticJob: vi.fn<(units: number, delay: number) => Promise<number>>(),
   cancelJob: vi.fn<(jobId: number) => Promise<void>>(),
   unlisten: vi.fn(),
 }));
 
-vi.mock("./ipc", () => ({
+vi.mock("./ipc", async (original) => ({
+  ...(await original<typeof import("./ipc")>()),
+  pageSize: ipc.pageSize,
+  currentDocument: ipc.currentDocument,
+  beginView: () => Promise.resolve(1),
+  onDocumentEvent: (handler: (event: DocumentEvent) => void) => {
+    ipc.documents = handler;
+    return Promise.resolve(ipc.unlisten);
+  },
   runSyntheticJob: ipc.runSyntheticJob,
   cancelJob: ipc.cancelJob,
   onJobEvent: (handler: (event: JobEvent) => void) => {
@@ -21,8 +32,15 @@ vi.mock("./ipc", () => ({
   },
 }));
 
+/** The worker diagnostic status (the viewer has its own). */
 function status(): string {
-  return screen.getByRole("status").textContent;
+  return screen.getAllByRole("status").at(-1)?.textContent ?? "";
+}
+
+function open(event: DocumentEvent) {
+  act(() => {
+    ipc.documents?.(event);
+  });
 }
 
 function emit(event: JobEvent) {
@@ -50,6 +68,10 @@ async function renderApp() {
 
 beforeEach(() => {
   ipc.handler = null;
+  ipc.documents = null;
+  // Never resolves: the viewer stays in preparation, which these tests ignore.
+  ipc.pageSize.mockReturnValue(new Promise(() => undefined));
+  ipc.currentDocument.mockResolvedValue(null);
   vi.clearAllMocks();
   ipc.cancelJob.mockResolvedValue(undefined);
 });
@@ -127,6 +149,53 @@ describe("App", () => {
   it("stops listening on unmount", async () => {
     const { unmount } = await renderApp();
     unmount();
-    expect(ipc.unlisten).toHaveBeenCalledOnce();
+    // Job events and document events.
+    expect(ipc.unlisten).toHaveBeenCalledTimes(2);
+  });
+
+  it("invites to drop a file, then shows the document the shell opened", async () => {
+    await renderApp();
+    expect(screen.getByText("Déposez un fichier PDF sur la fenêtre pour l'ouvrir.")).toBeTruthy();
+    open({ sequence: 1, kind: "opening", name: "plan.pdf" });
+    expect(screen.getByText("Ouverture de plan.pdf…")).toBeTruthy();
+    open({ sequence: 2, kind: "opened", document: 1, pages: 4, name: "plan.pdf" });
+    expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ipc.pageSize).toHaveBeenCalledWith(1, 0, 0.25);
+    // A late copy of an older event changes nothing.
+    open({ sequence: 1, kind: "opening", name: "plan.pdf" });
+    expect(screen.queryByText("Ouverture de plan.pdf…")).toBeNull();
+  });
+
+  it("shows a document the shell opened before the page subscribed", async () => {
+    ipc.currentDocument.mockResolvedValueOnce({
+      sequence: 2,
+      kind: "opened",
+      document: 1,
+      pages: 3,
+      name: "shapes.pdf",
+    });
+    await renderApp();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("img", { name: "Page 1 de shapes.pdf" })).toBeTruthy();
+  });
+
+  it("keeps the document shown when another file cannot be opened", async () => {
+    await renderApp();
+    open({ sequence: 1, kind: "opened", document: 1, pages: 4, name: "plan.pdf" });
+    open({
+      sequence: 2,
+      kind: "failed",
+      name: "secret.pdf",
+      message: "document chiffré, non pris en charge pour l'instant",
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Impossible d'ouvrir secret.pdf : document chiffré, non pris en charge pour l'instant.",
+    );
+    expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
   });
 });

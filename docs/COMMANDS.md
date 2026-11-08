@@ -49,6 +49,17 @@ Scripts npm non interactifs : `lint`, `typecheck`, `test:unit`, `build`, `tauri`
 `npm --prefix apps/desktop run tauri -- dev` lance l'application en développement. Documenter séparément les tests E2E réels et leur support par OS. Un navigateur
 web de test ne remplace pas automatiquement la WebView Tauri.
 
+Ouvrir un PDF dans l'application : le déposer sur la fenêtre (un seul fichier à la fois),
+ou passer son chemin en argument de l'exécutable
+(`target/debug/castle-pdf-desktop.exe <fichier.pdf>` après
+`npm --prefix apps/desktop run tauri -- build --debug --no-bundle`). L'application affiche
+la page ajustée à la largeur, en tuiles de 256 pixels, avec une navigation page par page.
+Elle signale un rendu partiel quand la page contient du texte, des images ou d'autres
+éléments encore non rendus. Le dépôt de fichier n'est vérifié qu'à la main ; l'ouverture
+par argument a été vérifiée par capture d'écran sous Windows.
+Mesures : `cargo test -p castle-pdf-desktop --release -- --ignored --nocapture`
+(`docs/perf/2026-11-08-p2-first-page.md`).
+
 Verrouiller une toolchain Rust exacte et les versions Node/npm utilisées en CI,
 committer les lockfiles et installer les prérequis natifs Tauri pour chaque runner.
 `cargo test --workspace` compile aussi le shell Tauri : une machine sans ses dépendances

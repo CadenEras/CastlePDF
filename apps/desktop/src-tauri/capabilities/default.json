@@ -1,12 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: listen to worker job events and drive diagnostic jobs. No file, shell or network permission.",
+  "description": "Main window: listen to worker and document events, drive diagnostic jobs, size pages and fetch tiles of the document the shell opened. No file, dialog, shell or network permission: the UI never names a path.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-worker-run",
-    "allow-worker-cancel"
+    "allow-worker-cancel",
+    "allow-current-document",
+    "allow-begin-view",
+    "allow-page-size",
+    "allow-render-tile"
   ]
 }
