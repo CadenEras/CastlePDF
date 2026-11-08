@@ -2306,6 +2306,8 @@ dependencies = [
 name = "pdf-worker"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "pdf-document",
+ "pdf-render",
  "pdf-syntax",
 ]
 

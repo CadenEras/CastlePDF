@@ -1,6 +1,6 @@
 [package]
 name = "pdf-worker"
-description = "Isolable worker: bounded framing protocol and cancellable jobs"
+description = "Isolable worker: bounded framing protocol, cancellable jobs, documents and tiles"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+pdf-document.workspace = true
+pdf-render.workspace = true
 pdf-syntax.workspace = true
 
 [lints]

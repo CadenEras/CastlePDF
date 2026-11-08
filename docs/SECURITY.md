@@ -18,6 +18,16 @@ décompression et codecs doivent échouer proprement. Les annulations interrompe
 étapes longues ; si un codec ne peut pas être interrompu, le worker doit pouvoir être
 tué sans bloquer l'application. Définir droits et limites de processus pour chaque OS.
 
+État du worker (protocole v2) :
+- le chemin d'un document est choisi par le shell, jamais transmis par l'UI ; le worker
+  le lit sous `max_input_bytes`, refuse ce qui n'est pas un fichier régulier et ne
+  reçoit pas plus de 4 096 octets de chemin en UTF-8 ;
+- il garde au plus 4 documents ouverts, chacun entier en mémoire (ADR-0002) ;
+- chaque tâche a son propre budget et son jeton d'annulation ;
+- une tuile fait au plus 256 × 256 pixels, et une réponse est décodée seulement si sa
+  taille correspond exactement à ses dimensions ;
+- le worker n'a encore aucune restriction de droits propre à l'OS.
+
 Aucun JavaScript PDF, action Launch, programme joint ou accès distant implicite.
 Les URL externes passent par un geste explicite, une validation de schéma et la politique
 du shell. Les mots de passe ne sont ni journalisés ni persistés par défaut ; ne pas

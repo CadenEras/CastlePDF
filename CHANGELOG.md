@@ -18,6 +18,11 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   taille en pixels d'une page à une échelle ; `max_pixels` s'applique à la zone, pas à la
   page. Les tuiles assemblent le rendu de la page à 1 près par canal (arrondi en simple
   précision du rasteriseur) ; la cible de fuzzing `render` le vérifie.
+- `pdf-worker` : protocole v2 (`PROTOCOL_VERSION` 2) — `OpenDocument` (chemin donné par
+  le shell), `PageSize`, `RenderTile` (au plus 256 × 256, pixels RGBA bruts dans la trame)
+  et `CloseDocument` ; au plus 4 documents ouverts ; codes d'erreur distincts (chiffré,
+  non pris en charge, malformé, illisible, document inconnu…). Une tuile pleine traverse
+  le tube du worker en 0,5 ms environ (médiane, Windows, release, page simple).
 - ADR-0003 accepté : ordre de P2 (Flate et flux xref avant l'interpréteur),
   `vello_cpu`, `miniz_oxide`, tuiles 256 px en octets bruts, oracles de rendu, ARM64.
 - `pdf-syntax` : filtre `FlateDecode` (ISO 32000-2, 7.4.4) via `miniz_oxide` 0.9.1
