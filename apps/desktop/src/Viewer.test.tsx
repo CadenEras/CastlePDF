@@ -2,16 +2,19 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PageSize, Tile, TileRequest } from "./ipc";
-import { fitScale, tileGrid, Viewer } from "./Viewer";
+import { MAX_CANVAS_PIXELS, fitScale, tileGrid, Viewer } from "./Viewer";
 
 // Mocks the shell commands only: this does not prove the Tauri binary works.
 const ipc = vi.hoisted(() => ({
+  generation: 0,
+  beginView: vi.fn<() => Promise<number>>(),
   pageSize: vi.fn<(document: number, page: number, scale: number) => Promise<PageSize>>(),
   renderTile: vi.fn<(request: TileRequest) => Promise<Tile>>(),
 }));
 
 vi.mock("./ipc", async (original) => ({
   ...(await original<typeof import("./ipc")>()),
+  beginView: ipc.beginView,
   pageSize: ipc.pageSize,
   renderTile: ipc.renderTile,
 }));
@@ -64,6 +67,11 @@ beforeEach(() => {
     Promise.resolve({ width: Math.ceil(400 * scale), height: Math.ceil(300 * scale) }),
   );
   ipc.renderTile.mockImplementation((request) => Promise.resolve(tileFor(request)));
+  // The shell numbers views.
+  ipc.beginView.mockImplementation(() => {
+    ipc.generation += 1;
+    return Promise.resolve(ipc.generation);
+  });
 });
 
 afterEach(() => {
@@ -84,10 +92,17 @@ describe("tile layout", () => {
   });
 
   it("fits the width in device pixels within bounds", () => {
-    expect(fitScale(800, 400, 1)).toBe(2);
-    expect(fitScale(800, 400, 1.5)).toBe(3);
-    expect(fitScale(10, 100_000, 1)).toBe(0.05);
-    expect(fitScale(100_000, 10, 1)).toBe(16);
+    expect(fitScale(800, 400, 300, 1)).toBe(2);
+    expect(fitScale(800, 400, 300, 1.5)).toBe(3);
+    expect(fitScale(10, 100_000, 10, 1)).toBe(0.05);
+    expect(fitScale(100_000, 10, 10, 1)).toBe(16);
+  });
+
+  it("keeps a tall page within the canvas pixel limit", () => {
+    // 200 x 14 400 points on a 4K screen: the width alone would ask for scale 19.
+    const scale = fitScale(1920, 200, 14_400, 2);
+    expect(200 * scale * 14_400 * scale).toBeLessThanOrEqual(MAX_CANVAS_PIXELS + 1);
+    expect(scale).toBeCloseTo(2.41, 2);
   });
 });
 
@@ -95,7 +110,7 @@ describe("Viewer", () => {
   it("draws every tile of the page at its place", async () => {
     render(<Viewer info={INFO} />);
     await settle();
-    expect(ipc.pageSize).toHaveBeenCalledWith(3, 0, 1);
+    expect(ipc.pageSize).toHaveBeenCalledWith(3, 0, 0.25);
     expect(ipc.pageSize).toHaveBeenCalledWith(3, 0, 2);
     // 800 x 600: 4 columns, 3 rows.
     expect(ipc.renderTile).toHaveBeenCalledTimes(12);
@@ -148,6 +163,28 @@ describe("Viewer", () => {
     render(<Viewer info={INFO} />);
     await settle();
     expect(status()).toBe("Page 1 sur 2 : échec du rendu (fichier PDF invalide ou endommagé).");
+  });
+
+  it("stops at the first failed tile and keeps the error shown", async () => {
+    const { ShellError } = await import("./ipc");
+    ipc.renderTile.mockImplementation((request) =>
+      request.x === 256 && request.y === 256
+        ? Promise.reject(new ShellError({ code: "failed", reason: "limitExceeded" }))
+        : Promise.resolve(tileFor(request)),
+    );
+    render(<Viewer info={INFO} />);
+    await settle();
+    expect(status()).toBe("Page 1 sur 2 : échec du rendu (limite de ressources atteinte).");
+    // Tiles after the failure are not requested: 12 in all otherwise.
+    expect(ipc.renderTile.mock.calls.length).toBeLessThan(12);
+  });
+
+  it("reports a missing canvas instead of an empty page", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    render(<Viewer info={INFO} />);
+    await settle();
+    expect(status()).toBe("Page 1 sur 2 : échec du rendu (affichage indisponible (canvas)).");
+    expect(ipc.renderTile).not.toHaveBeenCalled();
   });
 
   it("ignores the results of a view it left", async () => {

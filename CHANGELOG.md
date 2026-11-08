@@ -28,7 +28,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   les tâches en file (une à la fois, file bornée) et garde un cache LRU de tuiles de
   128 Mio comptés en octets. Les tuiles d'une génération périmée sont abandonnées ou
   annulées. Commandes `page_size`, `render_tile` (octets bruts reçus en `ArrayBuffer`, sans
-  JSON ni base64) et `current_document`. L'UI affiche la page ajustée à la largeur, tuile
+  JSON ni base64), `current_document` et `begin_view` (générations numérotées par le
+  shell, donc robustes à un rechargement de la page). Canvas limité à 16 Mpx ; une tâche de
+  diagnostic est limitée à 60 s. Un worker perdu n'est pas encore relancé. L'UI affiche la page ajustée à la largeur, tuile
   par tuile dans un canvas, avec navigation page par page, état explicite (préparation,
   rendu en cours, prêt, échec) et mention du rendu partiel. Mesures dans
   `docs/perf/2026-11-08-p2-first-page.md`.

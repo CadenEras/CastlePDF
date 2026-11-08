@@ -6,6 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -19,6 +20,9 @@ use crate::cache::{TileCache, TileKey};
 
 pub const MAX_UNITS: u64 = 10_000_000;
 pub const MAX_UNIT_DELAY_MS: u8 = 100;
+/// Longest diagnostic job, units times delay: it must not hold the worker,
+/// which runs one job at a time, away from rendering for long.
+pub const MAX_JOB_MS: u64 = 60_000;
 /// Largest scale accepted from the UI: 64 device pixels per point.
 pub const MAX_SCALE: f64 = 64.0;
 /// Bytes of the header that precedes the pixels of a tile sent to the UI:
@@ -97,8 +101,8 @@ pub struct TileRequest {
     pub y: u32,
     pub width: u16,
     pub height: u16,
-    /// Increases each time the UI changes its view (page, scale...): tiles
-    /// of older generations are dropped or cancelled.
+    /// The view the tile belongs to, as given by `begin_view`: tiles of
+    /// older views are dropped or cancelled.
     pub generation: u64,
 }
 
@@ -157,13 +161,22 @@ enum Job {
 
 enum Command {
     Queue(Job),
-    Cancel { ui_id: u64 },
+    Cancel {
+        ui_id: u64,
+    },
+    /// The UI starts view `generation`: older tiles are now stale.
+    View {
+        generation: u64,
+    },
     Stop,
 }
 
 struct Shared {
     current: Mutex<Option<Current>>,
     cache: Mutex<TileCache>,
+    /// Last generation given by `begin_view`. The shell numbers views, not
+    /// the UI, so a reloaded page cannot restart below the manager's.
+    issued: AtomicU64,
 }
 
 pub struct WorkerHandle {
@@ -193,6 +206,9 @@ pub fn validate_run(units: u64, unit_delay_ms: u8) -> Result<(), CommandError> {
             field: "unitDelayMs",
         });
     }
+    if units.saturating_mul(u64::from(unit_delay_ms)) > MAX_JOB_MS {
+        return Err(CommandError::InvalidArgument { field: "units" });
+    }
     Ok(())
 }
 
@@ -212,6 +228,7 @@ impl WorkerHandle {
         let shared = Arc::new(Shared {
             current: Mutex::new(None),
             cache: Mutex::new(TileCache::default()),
+            issued: AtomicU64::new(0),
         });
         let (tx, rx) = channel();
         let manager_shared = Arc::clone(&shared);
@@ -319,6 +336,21 @@ impl WorkerHandle {
         }
     }
 
+    /// Starts a new view (page, scale, document) and returns its generation:
+    /// the queued tiles of older views are dropped at once, before the new
+    /// view's requests.
+    pub fn begin_view(&self) -> Result<u64, CommandError> {
+        // The commands lock orders the generations as they are sent.
+        let commands = lock(&self.commands);
+        let generation = self.shared.issued.load(Ordering::Relaxed).saturating_add(1);
+        commands
+            .1
+            .send(Command::View { generation })
+            .map_err(|_| CommandError::WorkerUnavailable)?;
+        self.shared.issued.store(generation, Ordering::Relaxed);
+        Ok(generation)
+    }
+
     /// The tile as sent to the UI: `TILE_HEADER` bytes, then RGBA pixels.
     /// Served from the cache when present.
     pub fn tile(&self, request: TileRequest) -> Pending<Arc<Vec<u8>>> {
@@ -331,7 +363,17 @@ impl WorkerHandle {
                     Err(CommandError::InvalidArgument { field: "size" })
                 }
             })
-            .and_then(|()| self.check_page(request.document, request.page));
+            .and_then(|()| self.check_page(request.document, request.page))
+            .and_then(|()| {
+                let issued = self.shared.issued.load(Ordering::Relaxed);
+                if (1..=issued).contains(&request.generation) {
+                    Ok(())
+                } else {
+                    Err(CommandError::InvalidArgument {
+                        field: "generation",
+                    })
+                }
+            });
         if let Err(error) = checked {
             return Pending::Ready(Err(error));
         }
@@ -440,12 +482,12 @@ impl Manager<'_> {
         match command {
             Command::Stop => return false,
             Command::Cancel { ui_id } => self.cancel(ui_id),
-            Command::Queue(job) => {
-                if let Job::Tile { generation, .. } = &job
-                    && *generation > self.generation
-                {
-                    self.new_generation(*generation);
+            Command::View { generation } => {
+                if generation > self.generation {
+                    self.new_generation(generation);
                 }
+            }
+            Command::Queue(job) => {
                 if self.queue.len() >= MAX_QUEUED {
                     self.refuse(job, CommandError::Busy);
                 } else {
@@ -635,20 +677,29 @@ impl Manager<'_> {
                     document, pages, ..
                 },
             ) => {
-                let previous = lock(&self.shared.current).replace(Current { document, pages });
-                if let Some(previous) = previous {
-                    lock(&self.shared.cache).remove_document(previous.document);
+                // Answered first: if nobody waits any more (the opening timed
+                // out and the UI was told it failed), the new document is
+                // closed and the one shown stays current.
+                let answered = reply
+                    .send(Ok(DocumentInfo {
+                        document,
+                        pages,
+                        name,
+                    }))
+                    .is_ok();
+                let closed = if answered {
+                    lock(&self.shared.current)
+                        .replace(Current { document, pages })
+                        .map(|previous| previous.document)
+                } else {
+                    Some(document)
+                };
+                if let Some(closed) = closed {
+                    lock(&self.shared.cache).remove_document(closed);
                     if let Some(worker) = &self.worker {
-                        let _ = worker.send(&Request::CloseDocument {
-                            document: previous.document,
-                        });
+                        let _ = worker.send(&Request::CloseDocument { document: closed });
                     }
                 }
-                let _ = reply.send(Ok(DocumentInfo {
-                    document,
-                    pages,
-                    name,
-                }));
             }
             (Job::Size { reply, .. }, Response::PageSize { width, height, .. }) => {
                 let _ = reply.send(Ok(PageSize { width, height }));
@@ -845,11 +896,15 @@ mod tests {
     #[test]
     fn arguments_are_validated_before_reaching_the_worker() {
         assert_eq!(validate_run(1, 0), Ok(()));
-        assert_eq!(validate_run(MAX_UNITS, MAX_UNIT_DELAY_MS), Ok(()));
+        assert_eq!(validate_run(MAX_UNITS, 0), Ok(()));
+        // 600 x 100 ms is the longest job accepted.
+        assert_eq!(validate_run(600, MAX_UNIT_DELAY_MS), Ok(()));
         for (units, delay, field) in [
             (0, 0, "units"),
             (MAX_UNITS + 1, 0, "units"),
             (1, MAX_UNIT_DELAY_MS + 1, "unitDelayMs"),
+            (601, MAX_UNIT_DELAY_MS, "units"),
+            (MAX_UNITS, 1, "units"),
         ] {
             assert_eq!(
                 validate_run(units, delay),
@@ -882,7 +937,7 @@ mod tests {
     #[test]
     fn job_is_cancelled_and_stop_is_bounded() {
         let (handle, events) = start();
-        let id = handle.run(10_000, 10).unwrap();
+        let id = handle.run(5_000, 10).unwrap();
         handle.cancel(id).unwrap();
         assert_eq!(
             events.recv_timeout(TIMEOUT),
@@ -891,7 +946,7 @@ mod tests {
                 outcome: JobOutcome::Cancelled
             })
         );
-        let second = handle.run(10_000, 10).unwrap();
+        let second = handle.run(5_000, 10).unwrap();
         assert!(second > id);
         let start = Instant::now();
         handle.stop();
@@ -901,7 +956,7 @@ mod tests {
     #[test]
     fn overlapping_jobs_are_queued_and_each_get_one_final_event() {
         let (handle, events) = start();
-        let first = handle.run(10_000, 10).unwrap();
+        let first = handle.run(5_000, 10).unwrap();
         let second = handle.run(1, 0).unwrap();
         let third = handle.run(1, 0).unwrap();
         // The third is still queued: cancelling it never reaches the worker.
@@ -977,6 +1032,22 @@ mod tests {
             handle.page_size(1, 3, 1.0).wait(TIMEOUT),
             Err(CommandError::InvalidArgument { field: "page" })
         );
+        // Generations come from the shell: none issued yet, then only 1.
+        assert_eq!(
+            handle.tile(tile_request(1, 0, 1)).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument {
+                field: "generation"
+            })
+        );
+        assert_eq!(handle.begin_view(), Ok(1));
+        for generation in [0, 2] {
+            assert_eq!(
+                handle.tile(tile_request(1, 0, generation)).wait(TIMEOUT),
+                Err(CommandError::InvalidArgument {
+                    field: "generation"
+                })
+            );
+        }
         let tile = handle.tile(tile_request(1, 0, 1)).wait(TIMEOUT).unwrap();
         assert_eq!(tile.len(), TILE_HEADER + 128 * 128 * 4);
         assert_eq!(
@@ -1034,15 +1105,39 @@ mod tests {
     }
 
     #[test]
+    fn a_document_opened_after_its_timeout_is_closed() {
+        let (handle, _events) = start();
+        let first = handle.open(&fixture("shapes.pdf")).wait(TIMEOUT).unwrap();
+        // Nobody waits for this one any more, as after a timeout.
+        drop(handle.open(&fixture("minimal.pdf")));
+        // Queued after the opening: the first document is still current.
+        assert_eq!(
+            handle.page_size(first.document, 0, 1.0).wait(TIMEOUT),
+            Ok(PageSize {
+                width: 200,
+                height: 200
+            })
+        );
+        assert_eq!(
+            handle.page_size(first.document + 1, 0, 1.0).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "document" })
+        );
+        handle.stop();
+    }
+
+    #[test]
     fn tiles_of_an_older_view_are_dropped() {
         let (handle, events) = start();
         handle.open(&fixture("shapes.pdf")).wait(TIMEOUT).unwrap();
         // A long synthetic job keeps the worker busy, so the tiles queue.
-        let blocker = handle.run(10_000, 10).unwrap();
-        let old = handle.tile(tile_request(1, 0, 1));
-        let newer = handle.tile(tile_request(1, 128, 2));
-        handle.cancel(blocker).unwrap();
+        let blocker = handle.run(5_000, 10).unwrap();
+        let first = handle.begin_view().unwrap();
+        let old = handle.tile(tile_request(1, 0, first));
+        // A new view drops the queued tiles of the previous one at once.
+        let second = handle.begin_view().unwrap();
         assert_eq!(old.wait(TIMEOUT), Err(CommandError::Stale));
+        let newer = handle.tile(tile_request(1, 128, second));
+        handle.cancel(blocker).unwrap();
         assert!(newer.wait(TIMEOUT).is_ok());
         assert_eq!(
             events.recv_timeout(TIMEOUT).map(|e| e.outcome),
@@ -1065,6 +1160,7 @@ mod tests {
         events.recv_timeout(TIMEOUT).unwrap();
         let start = Instant::now();
         let info = handle.open(&fixture("shapes.pdf")).wait(TIMEOUT).unwrap();
+        let view = handle.begin_view().unwrap();
         let scale = 5.0;
         let size = handle
             .page_size(info.document, 0, scale)
@@ -1096,10 +1192,10 @@ mod tests {
                 .collect();
             tiles.len()
         };
-        let count = wait_all(tiles(1));
+        let count = wait_all(tiles(view));
         let first = start.elapsed();
         let again = Instant::now();
-        let cached = wait_all(tiles(1));
+        let cached = wait_all(tiles(view));
         println!(
             "first page ({} x {} px, {count} tiles): {first:?} from opening; again from the cache ({cached} tiles): {:?}",
             size.width,

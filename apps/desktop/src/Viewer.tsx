@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 
 import {
   MAX_TILE_SIDE,
+  beginView,
   isStale,
-  nextGeneration,
   pageSize,
   renderTile,
   skippedLabels,
@@ -18,6 +18,13 @@ const MAX_SCALE = 16;
 const DEFAULT_WIDTH = 800;
 /** Width changes below this many CSS pixels do not re-render the page. */
 const WIDTH_STEP = 32;
+/**
+ * Most pixels in the canvas (64 MiB of RGBA in the WebView): a tall, narrow
+ * page is drawn at a lower scale rather than in a huge canvas.
+ */
+export const MAX_CANVAS_PIXELS = 16 * 1024 * 1024;
+/** Scale at which the page is first measured: pages up to 65 536 points fit. */
+const MEASURE_SCALE = 0.25;
 
 type RenderState =
   | { kind: "loading"; done: number; total: number }
@@ -49,10 +56,19 @@ export function tileGrid(width: number, height: number): Rect[] {
   return tiles;
 }
 
-/** Device pixels per point that fit `width` CSS pixels. */
-export function fitScale(available: number, pageWidth: number, pixelRatio: number): number {
-  const scale = (available * pixelRatio) / pageWidth;
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+/**
+ * Device pixels per point that fit `available` CSS pixels across a page of
+ * `width` x `height` points, within `MAX_CANVAS_PIXELS`.
+ */
+export function fitScale(
+  available: number,
+  width: number,
+  height: number,
+  pixelRatio: number,
+): number {
+  const fit = (available * pixelRatio) / width;
+  const bounded = Math.min(fit, Math.sqrt(MAX_CANVAS_PIXELS / (width * height)));
+  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, bounded));
 }
 
 function errorMessage(error: unknown): string {
@@ -63,9 +79,8 @@ function describe(state: RenderState, page: number, pages: number): string {
   const where = `Page ${String(page + 1)} sur ${String(pages)}`;
   switch (state.kind) {
     case "loading":
-      return state.total === 0
-        ? `${where} : préparation…`
-        : `${where} : rendu en cours (${String(state.done)}/${String(state.total)} tuiles)…`;
+      // Announced once per view: the tile count is shown apart, not read out.
+      return state.total === 0 ? `${where} : préparation…` : `${where} : rendu en cours…`;
     case "ready":
       return `${where}.`;
     case "error":
@@ -109,17 +124,24 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   useEffect(() => {
     // Each view (document, page, width) is a new generation: the shell drops
     // the tiles of older ones, and their late results are ignored here.
-    const generation = nextGeneration();
     let cancelled = false;
-    const active = () => !cancelled;
+    // The first failure stops the other tile loops; the error stays shown.
+    let failed = false;
+    const active = () => !cancelled && !failed;
     const setState = (next: RenderState) => {
       setRendered({ view, state: next });
     };
 
     const draw = async () => {
+      const generation = await beginView();
       const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
-      const base = await pageSize(document, page, 1);
-      const scale = fitScale(width, base.width, ratio);
+      const base = await pageSize(document, page, MEASURE_SCALE);
+      const scale = fitScale(
+        width,
+        base.width / MEASURE_SCALE,
+        base.height / MEASURE_SCALE,
+        ratio,
+      );
       const size = await pageSize(document, page, scale);
       const target = canvas.current;
       if (!active() || target === null) {
@@ -129,6 +151,9 @@ export function Viewer({ info }: { info: DocumentInfo }) {
       target.height = size.height;
       target.style.width = `${String(size.width / ratio)}px`;
       const context = target.getContext("2d");
+      if (context === null) {
+        throw new Error("affichage indisponible (canvas)");
+      }
       const tiles = tileGrid(size.width, size.height);
       let done = 0;
       let skipped = 0;
@@ -141,11 +166,19 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           if (rect === undefined) {
             return;
           }
-          const tile = await renderTile({ document, page, scale, generation, ...rect });
+          let tile;
+          try {
+            tile = await renderTile({ document, page, scale, generation, ...rect });
+          } catch (error: unknown) {
+            if (!isStale(error)) {
+              failed = true;
+            }
+            throw error;
+          }
           if (!active()) {
             return;
           }
-          context?.putImageData(new ImageData(tile.pixels, tile.width, tile.height), rect.x, rect.y);
+          context.putImageData(new ImageData(tile.pixels, tile.width, tile.height), rect.x, rect.y);
           skipped |= tile.skipped;
           done += 1;
           setState({ kind: "loading", done, total: tiles.length });
@@ -158,7 +191,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     };
 
     draw().catch((error: unknown) => {
-      if (active() && !isStale(error)) {
+      if (!cancelled && !isStale(error)) {
         setState({ kind: "error", message: errorMessage(error) });
       }
     });
@@ -193,6 +226,11 @@ export function Viewer({ info }: { info: DocumentInfo }) {
         <p role="status" aria-live="polite">
           {describe(state, page, info.pages)}
         </p>
+        {state.kind === "loading" && state.total > 0 && (
+          <span className="progress" aria-hidden="true">
+            {state.done}/{state.total}
+          </span>
+        )}
       </div>
       {missing.length > 0 && (
         <p className="partial" role="note">

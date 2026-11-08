@@ -5,7 +5,6 @@ import {
   TILE_HEADER,
   describeCommandError,
   isStale,
-  nextGeneration,
   parseDocumentEvent,
   parseJobEvent,
   parseJobId,
@@ -145,10 +144,8 @@ describe("documents and tiles", () => {
     expect(isStale(new Error("stale"))).toBe(false);
   });
 
-  it("labels skipped capabilities and never reuses a generation", () => {
+  it("labels skipped capabilities", () => {
     expect(skippedLabels(0)).toEqual([]);
     expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images en ligne", "autres éléments"]);
-    const first = nextGeneration();
-    expect(nextGeneration()).toBeGreaterThan(first);
   });
 });

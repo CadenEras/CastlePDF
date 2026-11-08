@@ -19,6 +19,7 @@ vi.mock("./ipc", async (original) => ({
   ...(await original<typeof import("./ipc")>()),
   pageSize: ipc.pageSize,
   currentDocument: ipc.currentDocument,
+  beginView: () => Promise.resolve(1),
   onDocumentEvent: (handler: (event: DocumentEvent) => void) => {
     ipc.documents = handler;
     return Promise.resolve(ipc.unlisten);
@@ -159,7 +160,10 @@ describe("App", () => {
     expect(screen.getByText("Ouverture de plan.pdf…")).toBeTruthy();
     open({ sequence: 2, kind: "opened", document: 1, pages: 4, name: "plan.pdf" });
     expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
-    expect(ipc.pageSize).toHaveBeenCalledWith(1, 0, 1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ipc.pageSize).toHaveBeenCalledWith(1, 0, 0.25);
     // A late copy of an older event changes nothing.
     open({ sequence: 1, kind: "opening", name: "plan.pdf" });
     expect(screen.queryByText("Ouverture de plan.pdf…")).toBeNull();

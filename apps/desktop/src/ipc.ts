@@ -280,15 +280,17 @@ export async function renderTile(request: TileRequest): Promise<Tile> {
   return parseTile(buffer, request.width, request.height);
 }
 
-let lastGeneration = 0;
-
 /**
- * A new view generation. The shell drops tiles of older generations, across
- * documents too: the counter never restarts while the window lives.
+ * Starts a new view (document, page, scale) and returns its generation. The
+ * shell numbers views, so a reloaded page never restarts below it, and drops
+ * the tiles of older views at once.
  */
-export function nextGeneration(): number {
-  lastGeneration += 1;
-  return lastGeneration;
+export async function beginView(): Promise<number> {
+  const generation = await command("begin_view", {});
+  if (!isCount(generation) || generation === 0) {
+    throw new Error("invalid view generation from shell");
+  }
+  return generation;
 }
 
 /** Malformed payloads are dropped rather than shown. */

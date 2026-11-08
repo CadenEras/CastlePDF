@@ -6,6 +6,7 @@ fn main() {
             "worker_run",
             "worker_cancel",
             "current_document",
+            "begin_view",
             "page_size",
             "render_tile",
         ]));

@@ -9,6 +9,7 @@
     "allow-worker-run",
     "allow-worker-cancel",
     "allow-current-document",
+    "allow-begin-view",
     "allow-page-size",
     "allow-render-tile"
   ]

@@ -86,6 +86,12 @@ async fn page_size(
     reply(worker.page_size(document, page, scale), REPLY_TIMEOUT).await
 }
 
+/// Starts a new view and returns its generation, numbered by the shell.
+#[tauri::command]
+fn begin_view(worker: State<'_, WorkerHandle>) -> Result<u64, CommandError> {
+    worker.begin_view()
+}
+
 /// Raw bytes, received as an `ArrayBuffer`: no JSON or base64 (ADR-0003).
 #[tauri::command]
 async fn render_tile(
@@ -158,6 +164,7 @@ fn main() -> ExitCode {
             worker_run,
             worker_cancel,
             current_document,
+            begin_view,
             page_size,
             render_tile
         ])
