@@ -30,7 +30,7 @@ mémoire bornée, réactivité et maintenabilité.
 | --- | --- | --- |
 | P0 — fondations | Workspace, UI vide, protocole worker, budgets, corpus, CI trois OS | Terminée (`v0.1.0-alpha.1`) |
 | P1 — lecture structurée | Tokenizer, objets, xref classique, pages, CLI de diagnostic | Terminée (`v0.1.0-alpha.2`) : xref classique, pages, CLI `inspect` |
-| P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | En cours ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) : Flate, flux xref et d'objets, interpréteur graphique faits |
+| P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | En cours ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) : Flate, flux xref et d'objets, interpréteur graphique, première page affichée en tuiles faits ; polices et images à venir |
 | P3 et suivantes | Texte, écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
 
 Le support PDF sera publié sous forme de matrice de capacités. Toute capacité absente

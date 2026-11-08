@@ -1,6 +1,108 @@
 import { useEffect, useRef, useState } from "react";
 
-import { cancelJob, onJobEvent, runSyntheticJob, type JobOutcome } from "./ipc";
+import {
+  cancelJob,
+  currentDocument,
+  onDocumentEvent,
+  onJobEvent,
+  runSyntheticJob,
+  type DocumentEvent,
+  type DocumentInfo,
+  type JobOutcome,
+} from "./ipc";
+import { Viewer } from "./Viewer";
+
+/**
+ * The document shown, and the notice of a file being opened or refused; the
+ * shell opens files dropped on the window. A refused file leaves the shown
+ * document in place.
+ */
+interface DocumentState {
+  /** `sequence` of the last event applied. */
+  sequence: number;
+  shown: DocumentInfo | null;
+  notice: Exclude<DocumentEvent, { kind: "opened" }> | null;
+}
+
+/** Applies `event` unless an event as recent has been applied already. */
+function apply(current: DocumentState, event: DocumentEvent): DocumentState {
+  if (event.sequence <= current.sequence) {
+    return current;
+  }
+  return event.kind === "opened"
+    ? {
+        sequence: event.sequence,
+        shown: { document: event.document, pages: event.pages, name: event.name },
+        notice: null,
+      }
+    : { sequence: event.sequence, shown: current.shown, notice: event };
+}
+
+function DocumentSection({ state }: { state: DocumentState }) {
+  const { shown, notice } = state;
+  return (
+    <>
+      {notice === null && shown === null && (
+        <p>Déposez un fichier PDF sur la fenêtre pour l'ouvrir.</p>
+      )}
+      {notice?.kind === "opening" && <p role="status">Ouverture de {notice.name}…</p>}
+      {notice?.kind === "failed" && (
+        <p role="alert">
+          Impossible d'ouvrir {notice.name} : {notice.message}.
+        </p>
+      )}
+      {shown !== null && (
+        <>
+          <p className="name">{shown.name}</p>
+          {/* A new document starts on its first page. */}
+          <Viewer key={shown.document} info={shown} />
+        </>
+      )}
+    </>
+  );
+}
+
+function useDocument(): DocumentState {
+  const [state, setState] = useState<DocumentState>({ sequence: 0, shown: null, notice: null });
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const fail = (error: unknown) => {
+      setState((current) => ({
+        sequence: current.sequence,
+        shown: current.shown,
+        notice: {
+          sequence: current.sequence,
+          kind: "failed",
+          name: "les documents",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }));
+    };
+    onDocumentEvent((event) => {
+      setState((current) => apply(current, event));
+    })
+      // Subscribed first, then asks for what was announced before.
+      .then((stop) => {
+        if (disposed) {
+          stop();
+          return null;
+        }
+        unlisten = stop;
+        return currentDocument();
+      })
+      .then((event) => {
+        if (!disposed && event !== null) {
+          setState((current) => apply(current, event));
+        }
+      }, fail);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+  return state;
+}
 
 // Diagnostic job: about 3 s, long enough to exercise cancellation by hand.
 const DIAGNOSTIC_UNITS = 300;
@@ -47,6 +149,7 @@ function errorMessage(error: unknown): string {
 const MAX_EARLY_EVENTS = 8;
 
 export function App() {
+  const document = useDocument();
   const [job, setJob] = useState<JobState>({ kind: "idle" });
   const [listening, setListening] = useState(false);
   // Latest job id: results of older jobs never overwrite a newer state.
@@ -137,7 +240,7 @@ export function App() {
       </header>
       <section aria-labelledby="document-title" className="document">
         <h2 id="document-title">Document</h2>
-        <p>Aucun document ouvert.</p>
+        <DocumentSection state={document} />
       </section>
       <section aria-labelledby="worker-title" className="worker">
         <h2 id="worker-title">Diagnostic du worker</h2>

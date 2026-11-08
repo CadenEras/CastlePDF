@@ -47,6 +47,16 @@ Valider types, tailles, chemins et handles côté Rust. Une requête IPC bien ty
 TypeScript peut toujours être falsifiée. Éviter que des chemins libres ou identifiants
 de documents permettent de traverser un répertoire ou d'accéder à un document fermé.
 
+État du shell (P2, tranche 4) :
+- l'UI ne nomme jamais un chemin. Le shell ouvre un fichier déposé sur la fenêtre ou passé
+  en argument, et n'annonce à l'UI que son nom ;
+- les commandes `page_size` et `render_tile` n'acceptent que le document courant, une page
+  existante, une échelle finie dans ]0, 64] et une tuile d'au plus 256 × 256 ;
+- `current_document` ne rend que le dernier événement de document ;
+- aucune permission de fichier, de dialogue, de shell ou de réseau n'est accordée à la
+  fenêtre ;
+- la file du shell est bornée (256 tâches), et le cache de tuiles est limité à 128 Mio.
+
 Le texte extrait reste du texte. Nettoyer les noms d'export et interdire traversée,
 écriture arbitraire et ouverture d'attachement automatique. Tester le nettoyage de
 ressources à la fermeture d'un document et de la fenêtre.
