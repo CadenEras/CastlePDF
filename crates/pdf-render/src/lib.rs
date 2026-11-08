@@ -9,6 +9,9 @@
 //! partial and `Rendering::skipped` lists them, so that the caller can say
 //! so. Content syntax errors are refused, not repaired (ADR-0002).
 //!
+//! `render_area` renders one rectangle of the page (a tile of a viewer)
+//! with the pixels of that rectangle of `render_page`, up to rounding.
+//!
 //! ```
 //! use pdf_document::Document;
 //! use pdf_render::{RenderOptions, render_page};
@@ -192,6 +195,16 @@ impl fmt::Debug for Bitmap {
     }
 }
 
+/// A rectangle of device pixels in the rendering of a whole page at a given
+/// scale: `x` to the right and `y` down from the top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// A rendered page and what it could not render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -218,6 +231,78 @@ pub fn render_page<S: Source>(
     budget: &mut Budget,
 ) -> Result<Rendering, Error> {
     let (width, height, base) = page_geometry(page, options)?;
+    check_pixels(u64::from(width) * u64::from(height), options)?;
+    render(file, page, options, width, height, base, budget)
+}
+
+/// Size in device pixels of the whole page rendered at `options.scale`:
+/// the size of `render_page`'s bitmap, without its `max_pixels` check.
+/// Each side is at most `MAX_SIDE`.
+pub fn page_size(page: &Page, options: &RenderOptions) -> Result<(u32, u32), Error> {
+    let (width, height, _) = page_geometry(page, options)?;
+    Ok((u32::from(width), u32::from(height)))
+}
+
+/// Renders `area` of the page rendering at `options.scale` (see
+/// `page_size`): the bitmap is `area.width` by `area.height` and holds
+/// the pixels of that rectangle of `render_page`, each channel within 1 of
+/// them (the shifted coordinates round differently in the rasteriser's
+/// single-precision arithmetic), so tiles join without visible seams. `max_pixels` applies to the area, not to the page; the area
+/// must be non-empty and inside the page, otherwise `InvalidRequest`.
+/// The whole content is interpreted; the rasteriser work outside the area is
+/// culled and not counted.
+pub fn render_area<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    options: &RenderOptions,
+    area: PixelRect,
+    budget: &mut Budget,
+) -> Result<Rendering, Error> {
+    let (page_width, page_height, base) = page_geometry(page, options)?;
+    let inside = |start: u32, length: u32, side: u16| {
+        length > 0
+            && start
+                .checked_add(length)
+                .is_some_and(|end| end <= u32::from(side))
+    };
+    if !(inside(area.x, area.width, page_width) && inside(area.y, area.height, page_height)) {
+        return Err(Error::InvalidRequest);
+    }
+    // Within the page, so each side fits `u16`.
+    let (Ok(width), Ok(height)) = (u16::try_from(area.width), u16::try_from(area.height)) else {
+        return Err(Error::InvalidRequest);
+    };
+    check_pixels(u64::from(area.width) * u64::from(area.height), options)?;
+    let base = Matrix::new(
+        base.a,
+        base.b,
+        base.c,
+        base.d,
+        base.e - f64::from(area.x),
+        base.f - f64::from(area.y),
+    );
+    render(file, page, options, width, height, base, budget)
+}
+
+fn check_pixels(pixels: u64, options: &RenderOptions) -> Result<(), Error> {
+    if pixels > options.limits.max_pixels {
+        return Err(Error::LimitExceeded {
+            kind: RenderLimitKind::Pixels,
+            limit: options.limits.max_pixels,
+        });
+    }
+    Ok(())
+}
+
+fn render<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    options: &RenderOptions,
+    width: u16,
+    height: u16,
+    base: Matrix,
+    budget: &mut Budget,
+) -> Result<Rendering, Error> {
     let content = page_content(file, page, budget)?;
     let resources = match page.resources.as_deref() {
         None => None,
@@ -236,8 +321,9 @@ pub fn render_page<S: Source>(
     })
 }
 
-/// Output size and the matrix from default user space to device pixels
-/// (y down, origin at the top-left corner of the rotated crop box).
+/// Page size in pixels and the matrix from default user space to device
+/// pixels (y down, origin at the top-left corner of the rotated crop box).
+/// Each side is at most `MAX_SIDE`; `max_pixels` is checked by the callers.
 fn page_geometry(page: &Page, options: &RenderOptions) -> Result<(u16, u16, Matrix), Error> {
     let scale = options.scale * page.user_unit;
     let crop = page.crop_box;
@@ -265,9 +351,6 @@ fn page_geometry(page: &Page, options: &RenderOptions) -> Result<(u16, u16, Matr
     let (Some(width), Some(height)) = (side(rotated_w), side(rotated_h)) else {
         return Err(too_large);
     };
-    if u64::from(width) * u64::from(height) > options.limits.max_pixels {
-        return Err(too_large);
-    }
     let s = scale;
     let (x0, y0, x1, y1) = (crop.llx, crop.lly, crop.urx, crop.ury);
     let base = match page.rotation {

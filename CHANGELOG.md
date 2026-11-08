@@ -14,6 +14,10 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   (taux d'ouverture et de rendu, catégories d'erreur, capacités non rendues, crashs,
   timeouts, temps), sans contenu ni nom de fichier sauf `--paths`. Code 1 si un fichier
   fait planter ou bloquer le moteur. Première mesure sur SafeDocs dans `docs/QUALITY.md`.
+- `pdf-render` : `render_area` rend un rectangle de page (tuile) et `page_size` donne la
+  taille en pixels d'une page à une échelle ; `max_pixels` s'applique à la zone, pas à la
+  page. Les tuiles assemblent le rendu de la page à 1 près par canal (arrondi en simple
+  précision du rasteriseur) ; la cible de fuzzing `render` le vérifie.
 - ADR-0003 accepté : ordre de P2 (Flate et flux xref avant l'interpréteur),
   `vello_cpu`, `miniz_oxide`, tuiles 256 px en octets bruts, oracles de rendu, ARM64.
 - `pdf-syntax` : filtre `FlateDecode` (ISO 32000-2, 7.4.4) via `miniz_oxide` 0.9.1

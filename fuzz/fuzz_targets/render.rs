@@ -4,13 +4,14 @@
 //! pattern and a property list. The first byte chooses the scale (1 to 8,
 //! so up to 512 x 512 pixels); the rest is the content.
 //! Properties: no panic in the interpreter or the rasteriser, no unbounded
-//! work (operations and path work are limited), and a successful rendering
-//! has exactly `width * height * 4` bytes.
+//! work (operations and path work are limited), a successful rendering has
+//! exactly `width * height * 4` bytes, and `render_area` of an inner
+//! rectangle (offset off the 4-pixel grid) gives the same pixels within 1.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use pdf_document::Document;
-use pdf_render::{RenderOptions, render_page};
+use pdf_render::{PixelRect, RenderOptions, render_area, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resources << \
@@ -81,5 +82,24 @@ fuzz_target!(|data: &[u8]| {
         let side = 64 * scale;
         assert_eq!((bitmap.width(), bitmap.height()), (side, side));
         assert_eq!(bitmap.data().len(), (side * side * 4) as usize);
+        let area = PixelRect {
+            x: side / 3 + 1,
+            y: side / 5 + 1,
+            width: side / 2,
+            height: side / 2,
+        };
+        let part = render_area(document.file(), page, &options, area, &mut budget)
+            .expect("the area of a rendered page renders");
+        assert_eq!(part.skipped, rendering.skipped);
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let got = part.bitmap.pixel(x, y).expect("inside the area");
+                let want = bitmap.pixel(area.x + x, area.y + y).expect("inside the page");
+                assert!(
+                    got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
+                    "pixel ({x}, {y}) of the area: {got:?} != {want:?}"
+                );
+            }
+        }
     }
 });
