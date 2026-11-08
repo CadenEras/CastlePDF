@@ -26,6 +26,36 @@ object streams, révisions incrémentales, Unicode, arbres cycliques, filtres im
 images gigantesques, polices endommagées, chiffrement non supporté, fichiers tronqués
 et incohérences de longueur. Un fichier non supporté doit échouer proprement.
 
+### Mesure sur corpus externe
+
+Les grands corpus web servent à mesurer, jamais de fixtures : leurs licences sont
+inconnues, ils ne vont ni dans Git ni dans la CI. Procédure locale :
+
+1. Télécharger des archives de [SafeDocs CC-MAIN-2021-31-PDF-UNTRUNCATED](https://digitalcorpora.org/cc-main-2021-31-pdf-untruncated/)
+   (1 000 PDF par zip) et, pour la robustesse, de
+   [CC-MAIN-2021-31-UNSAFE](https://corp.digitalcorpora.org/corpora/files/CC-MAIN-2021-31-UNSAFE/)
+   (fichiers connus pour faire planter ou bloquer des parseurs).
+2. Les extraire dans un répertoire dédié hors du dépôt, de préférence dans une VM ou WSL ;
+   ne pas les ouvrir avec un lecteur PDF.
+3. `castle-pdf survey <répertoire> --jobs 8` en build release, mémoire par processus
+   bornée (`ulimit -v`). Ne publier que le rapport agrégé ; un cas utile est réduit en
+   fixture synthétique, pas copié.
+
+Mesure du 2026-11-08 (tranche corpus, correction `/Contents` indirect comprise, release, Linux WSL, `ulimit -v` 4 Gio,
+`--jobs 8`) :
+
+| Corpus | Fichiers | Ouverts | 1re page rendue | Crashs | Timeouts | Temps médian / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| SafeDocs `0000.zip` + `0001.zip` | 2 000 | 93,1 % | 92,1 % (91,4 % avant correction) | 0 | 0 | 4 ms / 274 ms |
+| UNSAFE `common-crawl-x0000.zip` | 2 636 | 78,1 % | 76,4 % (75,7 % avant correction) | 0 | 0 | 3 ms / 371 ms |
+
+Causes principales de refus : chiffrement (86), `startxref` absent, surtout fichiers
+tronqués (328), offsets xref faux (`ObjectIdMismatch`, `InvalidXrefEntry`, `MissingXref` :
+183), filtres LZW, ASCII85 et CCITT (33), opérateurs mal placés (17). Sur les pages
+rendues, le texte (`Text`) et les XObjects manquent presque partout : ce sont les écarts
+de fidélité dominants. Une reconstruction xref (réparation) récupérerait la majorité des
+refus structurels ; elle demande une décision (ADR-0002, lecture stricte).
+
 ## Principes de tests
 
 Vérifier les comportements, pas les détails de l'implémentation. Un bug reproductible

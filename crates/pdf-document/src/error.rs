@@ -52,8 +52,9 @@ pub enum StructureErrorKind {
     UnexpectedIndirection,
     /// `/UserUnit` is not a positive finite number; reported on the page.
     InvalidUserUnit,
-    /// `/Contents` is not a stream reference, an array of them, or null;
-    /// reported on the page by the consumers that read it.
+    /// `/Contents` is not a stream reference, an array of them, a reference
+    /// to such an array, or null; reported on the page by the consumers that
+    /// read it.
     InvalidContents,
 }
 

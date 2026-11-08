@@ -41,10 +41,24 @@ fn render(pdf: Vec<u8>, index: usize, options: &RenderOptions) -> Result<Renderi
 
 /// Classic-xref PDF with one page of the given size, content and resources.
 fn one_page(media_box: &str, extra: &str, content: &str) -> Vec<u8> {
-    let bodies = [
+    page_with_objects(media_box, extra, "4 0 R", content, &[])
+}
+
+/// Like `one_page`, with the `/Contents` value given and `more` objects
+/// numbered from 9.
+fn page_with_objects(
+    media_box: &str,
+    extra: &str,
+    contents: &str,
+    content: &str,
+    more: &[&str],
+) -> Vec<u8> {
+    let mut bodies = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-        format!("<< /Type /Page /Parent 2 0 R /MediaBox {media_box} {extra} /Contents 4 0 R >>"),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox {media_box} {extra} /Contents {contents} >>"
+        ),
         format!(
             "<< /Length {} >>\nstream\n{content}\nendstream",
             content.len()
@@ -58,6 +72,7 @@ endstream"
             .to_owned(),
         "<< /Type /ExtGState /TR 7 0 R /HT 7 0 R /BG2 7 0 R /ca 0.5 >>".to_owned(),
     ];
+    bodies.extend(more.iter().map(|body| (*body).to_owned()));
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (index, body) in bodies.iter().enumerate() {
@@ -510,6 +525,55 @@ fn invalid_requests_and_contents() {
             ..
         }))
     ));
+}
+
+/// ISO 32000-2, 7.7.3.3: `/Contents` may be a reference to an array of
+/// stream references (seen in real files).
+#[test]
+fn contents_may_be_an_indirect_array() {
+    // The graphics state carries over from one stream to the next.
+    let second = "0 g 10 10 10 10 re f";
+    let second = format!(
+        "<< /Length {} >>
+stream
+{second}
+endstream",
+        second.len()
+    );
+    let pdf = page_with_objects(
+        "[0 0 20 20]",
+        "",
+        "9 0 R",
+        "1 0 0 rg 0 0 10 10 re f",
+        &["[4 0 R 10 0 R]", &second],
+    );
+    let rendering = render(pdf, 0, &RenderOptions::default()).expect("rendering");
+    // Device pixels of the 20 x 20 page: user y grows upwards.
+    let pixel = |x, y| rendering.bitmap.pixel(x, y).expect("inside");
+    assert_color(pixel(5, 15), [255, 0, 0]);
+    assert_color(pixel(15, 5), [0, 0, 0]);
+    assert_color(pixel(15, 15), [255, 255, 255]);
+    // One level only: an array referencing an array (here itself), a number
+    // or a dictionary is refused.
+    for (contents, body) in [
+        ("9 0 R", "[9 0 R]"),
+        ("9 0 R", "[4 0 R 10 0 R]"),
+        ("9 0 R", "[4 0 R 5 0 R]"),
+        ("9 0 R", "[4 0 R 1]"),
+        ("[9 0 R]", "[4 0 R]"),
+    ] {
+        let pdf = page_with_objects("[0 0 20 20]", "", contents, "", &[body, "[4 0 R]"]);
+        assert!(
+            matches!(
+                render(pdf, 0, &RenderOptions::default()),
+                Err(Error::Document(pdf_document::Error::InvalidStructure {
+                    kind: pdf_document::StructureErrorKind::InvalidContents,
+                    ..
+                }))
+            ),
+            "{contents} -> {body}"
+        );
+    }
 }
 
 #[test]
