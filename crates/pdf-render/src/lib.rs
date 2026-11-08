@@ -293,23 +293,44 @@ fn page_content<S: Source>(
             kind: pdf_document::StructureErrorKind::InvalidContents,
         })
     };
-    let references: Vec<_> = match &page.contents {
-        None | Some(Object::Null) => Vec::new(),
-        Some(Object::Reference(id)) => vec![*id],
-        Some(Object::Array(items)) => items
+    let references_in = |items: &[Object]| -> Result<Vec<_>, Error> {
+        items
             .iter()
             .map(Object::as_reference)
             .collect::<Option<_>>()
-            .ok_or_else(invalid)?,
+            .ok_or_else(invalid)
+    };
+    // A stream reference, an array of them, or a reference to such an array
+    // (ISO 32000-2, 7.7.3.3); the referenced array is resolved once, so a
+    // reference to an array of arrays, or to itself, is refused below.
+    let mut single = None;
+    let references: Vec<_> = match &page.contents {
+        None | Some(Object::Null) => Vec::new(),
+        Some(Object::Reference(id)) => match file.resolve(*id, budget)? {
+            IndirectValue::Object(Object::Array(items)) => references_in(&items)?,
+            value => {
+                single = Some(value);
+                Vec::new()
+            }
+        },
+        Some(Object::Array(items)) => references_in(items)?,
         Some(_) => return Err(invalid()),
     };
-    let mut parts = Vec::with_capacity(references.len());
-    for id in references {
-        match file.resolve(id, budget)? {
+    let mut parts = Vec::with_capacity(references.len().max(1));
+    let mut push = |value, budget: &mut Budget| -> Result<(), Error> {
+        match value {
             IndirectValue::Stream(stream) => parts.push(file.decoded_stream_data(&stream, budget)?),
             IndirectValue::Object(Object::Null) => {}
             IndirectValue::Object(_) => return Err(invalid()),
         }
+        Ok(())
+    };
+    if let Some(value) = single {
+        push(value, budget)?;
+    }
+    for id in references {
+        let value = file.resolve(id, budget)?;
+        push(value, budget)?;
     }
     // One stream is used in place. Several are joined into a buffer of the
     // exact size, charged to the budget like the decoded data it copies.

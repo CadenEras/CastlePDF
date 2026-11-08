@@ -99,6 +99,8 @@ Interface effective, relevée sur `--help` :
 ```sh
 cargo run -p pdf-cli -- inspect <fichier>   # castle-pdf inspect <fichier>
 cargo run -p pdf-cli -- render <fichier> <page> <sortie.ppm> [--scale <facteur>]
+cargo run -p pdf-cli -- survey <répertoire> [--timeout <secondes>] [--jobs <n>] [--paths]
+cargo run -p pdf-cli -- probe <fichier>       # une étape de survey
 cargo run -p pdf-cli -- --help                # ou -h
 cargo run -p pdf-cli -- --version
 ```
@@ -120,6 +122,17 @@ d'image partielle (le système de fichiers doit accepter les liens durs). Elle a
 utilisées par la page mais pas encore rendues (texte, images, XObjects…). Code 1 aussi
 quand le rendu échoue ou que l'image ne peut pas être créée. Limites par défaut de
 `RenderLimits`.
+
+`survey` parcourt récursivement les fichiers réguliers du répertoire (liens symboliques
+non suivis) et lance pour chacun `castle-pdf probe` dans un processus enfant, tué après
+`--timeout` (30 s par défaut, au plus 3600) ; `--jobs` (1 à 64, 4 par défaut) borne les
+sondes simultanées, chacune pouvant tenir l'entrée entière en mémoire. Le rapport agrège :
+taux d'ouverture et de rendu de la première page (échelle 1), catégories d'erreur sans
+offset, capacités non rendues, crashs, timeouts, temps par fichier (création du processus
+comprise). Il ne contient ni contenu ni nom de fichier ; `--paths` ajoute la liste des
+fichiers non rendus, à garder local. Code 0 si aucun crash ni timeout, 1 sinon.
+`probe` écrit une ligne `open=… pages=… render=… skipped=…`, code 0 même si le document
+est invalide. Mesure sur un corpus externe : voir `docs/QUALITY.md`.
 
 Benchmarks, autres tests différentiels et vérifications de conformité seront ajoutés avec
 leurs fixtures et outils. Ne pas inventer d'option à `castle-pdf` : relire son `--help`.

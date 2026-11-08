@@ -4,13 +4,17 @@
 //! cross-reference entries, trailer keys) and the pages (ids, boxes, rotation).
 //! It never prints document content: no strings, streams or resource values,
 //! and only standard trailer key names. `castle-pdf render` writes one page to
-//! a new PPM image. Exit codes: 0 success, 1 the document cannot be read or
-//! rendered, or the image cannot be created, 2 usage error, 3 the report could
-//! not be written.
+//! a new PPM image. `castle-pdf survey` measures how the engine handles every
+//! file of a directory, each probed in a child process (`castle-pdf probe`),
+//! and reports aggregated counts only. Exit codes: 0 success, 1 the document
+//! cannot be read or rendered, or the image cannot be created, or a surveyed
+//! file crashed or timed out, 2 usage error, 3 the report could not be written.
 
 mod inspect;
 mod open;
+mod probe;
 mod render;
+mod survey;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -23,14 +27,24 @@ Usage:
   castle-pdf render <file> <page> <output.ppm> [--scale <factor>]
                               Render a page (numbered from 1) to a new PPM
                               image; scale 1 is 72 pixels per inch
+  castle-pdf survey <directory> [--timeout <seconds>] [--jobs <n>] [--paths]
+                              Open every file under the directory and render
+                              its first page, each in a child process killed
+                              after the timeout (default 30 s, 4 jobs); report
+                              aggregated counts, and with --paths the files
+                              not rendered
+  castle-pdf probe <file>     One survey step: print a line describing how the
+                              file opens and renders
   castle-pdf --help, -h       Show this help
   castle-pdf --version        Show the version
 
 The report lists structure only, never document content. `render` never
 overwrites a file and lists what the page uses but it cannot render yet.
-Exit codes: 0 success, 1 the document cannot be read or rendered, or the image
-cannot be created (the error says why), 2 usage error, 3 the report could not
-be written (for example a closed pipe).
+`survey` reports never hold document content, and file names only with
+--paths. Exit codes: 0 success, 1 the document cannot be read or rendered, or
+the image cannot be created (the error says why), or a surveyed file crashed or
+timed out, 2 usage error, 3 the report could not be written (for example a
+closed pipe).
 ";
 
 /// Exit code when writing the report or a message fails.
@@ -57,6 +71,11 @@ fn run(args: &[std::ffi::OsString], out: &mut dyn Write, err: &mut dyn Write) ->
             Some(request) => render::run(&request, out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),
         },
+        [command, rest @ ..] if *command == "survey" => match survey::Request::parse(rest) {
+            Some(request) => survey::run(&request, out, err),
+            None => err.write_all(USAGE.as_bytes()).map(|()| 2),
+        },
+        [command, path] if *command == "probe" => probe::run(path.as_ref(), out),
         _ => err.write_all(USAGE.as_bytes()).map(|()| 2),
     };
     // A closed output (such as a pipe to `head`) is not a document error: it
@@ -138,6 +157,17 @@ mod tests {
             &["render", "a", "1", "b", "--scale"],
             &["render", "a", "1", "b", "--zoom", "2"],
             &["render", "a", "1", "b", "--scale", "big"],
+            &["survey"],
+            &["survey", "d", "--timeout"],
+            &["survey", "d", "--timeout", "0"],
+            &["survey", "d", "--timeout", "-1"],
+            &["survey", "d", "--timeout", "NaN"],
+            &["survey", "d", "--timeout", "3601"],
+            &["survey", "d", "--jobs", "0"],
+            &["survey", "d", "--jobs", "65"],
+            &["survey", "d", "--paths", "x"],
+            &["probe"],
+            &["probe", "a", "b"],
         ] {
             let (code, out, err) = call(args);
             assert_eq!(code, 2, "{args:?}");

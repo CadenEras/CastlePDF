@@ -9,6 +9,11 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `castle-pdf survey <répertoire>` : ouvre chaque fichier et rend sa première page, chacun
+  dans un processus enfant (`castle-pdf probe`) tué après un délai ; rapport agrégé
+  (taux d'ouverture et de rendu, catégories d'erreur, capacités non rendues, crashs,
+  timeouts, temps), sans contenu ni nom de fichier sauf `--paths`. Code 1 si un fichier
+  fait planter ou bloquer le moteur. Première mesure sur SafeDocs dans `docs/QUALITY.md`.
 - ADR-0003 accepté : ordre de P2 (Flate et flux xref avant l'interpréteur),
   `vello_cpu`, `miniz_oxide`, tuiles 256 px en octets bruts, oracles de rendu, ARM64.
 - `pdf-syntax` : filtre `FlateDecode` (ISO 32000-2, 7.4.4) via `miniz_oxide` 0.9.1
@@ -53,6 +58,11 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   Divergence connue : DeviceCMYK, cyan (0, 255, 255) chez CastlePDF selon ISO 10.4.2.4
   contre (0, 173, 239) chez pdftoppm 22.02 ; à revoir avec la gestion de couleur.
 - `pdf-document` : `StructureErrorKind::InvalidContents` pour un `/Contents` invalide.
+
+### Corrigé
+
+- `pdf-render` : `/Contents` référençant un tableau indirect de flux (ISO 32000-2,
+  7.7.3.3) était refusé avec `InvalidContents` ; trouvé par la mesure sur corpus réel.
 
 ## [0.1.0-alpha.2] — 2026-11-07
 
