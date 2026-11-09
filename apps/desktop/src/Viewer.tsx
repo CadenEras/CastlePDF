@@ -7,7 +7,9 @@ import {
   pageSize,
   renderTile,
   skippedLabels,
+  worseRepair,
   type DocumentInfo,
+  type RepairState,
 } from "./ipc";
 
 /** Tile requests in flight at once: keeps the shell queue busy, not full. */
@@ -27,11 +29,21 @@ export const MAX_CANVAS_PIXELS = 16 * 1024 * 1024;
 const MEASURE_SCALE = 0.25;
 
 type RenderState =
-  | { kind: "loading"; done: number; total: number }
-  | { kind: "ready"; skipped: number }
+  | { kind: "loading"; done: number; total: number; repair: RepairState }
+  | { kind: "ready"; skipped: number; repair: RepairState }
   | { kind: "error"; message: string };
 
-const PREPARING: RenderState = { kind: "loading", done: 0, total: 0 };
+const PREPARING: RenderState = { kind: "loading", done: 0, total: 0, repair: "none" };
+
+/** What the reader must know about a repaired document. */
+const REPAIR_NOTES: Record<Exclude<RepairState, "none">, string> = {
+  repaired:
+    "Document réparé : sa structure était endommagée et a été reconstruite. " +
+    "L'affichage peut différer d'autres lecteurs.",
+  incomplete:
+    "Document réparé partiellement : sa structure était endommagée et des éléments " +
+    "peuvent manquer.",
+};
 
 interface Rect {
   x: number;
@@ -157,7 +169,8 @@ export function Viewer({ info }: { info: DocumentInfo }) {
       const tiles = tileGrid(size.width, size.height);
       let done = 0;
       let skipped = 0;
-      setState({ kind: "loading", done, total: tiles.length });
+      let repair: RepairState = "none";
+      setState({ kind: "loading", done, total: tiles.length, repair });
       let next = 0;
       const worker = async () => {
         while (active() && next < tiles.length) {
@@ -180,13 +193,14 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           }
           context.putImageData(new ImageData(tile.pixels, tile.width, tile.height), rect.x, rect.y);
           skipped |= tile.skipped;
+          repair = worseRepair(repair, tile.repair);
           done += 1;
-          setState({ kind: "loading", done, total: tiles.length });
+          setState({ kind: "loading", done, total: tiles.length, repair });
         }
       };
       await Promise.all(Array.from({ length: CONCURRENCY }, worker));
       if (active()) {
-        setState({ kind: "ready", skipped });
+        setState({ kind: "ready", skipped, repair });
       }
     };
 
@@ -201,6 +215,9 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   }, [document, page, width, view]);
 
   const missing = state.kind === "ready" ? skippedLabels(state.skipped) : [];
+  // Shown as soon as the document is known to be repaired, or when a tile
+  // reveals it (an object found by a scan while rendering).
+  const repair = worseRepair(info.repair, state.kind === "error" ? "none" : state.repair);
 
   return (
     <div className="viewer">
@@ -232,8 +249,13 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           </span>
         )}
       </div>
+      {repair !== "none" && (
+        <p className="repaired" role="note" aria-label="Document réparé">
+          {REPAIR_NOTES[repair]}
+        </p>
+      )}
       {missing.length > 0 && (
-        <p className="partial" role="note">
+        <p className="partial" role="note" aria-label="Rendu partiel">
           Rendu partiel : non affichés pour l'instant — {missing.join(", ")}.
         </p>
       )}

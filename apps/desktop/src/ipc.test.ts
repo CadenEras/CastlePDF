@@ -13,12 +13,19 @@ import {
   skippedLabels,
 } from "./ipc";
 
-function tileBuffer(width: number, height: number, skipped: number, pixels: number): ArrayBuffer {
+function tileBuffer(
+  width: number,
+  height: number,
+  skipped: number,
+  pixels: number,
+  repair = 0,
+): ArrayBuffer {
   const buffer = new ArrayBuffer(TILE_HEADER + pixels);
   const view = new DataView(buffer);
   view.setUint16(0, width, true);
   view.setUint16(2, height, true);
   view.setUint16(4, skipped, true);
+  view.setUint8(6, repair);
   return buffer;
 }
 
@@ -72,7 +79,8 @@ describe("documents and tiles", () => {
   it("accepts tiles whose size matches the request, without copying", () => {
     const buffer = tileBuffer(2, 3, 1, 2 * 3 * 4);
     const tile = parseTile(buffer, 2, 3);
-    expect([tile.width, tile.height, tile.skipped]).toEqual([2, 3, 1]);
+    expect([tile.width, tile.height, tile.skipped, tile.repair]).toEqual([2, 3, 1, "none"]);
+    expect(parseTile(tileBuffer(2, 3, 0, 24, 2), 2, 3).repair).toBe("incomplete");
     expect(tile.pixels.length).toBe(24);
     expect(tile.pixels.buffer).toBe(buffer);
   });
@@ -82,6 +90,7 @@ describe("documents and tiles", () => {
       [tileBuffer(2, 3, 0, 24), 3, 2],
       [tileBuffer(2, 3, 0, 23), 2, 3],
       [tileBuffer(2, 3, 0, 25), 2, 3],
+      [tileBuffer(2, 3, 0, 24, 3), 2, 3],
       [new ArrayBuffer(4), 2, 3],
       ["tile", 2, 3],
       [new Uint8Array(32), 2, 3],
@@ -92,13 +101,21 @@ describe("documents and tiles", () => {
 
   it("validates document events and names their failures", () => {
     expect(
-      parseDocumentEvent({ sequence: 3, kind: "opened", document: 1, pages: 2, name: "a.pdf" }),
+      parseDocumentEvent({
+        sequence: 3,
+        kind: "opened",
+        document: 1,
+        pages: 2,
+        name: "a.pdf",
+        repair: "repaired",
+      }),
     ).toEqual({
       sequence: 3,
       kind: "opened",
       document: 1,
       pages: 2,
       name: "a.pdf",
+      repair: "repaired",
     });
     expect(
       parseDocumentEvent({
@@ -117,7 +134,9 @@ describe("documents and tiles", () => {
       null,
       { sequence: 1, kind: "opened", document: -1, pages: 2, name: "a.pdf" },
       { sequence: 1, kind: "opened", document: 1, pages: 2 ** 32, name: "a.pdf" },
-      { sequence: 1, kind: "opened", document: 1, pages: 2, name: 4 },
+      { sequence: 1, kind: "opened", document: 1, pages: 2, name: 4, repair: "none" },
+      { sequence: 1, kind: "opened", document: 1, pages: 2, name: "a.pdf" },
+      { sequence: 1, kind: "opened", document: 1, pages: 2, name: "a.pdf", repair: "fixed" },
       { sequence: 1, kind: "closed", name: "a.pdf" },
       { kind: "opening", name: "a.pdf" },
       { sequence: -1, kind: "opening", name: "a.pdf" },

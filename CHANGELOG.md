@@ -9,6 +9,12 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Application desktop : **« Document réparé »**. Le protocole du worker passe en v3
+  (`PROTOCOL_VERSION` 3) : `DocumentOpened` et chaque `Tile` disent si la structure du
+  document a été reconstruite (aucune, réparée, réparée avec des éléments peut-être
+  manquants). Le shell le transmet (`repair` de l'événement `document`, octet 6 de
+  l'en-tête des tuiles) et l'UI affiche une note dès l'ouverture, ou dès qu'une tuile
+  révèle un objet retrouvé par balayage pendant le rendu.
 - `pdf-syntax` : **reconstruction de l'index des objets** (ADR-0004). Quand la lecture
   stricte échoue sur la structure (`startxref` ou `%%EOF` absent, section xref ou trailer
   invalide, cycle `/Prev`, fichier tronqué), un balayage linéaire retrouve les en-têtes

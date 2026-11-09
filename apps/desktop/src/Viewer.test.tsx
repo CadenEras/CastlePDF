@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PageSize, Tile, TileRequest } from "./ipc";
+import type { PageSize, RepairState, Tile, TileRequest } from "./ipc";
 import { MAX_CANVAS_PIXELS, fitScale, tileGrid, Viewer } from "./Viewer";
 
 // Mocks the shell commands only: this does not prove the Tauri binary works.
@@ -29,11 +29,12 @@ class FakeImageData {
   ) {}
 }
 
-function tileFor(request: TileRequest, skipped = 0): Tile {
+function tileFor(request: TileRequest, skipped = 0, repair: RepairState = "none"): Tile {
   return {
     width: request.width,
     height: request.height,
     skipped,
+    repair,
     pixels: new Uint8ClampedArray(request.width * request.height * 4),
   };
 }
@@ -51,7 +52,7 @@ function status(): string {
   return screen.getByRole("status").textContent;
 }
 
-const INFO = { document: 3, pages: 2, name: "plan.pdf" };
+const INFO = { document: 3, pages: 2, name: "plan.pdf", repair: "none" } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,8 +130,31 @@ describe("Viewer", () => {
     );
     render(<Viewer info={INFO} />);
     await settle();
-    expect(screen.getByRole("note").textContent).toBe(
+    expect(screen.getByRole("note", { name: "Rendu partiel" }).textContent).toBe(
       "Rendu partiel : non affichés pour l'instant — texte, images et formulaires (XObjects).",
+    );
+  });
+
+  it("says when the document was repaired", async () => {
+    render(<Viewer info={{ ...INFO, repair: "repaired" }} />);
+    // Known from the opening: shown before any tile arrives.
+    expect(screen.getByRole("note", { name: "Document réparé" }).textContent).toBe(
+      "Document réparé : sa structure était endommagée et a été reconstruite. " +
+        "L'affichage peut différer d'autres lecteurs.",
+    );
+    await settle();
+    expect(screen.queryByRole("note", { name: "Rendu partiel" })).toBeNull();
+  });
+
+  it("learns from a tile that objects were found by a repair", async () => {
+    ipc.renderTile.mockImplementation((request) =>
+      Promise.resolve(tileFor(request, 0, request.x === 256 ? "incomplete" : "none")),
+    );
+    render(<Viewer info={INFO} />);
+    expect(screen.queryByRole("note", { name: "Document réparé" })).toBeNull();
+    await settle();
+    expect(screen.getByRole("note", { name: "Document réparé" }).textContent).toContain(
+      "des éléments peuvent manquer",
     );
   });
 

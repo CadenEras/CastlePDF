@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use pdf_worker::client::WorkerProcess;
 use pdf_worker::documents::MAX_DOCUMENTS;
-use pdf_worker::protocol::{ErrorCode, Request, Response, Skipped, TileRect};
+use pdf_worker::protocol::{ErrorCode, Repair, Request, Response, Skipped, TileRect};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -48,7 +48,8 @@ fn a_page_is_rendered_tile_by_tile() {
         Response::DocumentOpened {
             id: 1,
             document: 1,
-            pages: 3
+            pages: 3,
+            repair: Repair::None,
         }
     );
     assert_eq!(
@@ -95,9 +96,13 @@ fn a_page_is_rendered_tile_by_tile() {
                 width: w,
                 height: h,
                 skipped,
+                repair,
                 pixels,
             } => {
-                assert_eq!((got, w, h, skipped), (id, width, height, Skipped(0)));
+                assert_eq!(
+                    (got, w, h, skipped, repair),
+                    (id, width, height, Skipped(0), Repair::None)
+                );
                 assert_eq!(pixels.len(), usize::from(width) * usize::from(height) * 4);
             }
             other => panic!("tile expected, got {other:?}"),
@@ -228,5 +233,63 @@ fn measure_tile_round_trip() {
         times[times.len() / 2],
         times[0],
         times[times.len() - 1]
+    );
+}
+
+#[test]
+fn a_repaired_document_says_so() {
+    let worker = spawn();
+    let damaged = |name: &str| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/corpus/damaged")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    };
+    // Index rebuilt when opening (no trailer), then an object found by a
+    // scan while the page tree is read (entries off their objects).
+    for (id, name) in [(1, "no-trailer.pdf"), (2, "shifted-objects.pdf")] {
+        let response = call(
+            &worker,
+            &Request::OpenDocument {
+                id,
+                path: damaged(name),
+            },
+        );
+        assert!(
+            matches!(
+                response,
+                Response::DocumentOpened {
+                    repair: Repair::Repaired,
+                    ..
+                }
+            ),
+            "{name}: {response:?}"
+        );
+    }
+    let tile = call(
+        &worker,
+        &Request::RenderTile {
+            id: 3,
+            document: 1,
+            page: 0,
+            scale: 1.0,
+            rect: TileRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+        },
+    );
+    assert!(
+        matches!(
+            tile,
+            Response::Tile {
+                repair: Repair::Repaired,
+                ..
+            }
+        ),
+        "{tile:?}"
     );
 }

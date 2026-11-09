@@ -13,7 +13,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use pdf_worker::client::{ClientError, WorkerProcess};
-use pdf_worker::protocol::{ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Request, Response, TileRect};
+use pdf_worker::protocol::{
+    ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response, TileRect,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{TileCache, TileKey};
@@ -26,8 +28,9 @@ pub const MAX_JOB_MS: u64 = 60_000;
 /// Largest scale accepted from the UI: 64 device pixels per point.
 pub const MAX_SCALE: f64 = 64.0;
 /// Bytes of the header that precedes the pixels of a tile sent to the UI:
-/// width, height, skipped capabilities (`u16` little-endian each), then
-/// two zero bytes, so that the RGBA pixels start at an aligned offset.
+/// width, height, skipped capabilities (`u16` little-endian each), the
+/// repair state (`u8`: 0 none, 1 repaired, 2 incomplete, as `Repair`), then
+/// one zero byte, so that the RGBA pixels start at an aligned offset.
 pub const TILE_HEADER: usize = 8;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -82,6 +85,27 @@ pub struct DocumentInfo {
     pub pages: u32,
     /// File name only, never the full path.
     pub name: String,
+    /// Whether its structure was reconstructed when opening (ADR-0004).
+    pub repair: RepairState,
+}
+
+/// `pdf_worker::protocol::Repair`, as named to the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepairState {
+    None,
+    Repaired,
+    Incomplete,
+}
+
+impl From<Repair> for RepairState {
+    fn from(repair: Repair) -> Self {
+        match repair {
+            Repair::None => Self::None,
+            Repair::Repaired => Self::Repaired,
+            Repair::Incomplete => Self::Incomplete,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -454,12 +478,12 @@ fn failed(job_id: u64, reason: &str) -> JobEvent {
 }
 
 /// Header and pixels of a tile, as sent to the UI.
-fn tile_bytes(width: u16, height: u16, skipped: u16, pixels: &[u8]) -> Vec<u8> {
+fn tile_bytes(width: u16, height: u16, skipped: u16, repair: Repair, pixels: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(TILE_HEADER + pixels.len());
     bytes.extend_from_slice(&width.to_le_bytes());
     bytes.extend_from_slice(&height.to_le_bytes());
     bytes.extend_from_slice(&skipped.to_le_bytes());
-    bytes.extend_from_slice(&[0, 0]);
+    bytes.extend_from_slice(&[repair as u8, 0]);
     bytes.extend_from_slice(pixels);
     bytes
 }
@@ -674,7 +698,10 @@ impl Manager<'_> {
             (
                 Job::Open { name, reply, .. },
                 Response::DocumentOpened {
-                    document, pages, ..
+                    document,
+                    pages,
+                    repair,
+                    ..
                 },
             ) => {
                 // Answered first: if nobody waits any more (the opening timed
@@ -685,6 +712,7 @@ impl Manager<'_> {
                         document,
                         pages,
                         name,
+                        repair: repair.into(),
                     }))
                     .is_ok();
                 let closed = if answered {
@@ -710,6 +738,7 @@ impl Manager<'_> {
                     width,
                     height,
                     skipped,
+                    repair,
                     pixels,
                     ..
                 },
@@ -718,7 +747,7 @@ impl Manager<'_> {
                     let _ = reply.send(Err(CommandError::Failed { reason: "internal" }));
                     return;
                 }
-                let tile = Arc::new(tile_bytes(width, height, skipped.0, &pixels));
+                let tile = Arc::new(tile_bytes(width, height, skipped.0, repair, &pixels));
                 lock(&self.shared.cache).insert(key, Arc::clone(&tile));
                 let _ = reply.send(Ok(tile));
             }
@@ -1018,7 +1047,8 @@ mod tests {
             DocumentInfo {
                 document: 1,
                 pages: 3,
-                name: "shapes.pdf".to_owned()
+                name: "shapes.pdf".to_owned(),
+                repair: RepairState::None,
             }
         );
         assert_eq!(
@@ -1102,6 +1132,27 @@ mod tests {
             })
         );
         handle.stop();
+    }
+
+    #[test]
+    fn a_repaired_document_is_announced_and_marked_in_its_tiles() {
+        let (handle, _events) = start();
+        let damaged = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/corpus/damaged/no-trailer.pdf");
+        let info = handle.open(&damaged).wait(TIMEOUT).unwrap();
+        assert_eq!(info.repair, RepairState::Repaired);
+        assert_eq!(handle.begin_view(), Ok(1));
+        let tile = handle
+            .tile(TileRequest {
+                scale: 0.1,
+                width: 16,
+                height: 16,
+                ..tile_request(info.document, 0, 1)
+            })
+            .wait(TIMEOUT)
+            .unwrap();
+        // Bytes 6 and 7 of the header: repair state (1, repaired), padding.
+        assert_eq!(tile.get(6..8), Some(&[1, 0][..]));
     }
 
     #[test]
@@ -1230,10 +1281,11 @@ mod tests {
             serde_json::to_string(&DocumentInfo {
                 document: 1,
                 pages: 2,
-                name: "a.pdf".to_owned()
+                name: "a.pdf".to_owned(),
+                repair: RepairState::Incomplete,
             })
             .unwrap(),
-            r#"{"document":1,"pages":2,"name":"a.pdf"}"#
+            r#"{"document":1,"pages":2,"name":"a.pdf","repair":"incomplete"}"#
         );
         let request: TileRequest = serde_json::from_str(
             r#"{"document":1,"page":0,"scale":1.5,"x":0,"y":256,"width":256,"height":10,"generation":4}"#,

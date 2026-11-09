@@ -198,16 +198,18 @@ fn job_of(request: Request, documents: &Shared<Documents>) -> Option<(u64, Work)
                 let opened = documents::open(&path, budget).and_then(|document| {
                     let pages = u32::try_from(document.page_count())
                         .map_err(|_| ErrorCode::LimitExceeded)?;
+                    let repair = documents::repair(&document);
                     let stored = lock(&documents).insert(document);
                     stored
-                        .map(|document| (document, pages))
+                        .map(|document| (document, pages, repair))
                         .ok_or(ErrorCode::TooManyDocuments)
                 });
                 match opened {
-                    Ok((document, pages)) => Response::DocumentOpened {
+                    Ok((document, pages, repair)) => Response::DocumentOpened {
                         id,
                         document,
                         pages,
+                        repair,
                     },
                     Err(code) => failed(id, code),
                 }

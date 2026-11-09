@@ -11,5 +11,6 @@ pub mod protocol;
 pub mod server;
 
 /// Incremented on any incompatible change of the framing or messages.
-/// Version 2: documents, page sizes and tiles.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// Version 2: documents, page sizes and tiles. Version 3: whether the
+/// document structure was repaired (`Repair`, ADR-0004).
+pub const PROTOCOL_VERSION: u16 = 3;

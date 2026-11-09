@@ -12,7 +12,9 @@ use pdf_document::Document;
 use pdf_render::{PixelRect, RenderOptions, Unsupported, page_size, render_area};
 use pdf_syntax::{Budget, MemorySource};
 
-use crate::protocol::{ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Response, Skipped, TileRect};
+use crate::protocol::{
+    ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Response, Skipped, TileRect,
+};
 
 /// Documents open at once; each holds its whole file in memory (ADR-0002).
 pub const MAX_DOCUMENTS: usize = 4;
@@ -111,8 +113,18 @@ pub fn tile(
         width: rect.width,
         height: rect.height,
         skipped: Skipped(skipped),
+        repair: repair(document),
         pixels: rendering.bitmap.into_data(),
     })
+}
+
+/// Whether the structure of `document` was reconstructed, so far.
+pub fn repair(document: &Shared) -> Repair {
+    match document.file().repair() {
+        None => Repair::None,
+        Some(report) if report.is_incomplete() => Repair::Incomplete,
+        Some(_) => Repair::Repaired,
+    }
 }
 
 fn page_of(document: &Shared, page: u32) -> Result<&pdf_document::Page, ErrorCode> {
@@ -255,12 +267,16 @@ mod tests {
             width,
             height,
             skipped,
+            repair,
             pixels,
         }) = tile(&document, 0, 2.0, rect, 8, &mut budget())
         else {
             panic!("tile expected");
         };
-        assert_eq!((id, width, height, skipped), (8, 144, 256, Skipped(0)));
+        assert_eq!(
+            (id, width, height, skipped, repair),
+            (8, 144, 256, Skipped(0), Repair::None)
+        );
         assert_eq!(pixels.len(), 144 * 256 * 4);
         for (rect, code) in [
             (TileRect { width: 0, ..rect }, ErrorCode::InvalidRequest),
