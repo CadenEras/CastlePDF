@@ -15,6 +15,32 @@ pas un booléen « compatible PDF 2.0 ».
 | P6 — fonctions avancées séparées | OCR, édition de texte existant, chiffrement, signatures, caviardage | Étude et tests propres à chaque fonction ; aucune promesse de sécurité avant validation dédiée |
 | Stabilisation — diffusion | Packaging, signatures OS, mises à jour, guide utilisateur | Release depuis tag testé, corpus accepté, mesures et limites publiques, récupération après erreur |
 
+## P2 en cours
+
+Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objets ;
+3. interpréteur minimal ; 4. tuiles, cache et IPC jusqu'à la première page (fait) ;
+**4 bis. reconstruction de la xref (ADR-0004)** ; 5. polices et images.
+
+### Limites ouvertes à lever avant la fin de P2
+
+Constatées à la tranche 4 (`docs/perf/2026-11-08-p2-first-page.md`). Chacune est soit
+levée par une tranche, soit reportée explicitement avec sa raison ; aucune ne disparaît
+de cette liste sans preuve.
+
+| Limite | Pourquoi elle compte | Sortie attendue |
+| --- | --- | --- |
+| Temps côté WebView non mesuré (`ipc::Response` → `ArrayBuffer` → `putImageData`) | Le transport d'ADR-0003 n'est ni confirmé ni infirmé | Mesure dans l'application réelle, médiane et dispersion, sur les trois OS |
+| Mémoire application + worker + WebView non mesurée pendant la navigation | Critère de sortie de P2 (« mémoire/worker contrôlés ») | `scripts/measure-memory.mjs` étendu à l'ouverture et au parcours de pages |
+| Démarrage du worker mesuré une seule fois (491 ms) | Une mesure n'est pas une médiane | Démarrage à froid, plusieurs exécutions |
+| Worker planté non relancé | L'utilisateur doit redémarrer l'application | Relance bornée par le shell, document rouvert, erreur explicite au-delà |
+| Glisser-déposer non testé automatiquement | Seul chemin d'ouverture depuis l'UI | Test natif du shell ou procédure manuelle consignée par OS |
+| Affichage non vérifié sur macOS et Linux | La CI compile et teste, elle ne regarde pas l'écran | Capture vérifiée sur chaque OS |
+| Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
+| Navigation page par page, pas de défilement continu | « UI réactive » et virtualisation des pages | Défilement virtualisé, tuiles invisibles annulées |
+| Chaque tuile réinterprète tout le contenu de la page | Coût multiplié par le nombre de tuiles sur une page lourde | Mesure sur pages lourdes, puis cache de la liste d'affichage si nécessaire |
+| Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
+| Pas de jobs CI ARM64 ni de build macOS x86_64 | Annoncés par ADR-0003 | Jobs ajoutés ou report motivé |
+
 ## Première tranche concrète pour Claude
 
 Lire ce kit puis proposer l'ADR P0 avec les versions vérifiées à ce moment-là.

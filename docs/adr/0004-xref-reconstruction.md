@@ -1,6 +1,6 @@
 # ADR-0004 — Reconstruction de la table des références croisées
 
-Statut : proposé
+Statut : accepté le 2026-11-09
 Date : 2026-11-08
 Responsable : Mélissa Gries (maintenance du dépôt)
 
@@ -50,7 +50,7 @@ Contraintes :
    vers le bon en-tête (`ObjectIdMismatch` en lecture paresseuse) bascule vers l'index
    reconstruit, construit une seule fois.
 
-## Décision (proposée)
+## Décision
 
 **Option 4**, sous la forme d'une capacité distincte, visible et testée :
 
@@ -93,5 +93,5 @@ Contraintes :
 - **Retour arrière :** la réparation est derrière l'option `strict` et un module séparé
   de `pdf-syntax` (`repair.rs`). Désactiver le déclenchement rétablit la lecture
   d'ADR-0002 sans toucher au reste.
-- **Une fois accepté :** ADR-0002 est amendé sur la ligne « Fichiers abîmés », et
+- **Acceptation (2026-11-09) :** ADR-0002 est amendé sur la ligne « Fichiers abîmés », et
   `docs/ROADMAP.md` place la réparation juste après la tranche 4 de P2.
