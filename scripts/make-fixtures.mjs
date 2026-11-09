@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'tests', 'corpus', 'public');
+const damagedDir = path.join(root, 'tests', 'corpus', 'damaged');
 
 // Builds a classic-xref PDF from object bodies (object n = bodies[n - 1]).
 // Offsets are computed on the exact bytes, so the xref table is valid.
@@ -296,14 +297,99 @@ export const fixtures = {
     6),
 };
 
+// Damage helpers for the reconstruction fixtures (ADR-0004).
+const latin1 = buffer => buffer.toString('latin1');
+
+// Cuts the file at its last `startxref`.
+function withoutStartxref(buffer) {
+  return buffer.subarray(0, latin1(buffer).lastIndexOf('startxref'));
+}
+
+// Cuts the file at the first occurrence of `marker`.
+function cutAt(buffer, marker) {
+  const at = latin1(buffer).indexOf(marker);
+  if (at < 0) throw new Error(`${marker} not found`);
+  return buffer.subarray(0, at);
+}
+
+// Replaces the first occurrence of `from` (same bytes otherwise).
+function replaceOnce(buffer, from, to) {
+  const text = latin1(buffer);
+  if (!text.includes(from)) throw new Error(`${from} not found`);
+  return Buffer.from(text.replace(from, to), 'latin1');
+}
+
+// Sets the value of the last `startxref`.
+function setStartxref(buffer, offset) {
+  const text = latin1(buffer);
+  const at = text.lastIndexOf('startxref\n');
+  return Buffer.from(text.slice(0, at)
+    + text.slice(at).replace(/startxref\n\d+/, `startxref\n${offset}`), 'latin1');
+}
+
+const startxrefOf = buffer => Number(/startxref\n(\d+)\n%%EOF\n$/.exec(latin1(buffer))[1]);
+
+// Files whose cross-reference data is damaged and that a reader repairs by
+// scanning (tests/corpus/damaged, ADR-0004); `manifest.json` there gives
+// the expected result of each.
+export const damaged = (() => {
+  const minimal = fixtures['minimal.pdf'];
+  // The header followed by 3 more bytes: every object is 3 bytes past the
+  // offset its entry gives, the table too (startxref is corrected).
+  const shifted = setStartxref(
+    replaceOnce(minimal, '%PDF-1.4\n', '%PDF-1.4\n%x\n'), startxrefOf(minimal) + 3);
+  const [catalog, pages, page, , font] = onePage('');
+  const decoy = 'BT /F1 24 Tf 72 770 Td (9 0 obj) Tj ET';
+  return {
+    // No `startxref` and no `%%EOF`: trailer found by the scan.
+    'no-startxref.pdf': withoutStartxref(minimal),
+    // `startxref` one byte before `xref`.
+    'wrong-startxref.pdf': setStartxref(minimal, startxrefOf(minimal) - 1),
+    // Entries 3 bytes short: the file opens, objects are found by a scan.
+    'shifted-objects.pdf': shifted,
+    // Cut inside the font object: no table, no trailer, root = catalog.
+    'truncated.pdf': cutAt(minimal, '/BaseFont'),
+    // Cut before the table: every object intact, no trailer.
+    'no-trailer.pdf': cutAt(minimal, 'xref\n'),
+    // incremental.pdf without its last startxref: object 4 is present twice,
+    // the later (updated) one wins.
+    'duplicate-object.pdf': withoutStartxref(fixtures['incremental.pdf']),
+    // Content stream with `9 0 obj` in its data (direct /Length); object 6
+    // holds `10 0 obj` with an indirect /Length (skipped up to endstream).
+    'header-in-stream.pdf': withoutStartxref(buildPdf([
+      catalog, pages, page, stream(decoy), font,
+      '<< /Length 7 0 R >>\nstream\n10 0 obj (decoy) endobj\nendstream',
+      String(Buffer.byteLength('10 0 obj (decoy) endobj', 'latin1')),
+    ])),
+    // objstm.pdf with startxref pointing at the header: the object stream
+    // and the cross-reference stream dictionary are found by the scan.
+    'objstm-unindexed.pdf': setStartxref(fixtures['objstm.pdf'], 0),
+    // A trailer with /Encrypt and no startxref: refused, never repaired.
+    'encrypted.pdf': withoutStartxref(replaceOnce(
+      buildPdf([...onePage('CastlePDF encrypted'), '<< /Filter /Standard /V 1 /R 2 >>']),
+      '/Root 1 0 R', '/Root 1 0 R /Encrypt 6 0 R')),
+    // The same kind of file cut before its table: the /Encrypt key is lost
+    // with the trailer, the encryption dictionary (object 6) still refuses it.
+    'encrypted-truncated.pdf': cutAt(
+      buildPdf([...onePage('CastlePDF encrypted'),
+        '<< /Filter /Standard /V 1 /R 2 /O <00> /U <00> /P -4 >>']),
+      'xref\n'),
+  };
+})();
+
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const check = process.argv.includes('--check');
   let failed = false;
   mkdirSync(outDir, { recursive: true });
-  for (const [name, bytes] of Object.entries(fixtures)) {
-    const file = path.join(outDir, name);
+  mkdirSync(damagedDir, { recursive: true });
+  const all = [
+    ...Object.entries(fixtures).map(([name, bytes]) => [outDir, name, bytes]),
+    ...Object.entries(damaged).map(([name, bytes]) => [damagedDir, name, bytes]),
+  ];
+  for (const [dir, name, bytes] of all) {
+    const file = path.join(dir, name);
     if (check) {
       let current = null;
       try { current = readFileSync(file); } catch { /* reported below */ }

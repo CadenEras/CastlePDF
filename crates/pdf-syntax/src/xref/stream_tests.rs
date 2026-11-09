@@ -110,7 +110,7 @@ fn budget() -> Budget {
 
 fn open(bytes: &[u8]) -> Result<PdfFile<MemorySource>, Error> {
     let source = MemorySource::from_vec(bytes.to_vec(), &ResourceLimits::default())?;
-    PdfFile::open(source, &mut budget())
+    PdfFile::open_strict(source, &mut budget())
 }
 
 fn kind(result: Result<PdfFile<MemorySource>, Error>) -> Option<MalformedKind> {

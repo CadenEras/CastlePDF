@@ -9,7 +9,8 @@ use std::path::Path;
 
 use pdf_document::{Document, Rectangle};
 use pdf_syntax::{
-    Budget, CancellationToken, Object, PdfFile, ResourceLimits, SectionKind, Source, XrefEntry,
+    Budget, CancellationToken, Object, PdfFile, RepairTrailer, ResourceLimits, SectionKind, Source,
+    XrefEntry,
 };
 
 /// Trailer keys of ISO 32000-2 (table 15), and the keys of a cross-reference
@@ -52,6 +53,7 @@ pub fn run(path: &Path, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<
     match Document::from_file(file, &mut budget) {
         Ok(document) => {
             pages_report(&document, out)?;
+            repair_report(document.file(), out)?;
             Ok(0)
         }
         Err(e) => {
@@ -59,6 +61,32 @@ pub fn run(path: &Path, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<
             Ok(1)
         }
     }
+}
+
+/// Written last: reading the page tree may itself find an object by a scan.
+fn repair_report<S: Source>(file: &PdfFile<S>, out: &mut dyn Write) -> io::Result<()> {
+    let Some(repair) = file.repair() else {
+        return writeln!(out, "repair: none");
+    };
+    let trailer = match repair.trailer {
+        RepairTrailer::Found => "trailer found by scan",
+        RepairTrailer::Catalog => "no trailer, root is the last catalog",
+        RepairTrailer::Original => "original trailer, objects relocated",
+        _ => "other",
+    };
+    write!(
+        out,
+        "repair: {} objects indexed by scan, {} found more than once; {trailer}; strict error: {}",
+        repair.objects, repair.conflicts, repair.cause
+    )?;
+    if repair.is_incomplete() {
+        write!(
+            out,
+            "; objects may be missing: {} unreadable object streams, {} streams without endstream",
+            repair.skipped_object_streams, repair.unterminated_streams
+        )?;
+    }
+    writeln!(out)
 }
 
 fn file_report<S: Source>(file: &PdfFile<S>, out: &mut dyn Write) -> io::Result<()> {

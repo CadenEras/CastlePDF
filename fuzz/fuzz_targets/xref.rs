@@ -1,4 +1,5 @@
-//! Opens arbitrary bytes as a PDF file, then resolves every in-use and
+//! Opens arbitrary bytes as a PDF file, strictly (no repair: the `repair`
+//! target covers it), then resolves every in-use and
 //! compressed entry (object streams included).
 //! Properties: no panic, overflow or unbounded work; every located stream lies
 //! inside the input; resolving never recurses through /Length chains.
@@ -23,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(source) = MemorySource::from_vec(data.to_vec(), &limits) else {
         return;
     };
-    let Ok(file) = PdfFile::open(source, &mut budget()) else {
+    let Ok(file) = PdfFile::open_strict(source, &mut budget()) else {
         return;
     };
     assert!(file.root().is_some());

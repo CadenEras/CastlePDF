@@ -5,26 +5,39 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildPdf, fixtures, sha256 } from '../make-fixtures.mjs';
+import { buildPdf, damaged, fixtures, sha256 } from '../make-fixtures.mjs';
 
-const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..',
-  'tests', 'corpus', 'public');
-const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
-
-test('every generated fixture is committed unchanged and listed', () => {
-  const listed = new Map(manifest.fixtures.map(f => [f.file, f]));
-  for (const [name, bytes] of Object.entries(fixtures)) {
-    assert.ok(readFileSync(path.join(dir, name)).equals(bytes), `${name} differs`);
-    assert.equal(listed.get(name)?.sha256, sha256(bytes), `${name} manifest hash`);
-  }
-  assert.equal(listed.size, Object.keys(fixtures).length);
+const corpus = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..',
+  'tests', 'corpus');
+// Valid fixtures, and the damaged ones of ADR-0004, each with its manifest.
+const sets = [['public', fixtures], ['damaged', damaged]].map(([name, generated]) => {
+  const dir = path.join(corpus, name);
+  const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  return { name, dir, generated, manifest };
 });
 
-test('manifest entries carry the required metadata', () => {
-  for (const entry of manifest.fixtures) {
-    for (const key of ['id', 'file', 'sha256', 'origin', 'license', 'features', 'expected']) {
-      assert.ok(entry[key], `${entry.file ?? '?'}: missing ${key}`);
+for (const { name, dir, generated, manifest } of sets) {
+  test(`${name}: every generated fixture is committed unchanged and listed`, () => {
+    const listed = new Map(manifest.fixtures.map(f => [f.file, f]));
+    for (const [file, bytes] of Object.entries(generated)) {
+      assert.ok(readFileSync(path.join(dir, file)).equals(bytes), `${file} differs`);
+      assert.equal(listed.get(file)?.sha256, sha256(bytes), `${file} manifest hash`);
     }
+    assert.equal(listed.size, Object.keys(generated).length);
+  });
+
+  test(`${name}: manifest entries carry the required metadata`, () => {
+    for (const entry of manifest.fixtures) {
+      for (const key of ['id', 'file', 'sha256', 'origin', 'license', 'features', 'expected']) {
+        assert.ok(entry[key], `${entry.file ?? '?'}: missing ${key}`);
+      }
+    }
+  });
+}
+
+test('damaged fixtures are damaged copies, never valid files', () => {
+  for (const [file, bytes] of Object.entries(damaged)) {
+    assert.ok(!Object.values(fixtures).some(valid => valid.equals(bytes)), file);
   }
 });
 

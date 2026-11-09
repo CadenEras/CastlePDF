@@ -28,6 +28,18 @@ tué sans bloquer l'application. Définir droits et limites de processus pour ch
   taille correspond exactement à ses dimensions ;
 - le worker n'a encore aucune restriction de droits propre à l'OS.
 
+Réparation de la structure (ADR-0004) : un seul balayage linéaire, jamais de retour en
+arrière ; chaque en-tête d'objet est facturé à `max_objects_visited` ; les dictionnaires
+lus pendant le balayage sont bornés aux octets qui précèdent le mot-clé suivant, et seuls
+les 16 derniers `trailer` sont gardés. Un fichier est refusé, jamais réparé, si un trailer
+examiné contient `/Encrypt` ou si un objet direct est un dictionnaire de chiffrement
+(`/Filter` avec `/O` et `/U`, ou `/Recipients`) : un fichier coupé avant son trailer
+perd la clé `/Encrypt`, pas ce dictionnaire. Les pertes possibles (flux d'objets illisible,
+flux sans `endstream`) sont comptées dans le rapport de réparation, jamais tues. Une
+relocalisation à la demande est facturée au budget de la tâche qui la déclenche ; un
+balayage arrêté par une limite n'est pas gardé. Un fichier réparé n'est jamais réécrit sur sa
+source ; l'écriture (P4) imposera une sauvegarde sous un nouveau nom.
+
 Aucun JavaScript PDF, action Launch, programme joint ou accès distant implicite.
 Les URL externes passent par un geste explicite, une validation de schéma et la politique
 du shell. Les mots de passe ne sont ni journalisés ni persistés par défaut ; ne pas

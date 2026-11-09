@@ -6,8 +6,12 @@
 //! `startxref`, `/Prev`, `/XRefStm` or an entry must point exactly at its
 //! keyword or object (no white space or comment skipped); classic tables are
 //! read on raw bytes (`xref` EOL, `first count` EOL, 20-byte entries,
-//! `trailer`); `/Prev` chains must not loop. No reconstruction is attempted.
-//! Encryption is refused as unsupported.
+//! `trailer`); `/Prev` chains must not loop. Encryption is refused as
+//! unsupported.
+//!
+//! Unless `OpenOptions::strict` is set, a structural error of that strict
+//! reading leads to a reconstruction of the index by scanning the file
+//! (ADR-0004, `repair`), reported by `PdfFile::repair`.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +23,7 @@ use crate::limits::{Budget, Capability, Error, MalformedKind};
 use crate::object::{Dictionary, IndirectObject, IndirectValue, Object, ObjectId, Stream};
 use crate::objstm::{ObjectStream, ObjectStreamCache};
 use crate::parser::{LengthResolver, Parser};
+use crate::repair::{self, Found, RepairReport, RepairTrailer};
 use crate::source::Source;
 
 /// `startxref` is searched in this many bytes at the end of the file.
@@ -72,6 +77,33 @@ pub struct XrefSection {
     pub kind: SectionKind,
 }
 
+/// How `PdfFile::open_with` reads the file structure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OpenOptions {
+    /// Reads the structure strictly and never reconstructs it (ADR-0002):
+    /// for oracles and structure tests.
+    pub strict: bool,
+}
+
+impl OpenOptions {
+    /// Options that never repair.
+    pub fn strict() -> Self {
+        Self { strict: true }
+    }
+}
+
+/// Index rebuilt after an object was not at its cross-reference offset, in a
+/// file that opened strictly.
+#[derive(Debug, Default)]
+struct Relocation {
+    index: Option<Arc<BTreeMap<u32, Found>>>,
+    conflicts: usize,
+    unterminated_streams: usize,
+    /// Set by the first object found again through `index`.
+    report: Option<RepairReport>,
+}
+
 /// A PDF file opened through its cross-reference sections: entries merged from
 /// all revisions (newest wins) and the newest trailer.
 ///
@@ -100,6 +132,10 @@ pub struct PdfFile<S> {
     entries: BTreeMap<u32, XrefEntry>,
     trailer: Dictionary,
     object_streams: Mutex<ObjectStreamCache>,
+    options: OpenOptions,
+    /// Set when the index was reconstructed when opening.
+    repair: Option<RepairReport>,
+    relocation: Mutex<Relocation>,
 }
 
 /// Never prints the document bytes: they may be private and very large.
@@ -111,6 +147,7 @@ impl<S: Source> fmt::Debug for PdfFile<S> {
             .field("startxref", &self.startxref)
             .field("sections", &self.sections)
             .field("entries", &self.entries.len())
+            .field("repair", &self.repair())
             .finish_non_exhaustive()
     }
 }
@@ -123,11 +160,38 @@ impl<S: Source> PdfFile<S> {
     /// node, and the decoded bytes of cross-reference streams: give opening its
     /// own budget, separate from later tasks. A file with more entries than
     /// `max_objects_visited` is refused.
+    ///
+    /// A structural error leads to a repair (`open_with`).
     pub fn open(source: S, budget: &mut Budget) -> Result<Self, Error> {
+        Self::open_with(source, OpenOptions::default(), budget)
+    }
+
+    /// `open` that never repairs.
+    pub fn open_strict(source: S, budget: &mut Budget) -> Result<Self, Error> {
+        Self::open_with(source, OpenOptions::strict(), budget)
+    }
+
+    /// Reads the structure strictly. Unless `options.strict` is set, a
+    /// structural error (`startxref`, `%%EOF`, cross-reference sections,
+    /// trailer, truncation) leads to a reconstruction of the index by one scan
+    /// of the file, charged to `budget`; `repair` then reports it. A header
+    /// error, encryption, an unsupported version, a limit or a cancellation
+    /// is never repaired. If the reconstruction finds no root, the strict
+    /// error is returned.
+    pub fn open_with(source: S, options: OpenOptions, budget: &mut Budget) -> Result<Self, Error> {
         let data = source.read(0..source.len())?;
         let version = parse_header(&data)?;
-        let startxref = find_startxref(&data)?;
-        let (entries, trailer, sections) = read_sections(&data, startxref, budget)?;
+        let strict = find_startxref(&data)
+            .and_then(|start| read_sections(&data, start, budget).map(|read| (start, read)));
+        let (startxref, (entries, trailer, sections)) = match strict {
+            Ok(read) => read,
+            Err(cause) if !options.strict && repair::repairable(&cause) => {
+                let scan = repair::scan(&data, budget)?;
+                drop(data);
+                return Self::repaired(source, version, options, &scan, cause, budget);
+            }
+            Err(error) => return Err(error),
+        };
         drop(data);
         Ok(Self {
             source,
@@ -137,7 +201,168 @@ impl<S: Source> PdfFile<S> {
             entries,
             trailer,
             object_streams: Mutex::new(ObjectStreamCache::default()),
+            options,
+            repair: None,
+            relocation: Mutex::new(Relocation::default()),
         })
+    }
+
+    /// Builds the file from a scan: direct objects, then the objects of the
+    /// object streams found, then the trailer. Refuses a file holding an
+    /// encryption dictionary.
+    fn repaired(
+        source: S,
+        version: Version,
+        options: OpenOptions,
+        scan: &repair::Scan,
+        cause: Error,
+        budget: &mut Budget,
+    ) -> Result<Self, Error> {
+        let data = source.read(0..source.len())?;
+        // Without a readable trailer nothing else says whether the file is
+        // encrypted: refuse rather than read ciphertext as plain text.
+        let direct = repair::direct_objects(&data, scan, budget)?;
+        if direct.encrypted {
+            return Err(Error::Unsupported(Capability::Encryption));
+        }
+        drop(data);
+        let entries = scan
+            .objects
+            .iter()
+            .map(|(number, found)| {
+                (
+                    *number,
+                    XrefEntry::InUse {
+                        offset: found.offset,
+                        generation: found.generation,
+                    },
+                )
+            })
+            .collect();
+        let mut file = Self {
+            source,
+            version,
+            startxref: 0,
+            sections: Vec::new(),
+            entries,
+            trailer: Dictionary::new(),
+            object_streams: Mutex::new(ObjectStreamCache::default()),
+            options,
+            repair: None,
+            relocation: Mutex::new(Relocation::default()),
+        };
+        let mut conflicts = scan.conflicts;
+        let mut skipped_object_streams = 0;
+        // Where each entry was found, to order occurrences: (offset, 0) for a
+        // direct object, (offset of its object stream, index + 1) for a
+        // compressed one. A later position wins.
+        let mut positions: BTreeMap<u32, (u64, u64)> = scan
+            .objects
+            .iter()
+            .map(|(number, found)| (*number, (found.offset, 0)))
+            .collect();
+        // Catalogs, as (position, id).
+        let mut catalogs: Vec<((u64, u64), ObjectId)> = direct
+            .catalogs
+            .iter()
+            .map(|(offset, id)| ((*offset, 0), *id))
+            .collect();
+        for (offset, stream) in scan.object_streams() {
+            let decoded = match file.object_stream(stream, budget) {
+                Ok(decoded) => decoded,
+                Err(
+                    Error::Malformed { .. }
+                    | Error::Truncated { .. }
+                    | Error::Unsupported(Capability::StreamFilter | Capability::ExternalStreamData),
+                ) => {
+                    skipped_object_streams += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            for (number, index) in decoded.numbers() {
+                // An object stream found by the scan keeps its own entry.
+                if number == stream || scan.is_object_stream(number) {
+                    continue;
+                }
+                let position = (offset, u64::from(index) + 1);
+                if let Some(previous) = positions.get(&number) {
+                    conflicts += 1;
+                    if *previous > position {
+                        continue;
+                    }
+                }
+                positions.insert(number, position);
+                file.entries
+                    .insert(number, XrefEntry::Compressed { stream, index });
+                if decoded.mentions(index, b"/Catalog") {
+                    let id = ObjectId {
+                        number,
+                        generation: 0,
+                    };
+                    let object = repair::tolerate(decoded.object(number, index, budget))?;
+                    if let Some(Object::Dictionary(dictionary)) = object
+                        && repair::is_catalog(&dictionary)
+                    {
+                        catalogs.push((position, id));
+                    }
+                }
+            }
+        }
+        let data = file.source.read(0..file.source.len())?;
+        let exists = |id: ObjectId| match file.entries.get(&id.number) {
+            Some(XrefEntry::InUse { generation, .. }) => *generation == id.generation,
+            Some(XrefEntry::Compressed { .. }) => id.generation == 0,
+            _ => false,
+        };
+        let found = repair::choose_trailer(&data, scan, exists, budget)?;
+        drop(data);
+        let (mut trailer, origin) = match found {
+            Some(trailer) => (trailer, RepairTrailer::Found),
+            None => {
+                // The last catalog still at its position (not replaced by a
+                // later occurrence of its number).
+                let root = catalogs
+                    .into_iter()
+                    .filter(|(position, id)| positions.get(&id.number) == Some(position))
+                    .max_by_key(|(position, _)| *position)
+                    .map(|(_, id)| id);
+                let Some(root) = root else {
+                    return Err(cause);
+                };
+                let mut trailer = Dictionary::new();
+                trailer.insert(b"Root".to_vec(), Object::Reference(root));
+                (trailer, RepairTrailer::Catalog)
+            }
+        };
+        for key in [&b"Prev"[..], b"XRefStm"] {
+            trailer.remove(key);
+        }
+        let size = file
+            .entries
+            .keys()
+            .next_back()
+            .map_or(1, |n| i64::from(*n) + 1);
+        trailer.insert(b"Size".to_vec(), Object::Integer(size));
+        file.trailer = trailer;
+        file.repair = Some(RepairReport {
+            cause,
+            objects: file.entries.len(),
+            conflicts,
+            trailer: origin,
+            skipped_object_streams,
+            unterminated_streams: scan.unterminated_streams,
+        });
+        Ok(file)
+    }
+
+    /// How the structure was repaired, if it was: when opening, or later when
+    /// an object was not at its cross-reference offset and was found by a
+    /// scan. `None` for a file read strictly.
+    pub fn repair(&self) -> Option<RepairReport> {
+        self.repair
+            .clone()
+            .or_else(|| lock_relocation(&self.relocation).report.clone())
     }
 
     pub fn version(&self) -> Version {
@@ -145,6 +370,8 @@ impl<S: Source> PdfFile<S> {
     }
 
     /// Offset given by the last `startxref`: the `/Prev` of a future update.
+    /// 0 for a file repaired when opening, which has no cross-reference
+    /// section to update: such a file is never updated incrementally.
     pub fn startxref(&self) -> u64 {
         self.startxref
     }
@@ -199,8 +426,7 @@ impl<S: Source> PdfFile<S> {
                 let mut length = |length_id: ObjectId, budget: &mut Budget| {
                     self.direct_length(&data, offset, length_id, true, budget)
                 };
-                let object = parse_at(&data, offset, budget, &mut length)?;
-                check_id(&object, id, offset)?;
+                let object = self.parse_located(&data, id, offset, budget, &mut length)?;
                 Ok(object.value)
             }
             Some(XrefEntry::Compressed { stream, index }) if id.generation == 0 => self
@@ -298,8 +524,8 @@ impl<S: Source> PdfFile<S> {
         let mut length = |length_id: ObjectId, budget: &mut Budget| {
             self.direct_length(&data, offset, length_id, false, budget)
         };
-        let object = parse_at(&data, offset, budget, &mut length)?;
-        check_id(&object, ObjectId { number, generation }, offset)?;
+        let id = ObjectId { number, generation };
+        let object = self.parse_located(&data, id, offset, budget, &mut length)?;
         let IndirectValue::Stream(stream) = object.value else {
             return Err(malformed(offset, MalformedKind::InvalidObjectStream));
         };
@@ -318,6 +544,73 @@ impl<S: Source> PdfFile<S> {
         Ok(object_stream)
     }
 
+    /// Parses `id` at its cross-reference `offset`. If another object, or no
+    /// object, starts there in a file indexed by its cross-reference sections
+    /// and opened without the `strict` option, the object is looked up in an index rebuilt by
+    /// one scan of the file (kept once built, charged to `budget`): ADR-0004.
+    fn parse_located(
+        &self,
+        data: &[u8],
+        id: ObjectId,
+        offset: u64,
+        budget: &mut Budget,
+        resolve_length: &mut LengthResolver<'_>,
+    ) -> Result<IndirectObject, Error> {
+        let parse = |at: u64, budget: &mut Budget, resolve_length: &mut LengthResolver<'_>| {
+            let object = parse_at(data, at, budget, resolve_length)?;
+            check_id(&object, id, at).map(|()| object)
+        };
+        let error = match parse(offset, budget, resolve_length) {
+            Err(
+                error @ Error::Malformed {
+                    kind: MalformedKind::ObjectIdMismatch,
+                    ..
+                },
+                // Only an index read from cross-reference sections can be wrong
+                // this way: a repaired file is indexed by the scan itself.
+            ) if !self.options.strict && !self.sections.is_empty() => error,
+            other => return other,
+        };
+        let index = self.relocation_index(data, budget)?;
+        let Some(found) = index
+            .get(&id.number)
+            .filter(|found| found.offset != offset && found.generation == id.generation)
+        else {
+            return Err(error);
+        };
+        let object = parse(found.offset, budget, resolve_length)?;
+        let mut relocation = lock_relocation(&self.relocation);
+        if relocation.report.is_none() {
+            relocation.report = Some(RepairReport {
+                cause: error,
+                objects: index.len(),
+                conflicts: relocation.conflicts,
+                trailer: RepairTrailer::Original,
+                skipped_object_streams: 0,
+                unterminated_streams: relocation.unterminated_streams,
+            });
+        }
+        Ok(object)
+    }
+
+    /// The index of object headers, scanned once. A scan stopped by a limit
+    /// is not kept: a later task with its own budget may try again.
+    fn relocation_index(
+        &self,
+        data: &[u8],
+        budget: &mut Budget,
+    ) -> Result<Arc<BTreeMap<u32, Found>>, Error> {
+        if let Some(index) = &lock_relocation(&self.relocation).index {
+            return Ok(Arc::clone(index));
+        }
+        let scan = repair::scan(data, budget)?;
+        let index = Arc::new(scan.objects);
+        let mut relocation = lock_relocation(&self.relocation);
+        relocation.conflicts = scan.conflicts;
+        relocation.unterminated_streams = scan.unterminated_streams;
+        Ok(Arc::clone(relocation.index.get_or_insert(index)))
+    }
+
     fn direct_length(
         &self,
         data: &[u8],
@@ -330,9 +623,8 @@ impl<S: Source> PdfFile<S> {
         let value = match self.entries.get(&id.number).copied() {
             Some(XrefEntry::InUse { offset, generation }) if generation == id.generation => {
                 let mut refuse = |_: ObjectId, _: &mut Budget| Err(invalid.clone());
-                let object = parse_at(data, offset, budget, &mut refuse)?;
-                check_id(&object, id, offset)?;
-                object.value
+                self.parse_located(data, id, offset, budget, &mut refuse)?
+                    .value
             }
             Some(XrefEntry::Compressed { stream, index })
                 if allow_compressed && id.generation == 0 =>
@@ -356,6 +648,12 @@ fn lock(cache: &Mutex<ObjectStreamCache>) -> std::sync::MutexGuard<'_, ObjectStr
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn lock_relocation(relocation: &Mutex<Relocation>) -> std::sync::MutexGuard<'_, Relocation> {
+    relocation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Parses `n g obj` starting exactly at `offset`.
 fn parse_at(
     data: &[u8],
@@ -363,12 +661,34 @@ fn parse_at(
     budget: &mut Budget,
     resolve_length: &mut LengthResolver<'_>,
 ) -> Result<IndirectObject, Error> {
-    if !rest(data, offset).first().is_some_and(u8::is_ascii_digit) {
+    // Anything but `int int obj` here means the offset does not lead to an
+    // object: reported as a mismatch, which a lookup may repair (ADR-0004).
+    // Errors after the header stay those of the object.
+    if !rest(data, offset).first().is_some_and(u8::is_ascii_digit)
+        || !header_at(data, offset, budget)
+    {
         return Err(malformed(offset, MalformedKind::ObjectIdMismatch));
     }
     let mut parser = Parser::new(data);
     parser.seek(offset)?;
     parser.parse_indirect_object(budget, resolve_length)
+}
+
+/// True when `int int obj` starts at `offset`.
+fn header_at(data: &[u8], offset: u64, budget: &mut Budget) -> bool {
+    let mut lexer = Lexer::new(data);
+    if lexer.seek(offset).is_err() {
+        return false;
+    }
+    let mut next = || lexer.next_token(budget).ok().flatten().map(|t| t.token);
+    matches!(
+        (next(), next(), next()),
+        (
+            Some(Token::Integer(_)),
+            Some(Token::Integer(_)),
+            Some(Token::Keyword(b"obj"))
+        )
+    )
 }
 
 fn check_id(object: &IndirectObject, expected: ObjectId, offset: u64) -> Result<(), Error> {

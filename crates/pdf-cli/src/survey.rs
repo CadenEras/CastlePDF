@@ -80,6 +80,8 @@ enum Status {
         open: String,
         render: Option<String>,
         skipped: Vec<String>,
+        /// Category of the strict error, for a file opened by repair.
+        repaired: Option<String>,
     },
     /// Killed after the timeout.
     Timeout,
@@ -238,7 +240,7 @@ fn finished(child: &mut Child, status: ExitStatus) -> Status {
 /// Parses the line of `castle-pdf probe`; `None` if it is not one.
 fn parse_line(line: &str) -> Option<Status> {
     let line = line.strip_suffix('\n')?;
-    let (mut open, mut render, mut skipped) = (None, None, Vec::new());
+    let (mut open, mut render, mut skipped, mut repaired) = (None, None, Vec::new(), None);
     for token in line.split(' ') {
         let (key, value) = token.split_once('=')?;
         match key {
@@ -247,23 +249,26 @@ fn parse_line(line: &str) -> Option<Status> {
             "render" => render = Some(value.to_owned()),
             "skipped" if value != "none" => skipped = value.split(',').map(str::to_owned).collect(),
             "skipped" => {}
+            "repaired" => repaired = Some(value.to_owned()),
             _ => return None,
         }
     }
     let open = open?;
-    if (open == "ok") != render.is_some() {
+    if (open == "ok") != render.is_some() || (repaired.is_some() && render.is_none()) {
         return None;
     }
     Some(Status::Probed {
         open,
         render,
         skipped,
+        repaired,
     })
 }
 
 fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     let total = outcomes.len();
     let (mut opened, mut rendered, mut timeouts) = (0, 0, 0);
+    let mut repairs = BTreeMap::new();
     let mut open_failures = BTreeMap::new();
     let mut render_failures = BTreeMap::new();
     let mut skipped = BTreeMap::new();
@@ -274,10 +279,14 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                 open,
                 render,
                 skipped: capabilities,
+                repaired,
             } => match render.as_deref() {
                 None => *open_failures.entry(open.clone()).or_insert(0) += 1,
                 Some(render) => {
                     opened += 1;
+                    if let Some(cause) = repaired {
+                        *repairs.entry(cause.clone()).or_insert(0) += 1;
+                    }
                     if render == "ok" {
                         rendered += 1;
                         for capability in capabilities {
@@ -297,6 +306,12 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     }
     writeln!(out, "files: {total}")?;
     writeln!(out, "opened: {opened} ({})", percent(opened, total))?;
+    let repaired: usize = repairs.values().sum();
+    writeln!(
+        out,
+        "opened by repair: {repaired} ({})",
+        percent(repaired, total)
+    )?;
     writeln!(
         out,
         "first page rendered: {rendered} ({})",
@@ -321,6 +336,7 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     }
     section(out, "crashes", &crashes)?;
     section(out, "open failures", &open_failures)?;
+    section(out, "repaired, by strict error", &repairs)?;
     section(out, "first page failures", &render_failures)?;
     section(out, "not rendered on rendered first pages", &skipped)
 }
@@ -387,6 +403,7 @@ mod tests {
             open: open.to_owned(),
             render: render.map(str::to_owned),
             skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
+            repaired: None,
         }
     }
 
@@ -408,8 +425,15 @@ mod tests {
             parse_line("open=malformed/InvalidHeader\n"),
             Some(probed("malformed/InvalidHeader", None, &[]))
         );
+        let Some(Status::Probed { repaired, .. }) = parse_line(
+            "open=ok pages=1 render=ok skipped=none repaired=malformed/MissingStartxref\n",
+        ) else {
+            panic!("a repaired file is a probe line");
+        };
+        assert_eq!(repaired.as_deref(), Some("malformed/MissingStartxref"));
         // Incomplete or foreign output is not a probe line.
         for line in [
+            "open=truncated repaired=truncated\n",
             "",
             "open=ok pages=1 render=ok skipped=none",
             "open=ok pages=1\n",
@@ -440,6 +464,15 @@ mod tests {
             outcome(probed("ok", Some("ok"), &["Text", "Image"]), 20),
             outcome(probed("ok", Some("content/UnknownOperator"), &[]), 30),
             outcome(probed("malformed/InvalidHeader", None, &[]), 1),
+            outcome(
+                Status::Probed {
+                    open: "ok".to_owned(),
+                    render: Some("ok".to_owned()),
+                    skipped: Vec::new(),
+                    repaired: Some("truncated".to_owned()),
+                },
+                1,
+            ),
             outcome(Status::Timeout, 500),
             outcome(Status::Crash("panic".to_owned()), 5),
         ];
@@ -447,12 +480,14 @@ mod tests {
         assert!(report(&outcomes, &mut out).is_ok());
         let text = String::from_utf8_lossy(&out);
         for expected in [
-            "files: 6\n",
-            "opened: 3 (50.0%)\n",
-            "first page rendered: 2 (33.3%)\n",
+            "files: 7\n",
+            "opened: 4 (57.1%)\n",
+            "opened by repair: 1 (14.2%)\n",
+            "first page rendered: 3 (42.8%)\n",
             "timeouts: 1\n",
             "crashes: 1\n",
             "median 10 ms, p95 500 ms, max 500 ms\n",
+            "repaired, by strict error:\n       1  truncated\n",
             "crashes:\n       1  panic\n",
             "open failures:\n       1  malformed/InvalidHeader\n",
             "first page failures:\n       1  content/UnknownOperator\n",

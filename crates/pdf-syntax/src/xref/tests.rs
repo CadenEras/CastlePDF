@@ -61,7 +61,7 @@ fn open(bytes: &[u8]) -> Result<PdfFile<MemorySource>, Error> {
 
 fn open_with(bytes: &[u8], budget: &mut Budget) -> Result<PdfFile<MemorySource>, Error> {
     let source = MemorySource::from_vec(bytes.to_vec(), &ResourceLimits::default())?;
-    PdfFile::open(source, budget)
+    PdfFile::open_strict(source, budget)
 }
 
 fn replace(bytes: &[u8], from: &str, to: &str) -> Vec<u8> {
