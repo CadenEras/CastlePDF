@@ -1,0 +1,232 @@
+//! Documents and tiles through the real `pdf-worker` binary and its pipes.
+
+// Test-only crate: helpers outside `#[test]` functions may fail loudly.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use pdf_worker::client::WorkerProcess;
+use pdf_worker::documents::MAX_DOCUMENTS;
+use pdf_worker::protocol::{ErrorCode, Request, Response, Skipped, TileRect};
+
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+fn spawn() -> WorkerProcess {
+    WorkerProcess::spawn(Path::new(env!("CARGO_BIN_EXE_pdf-worker")), TIMEOUT)
+        .expect("worker starts and handshakes")
+}
+
+fn fixture(name: &str) -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus/public")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn call(worker: &WorkerProcess, request: &Request) -> Response {
+    worker.send(request).unwrap();
+    worker.recv_timeout(TIMEOUT).unwrap()
+}
+
+fn open(worker: &WorkerProcess, id: u64, name: &str) -> Response {
+    call(
+        worker,
+        &Request::OpenDocument {
+            id,
+            path: fixture(name),
+        },
+    )
+}
+
+#[test]
+fn a_page_is_rendered_tile_by_tile() {
+    let worker = spawn();
+    assert_eq!(
+        open(&worker, 1, "shapes.pdf"),
+        Response::DocumentOpened {
+            id: 1,
+            document: 1,
+            pages: 3
+        }
+    );
+    assert_eq!(
+        call(
+            &worker,
+            &Request::PageSize {
+                id: 2,
+                document: 1,
+                page: 0,
+                scale: 2.0
+            }
+        ),
+        Response::PageSize {
+            id: 2,
+            width: 400,
+            height: 400
+        }
+    );
+    // A 400 x 400 page: four tiles, the last ones cut at the page edge.
+    for (id, (x, y, width, height)) in (3..).zip([
+        (0, 0, 256, 256),
+        (256, 0, 144, 256),
+        (0, 256, 256, 144),
+        (256, 256, 144, 144),
+    ]) {
+        let rect = TileRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        match call(
+            &worker,
+            &Request::RenderTile {
+                id,
+                document: 1,
+                page: 0,
+                scale: 2.0,
+                rect,
+            },
+        ) {
+            Response::Tile {
+                id: got,
+                width: w,
+                height: h,
+                skipped,
+                pixels,
+            } => {
+                assert_eq!((got, w, h, skipped), (id, width, height, Skipped(0)));
+                assert_eq!(pixels.len(), usize::from(width) * usize::from(height) * 4);
+            }
+            other => panic!("tile expected, got {other:?}"),
+        }
+    }
+    // Closing forgets the document: later requests name an unknown one.
+    worker
+        .send(&Request::CloseDocument { document: 1 })
+        .unwrap();
+    assert_eq!(
+        call(
+            &worker,
+            &Request::PageSize {
+                id: 10,
+                document: 1,
+                page: 0,
+                scale: 1.0
+            }
+        ),
+        Response::JobFailed {
+            id: 10,
+            code: ErrorCode::UnknownDocument
+        }
+    );
+}
+
+#[test]
+fn errors_name_their_cause() {
+    let worker = spawn();
+    assert_eq!(
+        open(&worker, 1, "missing.pdf"),
+        Response::JobFailed {
+            id: 1,
+            code: ErrorCode::Unreadable
+        }
+    );
+    assert_eq!(
+        open(&worker, 2, "manifest.json"),
+        Response::JobFailed {
+            id: 2,
+            code: ErrorCode::Malformed
+        }
+    );
+    assert!(matches!(
+        open(&worker, 3, "minimal.pdf"),
+        Response::DocumentOpened { document: 1, .. }
+    ));
+    let tile = |id, rect| Request::RenderTile {
+        id,
+        document: 1,
+        page: 0,
+        scale: 1.0,
+        rect,
+    };
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
+    match call(&worker, &tile(4, rect)) {
+        Response::Tile { skipped, .. } => assert_eq!(skipped, Skipped(Skipped::TEXT)),
+        other => panic!("tile expected, got {other:?}"),
+    }
+    for (id, rect) in [
+        (5, TileRect { width: 257, ..rect }),
+        (6, TileRect { x: 595, ..rect }),
+    ] {
+        assert_eq!(
+            call(&worker, &tile(id, rect)),
+            Response::JobFailed {
+                id,
+                code: ErrorCode::InvalidRequest
+            }
+        );
+    }
+    // The table is bounded; the first document is still open.
+    for id in 7..7 + MAX_DOCUMENTS as u64 - 1 {
+        assert!(matches!(
+            open(&worker, id, "minimal.pdf"),
+            Response::DocumentOpened { .. }
+        ));
+    }
+    assert_eq!(
+        open(&worker, 20, "minimal.pdf"),
+        Response::JobFailed {
+            id: 20,
+            code: ErrorCode::TooManyDocuments
+        }
+    );
+}
+
+/// Cost of a full 256 x 256 tile through the worker pipe (render, encode,
+/// frame, decode), median of 20, on the machine running the tests. Printed,
+/// not asserted: `cargo test -p pdf-worker --release --test documents -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurement"]
+fn measure_tile_round_trip() {
+    let worker = spawn();
+    assert!(matches!(
+        open(&worker, 1, "shapes.pdf"),
+        Response::DocumentOpened { .. }
+    ));
+    let mut times = Vec::new();
+    for id in 2..22 {
+        let start = Instant::now();
+        let response = call(
+            &worker,
+            &Request::RenderTile {
+                id,
+                document: 1,
+                page: 0,
+                scale: 4.0,
+                rect: TileRect {
+                    x: 256,
+                    y: 256,
+                    width: 256,
+                    height: 256,
+                },
+            },
+        );
+        times.push(start.elapsed());
+        assert!(matches!(response, Response::Tile { .. }));
+    }
+    times.sort();
+    println!(
+        "256 x 256 tile through the worker pipe: median {:?}, min {:?}, max {:?}",
+        times[times.len() / 2],
+        times[0],
+        times[times.len() - 1]
+    );
+}

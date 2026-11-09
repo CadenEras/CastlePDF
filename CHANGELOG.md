@@ -14,6 +14,26 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   (taux d'ouverture et de rendu, catégories d'erreur, capacités non rendues, crashs,
   timeouts, temps), sans contenu ni nom de fichier sauf `--paths`. Code 1 si un fichier
   fait planter ou bloquer le moteur. Première mesure sur SafeDocs dans `docs/QUALITY.md`.
+- `pdf-render` : `render_area` rend un rectangle de page (tuile) et `page_size` donne la
+  taille en pixels d'une page à une échelle ; `max_pixels` s'applique à la zone, pas à la
+  page. Les tuiles assemblent le rendu de la page à 1 près par canal (arrondi en simple
+  précision du rasteriseur) ; la cible de fuzzing `render` le vérifie.
+- `pdf-worker` : protocole v2 (`PROTOCOL_VERSION` 2) — `OpenDocument` (chemin donné par
+  le shell), `PageSize`, `RenderTile` (au plus 256 × 256, pixels RGBA bruts dans la trame)
+  et `CloseDocument` ; au plus 4 documents ouverts ; codes d'erreur distincts (chiffré,
+  non pris en charge, malformé, illisible, document inconnu…). Une tuile pleine traverse
+  le tube du worker en 0,5 ms environ (médiane, Windows, release, page simple).
+- Application desktop : **première page affichée**. Le shell ouvre un PDF déposé sur la
+  fenêtre ou passé en argument, sans que l'UI nomme de chemin ; il le transmet au worker, met
+  les tâches en file (une à la fois, file bornée) et garde un cache LRU de tuiles de
+  128 Mio comptés en octets. Les tuiles d'une génération périmée sont abandonnées ou
+  annulées. Commandes `page_size`, `render_tile` (octets bruts reçus en `ArrayBuffer`, sans
+  JSON ni base64), `current_document` et `begin_view` (générations numérotées par le
+  shell, donc robustes à un rechargement de la page). Canvas limité à 16 Mpx ; une tâche de
+  diagnostic est limitée à 60 s. Un worker perdu n'est pas encore relancé. L'UI affiche la page ajustée à la largeur, tuile
+  par tuile dans un canvas, avec navigation page par page, état explicite (préparation,
+  rendu en cours, prêt, échec) et mention du rendu partiel. Mesures dans
+  `docs/perf/2026-11-08-p2-first-page.md`.
 - ADR-0003 accepté : ordre de P2 (Flate et flux xref avant l'interpréteur),
   `vello_cpu`, `miniz_oxide`, tuiles 256 px en octets bruts, oracles de rendu, ARM64.
 - `pdf-syntax` : filtre `FlateDecode` (ISO 32000-2, 7.4.4) via `miniz_oxide` 0.9.1

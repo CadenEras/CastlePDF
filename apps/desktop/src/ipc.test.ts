@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { describeCommandError, parseJobEvent, parseJobId } from "./ipc";
+import {
+  ShellError,
+  TILE_HEADER,
+  describeCommandError,
+  isStale,
+  parseDocumentEvent,
+  parseJobEvent,
+  parseJobId,
+  parsePageSize,
+  parseTile,
+  skippedLabels,
+} from "./ipc";
+
+function tileBuffer(width: number, height: number, skipped: number, pixels: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(TILE_HEADER + pixels);
+  const view = new DataView(buffer);
+  view.setUint16(0, width, true);
+  view.setUint16(2, height, true);
+  view.setUint16(4, skipped, true);
+  return buffer;
+}
 
 describe("IPC payload validation", () => {
   it("accepts well-formed job events", () => {
@@ -45,5 +65,87 @@ describe("IPC payload validation", () => {
     expect(parseJobId(7)).toBe(7);
     expect(() => parseJobId("7")).toThrow();
     expect(() => parseJobId(-1)).toThrow();
+  });
+});
+
+describe("documents and tiles", () => {
+  it("accepts tiles whose size matches the request, without copying", () => {
+    const buffer = tileBuffer(2, 3, 1, 2 * 3 * 4);
+    const tile = parseTile(buffer, 2, 3);
+    expect([tile.width, tile.height, tile.skipped]).toEqual([2, 3, 1]);
+    expect(tile.pixels.length).toBe(24);
+    expect(tile.pixels.buffer).toBe(buffer);
+  });
+
+  it("rejects tiles of another size or truncated", () => {
+    for (const [buffer, width, height] of [
+      [tileBuffer(2, 3, 0, 24), 3, 2],
+      [tileBuffer(2, 3, 0, 23), 2, 3],
+      [tileBuffer(2, 3, 0, 25), 2, 3],
+      [new ArrayBuffer(4), 2, 3],
+      ["tile", 2, 3],
+      [new Uint8Array(32), 2, 3],
+    ] as const) {
+      expect(() => parseTile(buffer, width, height)).toThrow("invalid tile");
+    }
+  });
+
+  it("validates document events and names their failures", () => {
+    expect(
+      parseDocumentEvent({ sequence: 3, kind: "opened", document: 1, pages: 2, name: "a.pdf" }),
+    ).toEqual({
+      sequence: 3,
+      kind: "opened",
+      document: 1,
+      pages: 2,
+      name: "a.pdf",
+    });
+    expect(
+      parseDocumentEvent({
+        sequence: 4,
+        kind: "failed",
+        name: "a.pdf",
+        error: { code: "failed", reason: "encrypted" },
+      }),
+    ).toEqual({
+      sequence: 4,
+      kind: "failed",
+      name: "a.pdf",
+      message: "document chiffré, non pris en charge pour l'instant",
+    });
+    for (const payload of [
+      null,
+      { sequence: 1, kind: "opened", document: -1, pages: 2, name: "a.pdf" },
+      { sequence: 1, kind: "opened", document: 1, pages: 2 ** 32, name: "a.pdf" },
+      { sequence: 1, kind: "opened", document: 1, pages: 2, name: 4 },
+      { sequence: 1, kind: "closed", name: "a.pdf" },
+      { kind: "opening", name: "a.pdf" },
+      { sequence: -1, kind: "opening", name: "a.pdf" },
+    ]) {
+      expect(parseDocumentEvent(payload)).toBeNull();
+    }
+  });
+
+  it("validates page sizes", () => {
+    expect(parsePageSize({ width: 612, height: 792 })).toEqual({ width: 612, height: 792 });
+    for (const value of [null, { width: 0, height: 1 }, { width: 1.5, height: 1 }, { width: 1 }]) {
+      expect(() => parsePageSize(value)).toThrow();
+    }
+  });
+
+  it("describes worker failures and tells dropped tiles apart", () => {
+    expect(describeCommandError({ code: "failed", reason: "malformed" })).toBe(
+      "fichier PDF invalide ou endommagé",
+    );
+    expect(describeCommandError({ code: "failed", reason: "new" })).toBe("échec (new)");
+    expect(describeCommandError({ code: "timeout" })).toBe("délai dépassé");
+    expect(isStale(new ShellError({ code: "stale" }))).toBe(true);
+    expect(isStale(new ShellError({ code: "busy" }))).toBe(false);
+    expect(isStale(new Error("stale"))).toBe(false);
+  });
+
+  it("labels skipped capabilities", () => {
+    expect(skippedLabels(0)).toEqual([]);
+    expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images en ligne", "autres éléments"]);
   });
 });

@@ -57,3 +57,40 @@ button:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
+
+.app:has(.viewer) {
+  max-width: none;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.toolbar p {
+  margin: 0;
+}
+
+.partial {
+  border-left: 4px solid var(--focus);
+  padding-left: 0.75rem;
+}
+
+.page {
+  width: 100%;
+  margin-top: 1rem;
+  overflow: auto;
+}
+
+.page canvas {
+  display: block;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+}
