@@ -142,6 +142,33 @@ impl ObjectStream {
         Ok(object)
     }
 
+    /// Object numbers listed in the header, with their index.
+    pub(crate) fn numbers(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.header
+            .iter()
+            .zip(0_u32..)
+            .map(|((number, _), index)| (*number, index))
+    }
+
+    /// True when the bytes of object `index` (up to the next object) contain
+    /// `needle`: a cheap filter before parsing it.
+    pub(crate) fn mentions(&self, index: u32, needle: &[u8]) -> bool {
+        let Ok(index) = usize::try_from(index) else {
+            return false;
+        };
+        let start = self
+            .header
+            .get(index)
+            .map(|(_, offset)| self.first + offset);
+        let end = self
+            .header
+            .get(index + 1)
+            .map_or(self.data.len(), |(_, offset)| self.first + offset);
+        start
+            .and_then(|start| self.data.get(start..end))
+            .is_some_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+    }
+
     fn size(&self) -> usize {
         self.data.len()
     }

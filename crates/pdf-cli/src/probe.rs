@@ -6,6 +6,11 @@
 //! - `open=ok pages=<n> render=<category>` or `render=no-pages`
 //! - `open=<category>`
 //!
+//! A file whose structure was repaired (ADR-0004) ends its line with
+//! `repaired=<category>`, the category of the strict reading error, prefixed
+//! with `on-lookup/` when the file opened strictly and only objects off their
+//! offset were found by a scan.
+//!
 //! A category names the kind of error without offsets or object numbers
 //! (`malformed/MissingEndobj`, `content/UnknownOperator`...), so that files
 //! failing for the same reason are counted together. The line never holds
@@ -18,7 +23,7 @@ use std::path::Path;
 
 use pdf_document::Document;
 use pdf_render::{RenderOptions, render_page};
-use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
+use pdf_syntax::{Budget, CancellationToken, MemorySource, RepairTrailer, ResourceLimits};
 
 /// Probes `path` and writes the outcome line to `out`.
 pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
@@ -40,27 +45,37 @@ pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
         }
     };
     write!(out, "open=ok pages={}", document.page_count())?;
-    let Some(page) = document.page(0) else {
-        writeln!(out, " render=no-pages")?;
-        return Ok(0);
-    };
-    match render_page(
-        document.file(),
-        page,
-        &RenderOptions::default(),
-        &mut budget,
-    ) {
-        Ok(rendering) => {
-            let skipped: Vec<String> = rendering.skipped.iter().map(|s| format!("{s:?}")).collect();
-            let skipped = if skipped.is_empty() {
-                "none".to_owned()
-            } else {
-                skipped.join(",")
-            };
-            writeln!(out, " render=ok skipped={skipped}")?;
-        }
-        Err(e) => writeln!(out, " render={}", render_category(&e))?,
+    match document.page(0) {
+        None => write!(out, " render=no-pages")?,
+        Some(page) => match render_page(
+            document.file(),
+            page,
+            &RenderOptions::default(),
+            &mut budget,
+        ) {
+            Ok(rendering) => {
+                let skipped: Vec<String> =
+                    rendering.skipped.iter().map(|s| format!("{s:?}")).collect();
+                let skipped = if skipped.is_empty() {
+                    "none".to_owned()
+                } else {
+                    skipped.join(",")
+                };
+                write!(out, " render=ok skipped={skipped}")?;
+            }
+            Err(e) => write!(out, " render={}", render_category(&e))?,
+        },
     }
+    // Checked last: an object found by a scan during rendering also counts.
+    if let Some(repair) = document.file().repair() {
+        let when = if repair.trailer == RepairTrailer::Original {
+            "on-lookup/"
+        } else {
+            ""
+        };
+        write!(out, " repaired={when}{}", syntax_category(&repair.cause))?;
+    }
+    writeln!(out)?;
     Ok(0)
 }
 

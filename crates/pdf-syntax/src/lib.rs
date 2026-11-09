@@ -1,5 +1,6 @@
 //! PDF syntax layer: resource budgets, input sources, the tokenizer and the
-//! object parser, and the file structure (classic cross-reference tables).
+//! object parser, and the file structure (cross-reference tables and streams,
+//! and their reconstruction when they are damaged).
 
 mod filter;
 mod lexer;
@@ -7,6 +8,7 @@ mod limits;
 mod object;
 mod objstm;
 mod parser;
+mod repair;
 mod source;
 mod xref;
 
@@ -17,5 +19,6 @@ pub use limits::{
 };
 pub use object::{Dictionary, IndirectObject, IndirectValue, Object, ObjectId, Stream};
 pub use parser::{LengthResolver, MAX_SUPPORTED_NESTING_DEPTH, Parser};
+pub use repair::{RepairReport, RepairTrailer};
 pub use source::{MemorySource, Source};
-pub use xref::{PdfFile, SectionKind, Version, XrefEntry, XrefSection};
+pub use xref::{OpenOptions, PdfFile, SectionKind, Version, XrefEntry, XrefSection};

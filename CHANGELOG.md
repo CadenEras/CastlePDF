@@ -9,6 +9,22 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-syntax` : **reconstruction de l'index des objets** (ADR-0004). Quand la lecture
+  stricte échoue sur la structure (`startxref` ou `%%EOF` absent, section xref ou trailer
+  invalide, cycle `/Prev`, fichier tronqué), un balayage linéaire retrouve les en-têtes
+  `n g obj`. Il saute les données de flux par `/Length`, ou jusqu'à `endstream`, et relit
+  les flux d'objets trouvés. La dernière occurrence d'un objet l'emporte. Le trailer est le
+  plus récent dont la `/Root` existe, sinon le dernier catalogue. Un objet absent de son
+  offset dans un fichier ouvert strictement est cherché de la même façon, à la demande.
+  Chaque en-tête est facturé au budget d'objets. Le chiffrement n'est jamais réparé :
+  un `/Encrypt` dans un trailer, ou un dictionnaire de chiffrement parmi les objets
+  (fichier coupé avant son trailer), refuse le fichier.
+  La réparation est visible : `PdfFile::repair` (cause, objets, conflits, origine du
+  trailer, flux d'objets illisibles et flux sans `endstream` qui peuvent cacher des
+  objets, `is_incomplete`), ligne `repair:` de `inspect`, jeton `repaired=` de `probe`
+  (`on-lookup/` pour un objet retrouvé à la demande) et compte à part dans `survey`. `OpenOptions::strict` / `PdfFile::open_strict` gardent la lecture
+  stricte d'ADR-0002 (oracles, tests de structure). Fixtures abîmées dans
+  `tests/corpus/damaged`, cible de fuzzing `repair`.
 - `castle-pdf survey <répertoire>` : ouvre chaque fichier et rend sa première page, chacun
   dans un processus enfant (`castle-pdf probe`) tué après un délai ; rapport agrégé
   (taux d'ouverture et de rendu, catégories d'erreur, capacités non rendues, crashs,

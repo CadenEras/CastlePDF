@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [lexer, objects, xref, document, flate, render]
+        target: [lexer, objects, xref, repair, document, flate, render]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -57,7 +57,7 @@ jobs:
       - name: Seed the corpus with the public fixtures
         run: |
           mkdir -p "corpus/${{ matrix.target }}"
-          cp ../tests/corpus/public/*.pdf "corpus/${{ matrix.target }}/"
+          cp ../tests/corpus/public/*.pdf ../tests/corpus/damaged/*.pdf "corpus/${{ matrix.target }}/"
           if [ -d "seeds/${{ matrix.target }}" ]; then cp "seeds/${{ matrix.target }}"/* "corpus/${{ matrix.target }}/"; fi
       - name: Fuzz
         env:

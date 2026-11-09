@@ -38,6 +38,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "repair"
+path = "fuzz_targets/repair.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "document"
 path = "fuzz_targets/document.rs"
 test = false

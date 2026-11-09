@@ -53,7 +53,31 @@ fn page_tree_report_is_stable() {
          pages: 3\n  \
          page 1: object 4 0, media box [0 0 595 842], crop box [0 0 595 842], rotation 90\n  \
          page 2: object 5 0, media box [0 0 842 595], crop box [0 0 842 595], rotation 90\n  \
-         page 3: object 6 0, media box [0 0 595 842], crop box [0 0 595 842], rotation 0\n"
+         page 3: object 6 0, media box [0 0 595 842], crop box [0 0 595 842], rotation 0\n\
+         repair: none\n"
+    );
+}
+
+#[test]
+fn a_repaired_file_says_so() {
+    // minimal.pdf cut before its cross-reference table: no table, no trailer.
+    let mut bytes = std::fs::read(corpus("minimal.pdf")).expect("fixture");
+    let at = bytes
+        .windows(5)
+        .position(|w| w == b"xref\n")
+        .expect("xref present");
+    bytes.truncate(at);
+    let (code, out, err) = inspect(&scratch("no-xref.pdf", &bytes));
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert!(out.contains("revisions: 0\n"), "{out}");
+    assert!(out.contains("pages: 1\n"), "{out}");
+    assert!(
+        out.ends_with(
+            "repair: 5 objects indexed by scan, 0 found more than once; \
+             no trailer, root is the last catalog; strict error: \
+             malformed PDF syntax at byte 0: MissingStartxref\n"
+        ),
+        "{out}"
     );
 }
 

@@ -82,7 +82,7 @@ cargo install --locked cargo-fuzz@0.13.2
 cargo fuzz run lexer -- -max_total_time=300 -rss_limit_mb=2048 -dict=dict/pdf.dict   # ou objects
 ```
 
-Cibles : `lexer`, `objects`, `xref`, `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
+Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
 puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`) lance
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 
@@ -118,7 +118,9 @@ cargo run -p pdf-cli -- --version
 
 `inspect` affiche la structure (taille, version, `startxref`, révisions et sections xref,
 objets en usage/libres, clés standard du trailer (les autres sont seulement comptées),
-racine, pages avec objet, MediaBox, CropBox et rotation), jamais le contenu du document ni
+racine, pages avec objet, MediaBox, CropBox et rotation, puis une ligne `repair:` : `none`,
+ou le nombre d'objets indexés par balayage, les numéros trouvés plusieurs fois, l'origine
+du trailer et l'erreur stricte qui a déclenché la réparation, ADR-0004), jamais le contenu du document ni
 le chemin du fichier. Le rapport est écrit ligne par ligne, chaque ligne bornée (notation
 scientifique au-delà de 1e15). Seul un fichier régulier est lu. La structure du fichier
 est affichée même si l'arbre des pages est invalide. Codes de sortie : 0 succès,
@@ -142,8 +144,11 @@ taux d'ouverture et de rendu de la première page (échelle 1), catégories d'er
 offset, capacités non rendues, crashs, timeouts, temps par fichier (création du processus
 comprise). Il ne contient ni contenu ni nom de fichier ; `--paths` ajoute la liste des
 fichiers non rendus, à garder local. Code 0 si aucun crash ni timeout, 1 sinon.
-`probe` écrit une ligne `open=… pages=… render=… skipped=…`, code 0 même si le document
-est invalide. Mesure sur un corpus externe : voir `docs/QUALITY.md`.
+Un fichier ouvert par réparation (ADR-0004) est compté à part (`opened by repair`, avec
+la catégorie de l'erreur stricte).
+`probe` écrit une ligne `open=… pages=… render=… skipped=…`, suivie de `repaired=<catégorie>`
+si la structure a été reconstruite (`repaired=on-lookup/…` si le fichier s'est ouvert
+strictement et que seuls des objets hors de leur offset ont été retrouvés par balayage) ; code 0 même si le document est invalide. Mesure sur un corpus externe : voir `docs/QUALITY.md`.
 
 Benchmarks, autres tests différentiels et vérifications de conformité seront ajoutés avec
 leurs fixtures et outils. Ne pas inventer d'option à `castle-pdf` : relire son `--help`.

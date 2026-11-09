@@ -53,8 +53,26 @@ Causes principales de refus : chiffrement (86), `startxref` absent, surtout fich
 tronqués (328), offsets xref faux (`ObjectIdMismatch`, `InvalidXrefEntry`, `MissingXref` :
 183), filtres LZW, ASCII85 et CCITT (33), opérateurs mal placés (17). Sur les pages
 rendues, le texte (`Text`) et les XObjects manquent presque partout : ce sont les écarts
-de fidélité dominants. Une reconstruction xref (réparation) récupérerait la majorité des
-refus structurels ; elle demande une décision (ADR-0002, lecture stricte).
+de fidélité dominants.
+
+Mesure du 2026-11-09, mêmes fichiers et même protocole, avec la reconstruction de l'index
+(ADR-0004) :
+
+| Corpus | Ouverts | dont par réparation | 1re page rendue | Crashs | Timeouts | Temps médian / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| SafeDocs (2 000) | 97,0 % (93,1 %) | 78 (3,9 %) | 95,6 % (92,1 %) | 0 | 0 | 5 ms / 314 ms |
+| UNSAFE (2 636) | 86,5 % (78,1 %) | 223 (8,4 %) | 83,6 % (76,4 %) | 0 | 0 | 3 ms / 395 ms |
+
+Les réparations SafeDocs comptent 27 objets retrouvés à la demande (`ObjectIdMismatch`
+dans un fichier qui s'ouvre strictement) ; les autres réparent l'index à l'ouverture.
+Refus restants : chiffrement (42 + 52), arbre des pages abîmé (`InvalidNode`,
+`MissingKid` : 2 + 180, hors ADR-0004), `startxref` absent sans catalogue retrouvable
+(65 UNSAFE, surtout des fichiers coupés avant leurs objets), en-tête invalide (10 + 55).
+Le fuzzing de la cible `repair` (600 s, environ 2,5 millions d'exécutions, WSL) n'a trouvé
+aucun crash. Sur les fixtures abîmées, qpdf 10.6 reconstruit la même liste d'objets quand
+il trouve un trailer. Sans trailer, il refuse le fichier là où CastlePDF prend le dernier
+catalogue. Il indexe aussi un en-tête `10 0 obj` placé dans les données d'un flux à
+`/Length` indirecte, que CastlePDF saute volontairement (`header-in-stream.pdf`).
 
 ## Principes de tests
 
