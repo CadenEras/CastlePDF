@@ -158,7 +158,7 @@ describe("App", () => {
     expect(screen.getByText("Déposez un fichier PDF sur la fenêtre pour l'ouvrir.")).toBeTruthy();
     open({ sequence: 1, kind: "opening", name: "plan.pdf" });
     expect(screen.getByText("Ouverture de plan.pdf…")).toBeTruthy();
-    open({ sequence: 2, kind: "opened", document: 1, pages: 4, name: "plan.pdf" });
+    open({ sequence: 2, kind: "opened", document: 1, pages: 4, name: "plan.pdf", repair: "none" });
     expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
     await act(async () => {
       await Promise.resolve();
@@ -176,6 +176,7 @@ describe("App", () => {
       document: 1,
       pages: 3,
       name: "shapes.pdf",
+      repair: "none",
     });
     await renderApp();
     await act(async () => {
@@ -186,7 +187,7 @@ describe("App", () => {
 
   it("keeps the document shown when another file cannot be opened", async () => {
     await renderApp();
-    open({ sequence: 1, kind: "opened", document: 1, pages: 4, name: "plan.pdf" });
+    open({ sequence: 1, kind: "opened", document: 1, pages: 4, name: "plan.pdf", repair: "none" });
     open({
       sequence: 2,
       kind: "failed",

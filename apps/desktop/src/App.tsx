@@ -32,7 +32,12 @@ function apply(current: DocumentState, event: DocumentEvent): DocumentState {
   return event.kind === "opened"
     ? {
         sequence: event.sequence,
-        shown: { document: event.document, pages: event.pages, name: event.name },
+        shown: {
+          document: event.document,
+          pages: event.pages,
+          name: event.name,
+          repair: event.repair,
+        },
         notice: null,
       }
     : { sequence: event.sequence, shown: current.shown, notice: event };

@@ -77,7 +77,8 @@ button:focus-visible {
   margin: 0;
 }
 
-.partial {
+.partial,
+.repaired {
   border-left: 4px solid var(--focus);
   padding-left: 0.75rem;
 }

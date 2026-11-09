@@ -92,6 +92,7 @@ pub enum Response {
         id: u64,
         document: u32,
         pages: u32,
+        repair: Repair,
     },
     PageSize {
         id: u64,
@@ -101,13 +102,43 @@ pub enum Response {
     /// RGBA8 pixels, straight alpha, rows top to bottom: exactly
     /// `width * height * 4` bytes. `skipped` lists what the page uses but
     /// the renderer does not draw yet (see `Skipped`).
+    /// `repair` is the state of the document after rendering the tile: an
+    /// object found by a scan while rendering it shows here.
     Tile {
         id: u64,
         width: u16,
         height: u16,
         skipped: Skipped,
+        repair: Repair,
         pixels: Vec<u8>,
     },
+}
+
+/// Whether the structure of a document was reconstructed (ADR-0004), as
+/// reported by `pdf_syntax::PdfFile::repair`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[repr(u8)]
+pub enum Repair {
+    /// Read as written.
+    #[default]
+    None = 0,
+    /// Index reconstructed by a scan; the display may differ from other
+    /// readers.
+    Repaired = 1,
+    /// Reconstructed, and objects may be missing (unreadable object stream,
+    /// stream without `endstream`).
+    Incomplete = 2,
+}
+
+impl Repair {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::Repaired),
+            2 => Some(Self::Incomplete),
+            _ => None,
+        }
+    }
 }
 
 /// Capabilities used by a page and not rendered: one bit per
@@ -225,7 +256,7 @@ const PAGE_SIZE_REPLY: u8 = 0x86;
 const TILE: u8 = 0x87;
 
 /// Bytes of a `Tile` response before its pixels.
-pub const TILE_HEADER_LEN: usize = 1 + 8 + 2 + 2 + 2;
+pub const TILE_HEADER_LEN: usize = 1 + 8 + 2 + 2 + 2 + 1;
 
 struct Writer(Vec<u8>);
 
@@ -378,10 +409,12 @@ impl Response {
                 id,
                 document,
                 pages,
-            } => Writer::new(DOCUMENT_OPENED, 17)
+                repair,
+            } => Writer::new(DOCUMENT_OPENED, 18)
                 .u64(*id)
                 .u32(*document)
-                .u32(*pages),
+                .u32(*pages)
+                .u8(*repair as u8),
             Self::PageSize { id, width, height } => Writer::new(PAGE_SIZE_REPLY, 17)
                 .u64(*id)
                 .u32(*width)
@@ -391,12 +424,14 @@ impl Response {
                 width,
                 height,
                 skipped,
+                repair,
                 pixels,
             } => Writer::new(TILE, TILE_HEADER_LEN + pixels.len())
                 .u64(*id)
                 .u16(*width)
                 .u16(*height)
                 .u16(skipped.0)
+                .u8(*repair as u8)
                 .bytes(pixels),
         }
         .0
@@ -419,6 +454,7 @@ impl Response {
                 id: r.u64()?,
                 document: r.u32()?,
                 pages: r.u32()?,
+                repair: r.repair()?,
             },
             PAGE_SIZE_REPLY => Self::PageSize {
                 id: r.u64()?,
@@ -429,6 +465,7 @@ impl Response {
                 let id = r.u64()?;
                 let (width, height) = (r.u16()?, r.u16()?);
                 let skipped = r.u16()?;
+                let repair = r.repair()?;
                 let side_ok = |side: u16| (1..=MAX_TILE_SIDE).contains(&side);
                 if !side_ok(width) || !side_ok(height) || skipped & !Skipped::KNOWN != 0 {
                     return Err(DecodeError);
@@ -444,6 +481,7 @@ impl Response {
                     width,
                     height,
                     skipped: Skipped(skipped),
+                    repair,
                     pixels,
                 }
             }
@@ -488,6 +526,10 @@ impl Reader<'_> {
         let (bytes, rest) = self.0.split_at_checked(len).ok_or(DecodeError)?;
         self.0 = rest;
         String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError)
+    }
+
+    fn repair(&mut self) -> Result<Repair, DecodeError> {
+        Repair::from_u8(self.u8()?).ok_or(DecodeError)
     }
 
     fn code(&mut self) -> Result<ErrorCode, DecodeError> {
@@ -558,6 +600,7 @@ mod tests {
                 id: 4,
                 document: 1,
                 pages: 12,
+                repair: Repair::Incomplete,
             },
             Response::PageSize {
                 id: 5,
@@ -569,6 +612,7 @@ mod tests {
                 width: 2,
                 height: 1,
                 skipped: Skipped(Skipped::TEXT | Skipped::OTHER),
+                repair: Repair::Repaired,
                 pixels: vec![1, 2, 3, 4, 5, 6, 7, 8],
             },
         ]
@@ -636,6 +680,20 @@ mod tests {
             Response::decode(&bytes)
         };
         assert!(tile(256, 256, 0, 256 * 256 * 4).is_ok());
+        // An unknown repair state is refused.
+        let mut unknown = Response::Tile {
+            id: 1,
+            width: 1,
+            height: 1,
+            skipped: Skipped(0),
+            repair: Repair::None,
+            pixels: vec![0; 4],
+        }
+        .encode();
+        if let Some(byte) = unknown.get_mut(TILE_HEADER_LEN - 1) {
+            *byte = 3;
+        }
+        assert_eq!(Response::decode(&unknown), Err(DecodeError));
         assert!(tile(1, 1, Skipped::OPTIONAL_CONTENT, 4).is_ok());
         for (width, height, skipped, len) in [
             (0, 1, 0, 0),

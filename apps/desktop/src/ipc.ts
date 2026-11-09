@@ -15,11 +15,30 @@ export interface JobEvent {
   outcome: JobOutcome;
 }
 
+/**
+ * Whether the structure of a document was reconstructed (ADR-0004), from the
+ * least to the most serious: read as written, repaired, repaired with objects
+ * possibly missing.
+ */
+export const REPAIR_STATES = ["none", "repaired", "incomplete"] as const;
+export type RepairState = (typeof REPAIR_STATES)[number];
+
+function isRepairState(value: unknown): value is RepairState {
+  return REPAIR_STATES.some((state) => state === value);
+}
+
+/** The more serious of two repair states. */
+export function worseRepair(a: RepairState, b: RepairState): RepairState {
+  return REPAIR_STATES.indexOf(a) >= REPAIR_STATES.indexOf(b) ? a : b;
+}
+
 /** A document opened by the shell (dropped on the window): no path, a name. */
 export interface DocumentInfo {
   document: number;
   pages: number;
   name: string;
+  /** Repair state when it was opened. */
+  repair: RepairState;
 }
 
 /**
@@ -43,13 +62,15 @@ export interface Tile {
   height: number;
   /** Capabilities the page uses but the renderer does not draw (`SKIPPED`). */
   skipped: number;
+  /** Repair state of the document after this tile was rendered. */
+  repair: RepairState;
   pixels: Uint8ClampedArray<ArrayBuffer>;
 }
 
 export const JOB_EVENT = "worker-job";
 export const DOCUMENT_EVENT = "document";
 export const MAX_TILE_SIDE = 256;
-/** Bytes before the pixels of a tile: width, height, skipped, padding. */
+/** Bytes before the pixels of a tile: width, height, skipped, repair, padding. */
 export const TILE_HEADER = 8;
 
 /** Bits of `Tile.skipped` (the worker protocol's `Skipped`), with labels. */
@@ -190,8 +211,15 @@ export function parseDocumentEvent(value: unknown): DocumentEvent | null {
     case "opening":
       return { sequence, kind: "opening", name };
     case "opened":
-      return isU32(value.document) && isU32(value.pages)
-        ? { sequence, kind: "opened", document: value.document, pages: value.pages, name }
+      return isU32(value.document) && isU32(value.pages) && isRepairState(value.repair)
+        ? {
+            sequence,
+            kind: "opened",
+            document: value.document,
+            pages: value.pages,
+            name,
+            repair: value.repair,
+          }
         : null;
     case "failed":
       return { sequence, kind: "failed", name, message: describeCommandError(value.error) };
@@ -221,14 +249,16 @@ export function parseTile(value: unknown, width: number, height: number): Tile {
     height: header.getUint16(2, true),
     skipped: header.getUint16(4, true),
   };
+  const repair = REPAIR_STATES[header.getUint8(6)];
   if (
+    repair === undefined ||
     tile.width !== width ||
     tile.height !== height ||
     value.byteLength !== TILE_HEADER + width * height * 4
   ) {
     throw new Error("invalid tile from shell");
   }
-  return { ...tile, pixels: new Uint8ClampedArray(value, TILE_HEADER) };
+  return { ...tile, repair, pixels: new Uint8ClampedArray(value, TILE_HEADER) };
 }
 
 async function command(name: string, args: Record<string, unknown>): Promise<unknown> {
