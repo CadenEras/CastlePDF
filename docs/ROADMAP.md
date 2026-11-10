@@ -19,7 +19,10 @@ pas un booléen « compatible PDF 2.0 ».
 
 Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objets ;
 3. interpréteur minimal ; 4. tuiles, cache et IPC jusqu'à la première page (fait) ;
-**4 bis. reconstruction de la xref (ADR-0004)** (fait) ; 5. polices et images.
+**4 bis. reconstruction de la xref (ADR-0004)** (fait) ; 5. polices, texte et images
+(ADR-0005), par étapes : 5.1 décompte des types de police dans `survey` ; 5.2 polices
+incluses TrueType et CFF ; 5.3 polices non incluses (jeu OFL) ; 5.4 images Flate et DCT ;
+5.5 polices Type 3.
 
 ### Limites ouvertes à lever avant la fin de P2
 

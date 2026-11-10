@@ -1,6 +1,6 @@
 # ADR-0005 — Polices, texte et images (tranche 5 de P2)
 
-Statut : proposé
+Statut : accepté le 2026-11-10
 Date : 2026-11-10
 Responsable : Mélissa Gries (maintenance du dépôt)
 
@@ -85,7 +85,7 @@ Contraintes :
 3. **`jpeg-decoder`**. Il n'est plus maintenu, et son successeur annoncé est justement
    `zune-jpeg`.
 
-## Décision (proposée)
+## Décision
 
 | Sujet | Proposition |
 | --- | --- |
@@ -145,7 +145,7 @@ Contraintes :
   - polices et images sont isolées dans des modules de `pdf-render` ;
   - retirer la fonction `standard-fonts` ramène au remplacement sans dessin ;
   - chaque dépendance est épinglée et vérifiée par `cargo-deny`.
-- **Une fois accepté :**
+- **Acceptation (2026-11-10) :**
   - ADR-0002 est amendé sur la ligne « Réutiliser » : `skrifa` et `zune-jpeg` sont retenus,
     sans le code SIMD de `zune-jpeg` ;
   - `docs/ROADMAP.md` découpe la tranche 5 en étapes, dans cet ordre :
