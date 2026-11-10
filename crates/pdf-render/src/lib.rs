@@ -156,6 +156,11 @@ pub enum Unsupported {
     TransferFunction,
     /// Optional content (`BDC /OC`): content possibly hidden is drawn.
     OptionalContent,
+    /// Text drawn with a replacement font: the PDF names a font it does
+    /// not embed (one of the 14 standard fonts, for instance), or embeds a
+    /// Type 1 or damaged program. Positions and widths are the PDF's; the
+    /// glyphs only resemble the original ones (ADR-0005).
+    FontSubstituted,
 }
 
 /// RGBA8 pixels with straight alpha, rows from top to bottom.

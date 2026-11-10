@@ -7,6 +7,10 @@
 #   CJK SC Regular, embedded as /CIDFontType0C;
 # - *.json: glyph id, CID or name and advance of each kept character.
 #
+# Source Sans declares the Reserved Font Name "Source": the subset, a
+# Modified Version under the OFL, is renamed "CastleTest Sans" (name table
+# and CFF names). Noto Sans CJK declares no Reserved Font Name.
+#
 # Requires curl and fonttools 4.60.1 (pyftsubset and python with fontTools).
 #   PYTHON=/path/to/python PYFTSUBSET=/path/to/pyftsubset scripts/subset-cff-test-fonts.sh
 # The output is committed; CI does not run this script.
@@ -44,6 +48,26 @@ def extract(font_path, cff_path):
         f.write(font.reader["CFF "])
     return font
 
+def rename(path, family, postscript):
+    font = TTFont(path)
+    name = font["name"]
+    for record in list(name.names):
+        if record.nameID in (1, 16):
+            record.string = family
+        elif record.nameID in (3, 4, 18):
+            record.string = f"{family} Regular"
+        elif record.nameID == 6:
+            record.string = postscript
+        elif record.nameID in (17,):
+            record.string = "Regular"
+    cff = font["CFF "].cff
+    cff.fontNames = [postscript]
+    top = cff.topDictIndex[0]
+    top.FullName = f"{family} Regular"
+    top.FamilyName = family
+    font.save(path)
+
+rename(f"{out}/source-sans-subset.otf", "CastleTest Sans", "CastleTestSans-Regular")
 sans = extract(f"{out}/source-sans-subset.otf", f"{out}/source-sans-subset.cff")
 cmap, order, hmtx = sans.getBestCmap(), sans.getGlyphOrder(), sans["hmtx"]
 glyphs = {ch: [order.index(cmap[ord(ch)]), hmtx[cmap[ord(ch)]][0], cmap[ord(ch)]] for ch in sans_text}

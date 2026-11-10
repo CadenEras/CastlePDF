@@ -73,6 +73,12 @@ export const MAX_TILE_SIDE = 256;
 /** Bytes before the pixels of a tile: width, height, skipped, repair, padding. */
 export const TILE_HEADER = 8;
 
+/**
+ * Bit of `Tile.skipped`: text drawn with a replacement font (the PDF does
+ * not embed the font). Drawn, so not among the `SKIPPED` capabilities.
+ */
+export const FONT_SUBSTITUTED = 1 << 12;
+
 /** Bits of `Tile.skipped` (the worker protocol's `Skipped`), with labels. */
 export const SKIPPED: readonly (readonly [number, string])[] = [
   [1 << 0, "texte"],

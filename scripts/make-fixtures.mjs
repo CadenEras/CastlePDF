@@ -301,7 +301,7 @@ function cffPage() {
     'BT /F4 22 Tf 10 25 Td (OpenType CFF) Tj ET',
   ].join('\n');
   const simple = (descriptor, extra) =>
-    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLBB+SourceSans3-Regular /FirstChar ${first} `
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLBB+CastleTestSans-Regular /FirstChar ${first} `
     + `/LastChar ${last} /Widths [${widths.join(' ')}]${extra} /FontDescriptor ${descriptor} 0 R >>`;
   const descriptor = (name, flags, file, number) =>
     `<< /Type /FontDescriptor /FontName /${name} /Flags ${flags} /FontBBox [-500 -300 1300 1000] `
@@ -315,7 +315,7 @@ function cffPage() {
     stream(content),
     simple(7, ' /Encoding /WinAnsiEncoding'),
     simple(7, ''),
-    descriptor('CSTLBB+SourceSans3-Regular', 32, 'FontFile3', 8),
+    descriptor('CSTLBB+CastleTestSans-Regular', 32, 'FontFile3', 8),
     program(fontFile('source-sans-subset.cff'), 'Type1C'),
     '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLCC+NotoSansCJKsc-Regular /Encoding /Identity-H '
       + '/DescendantFonts [10 0 R] >>',
@@ -324,10 +324,10 @@ function cffPage() {
       + `/FontDescriptor 11 0 R /DW 1000 /W [${w}] >>`,
     descriptor('CSTLCC+NotoSansCJKsc-Regular', 4, 'FontFile3', 12),
     program(fontFile('noto-cjk-subset.cff'), 'CIDFontType0C'),
-    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLDD+SourceSans3-Regular /FirstChar ${first} `
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLDD+CastleTestSans-Regular /FirstChar ${first} `
       + `/LastChar ${last} /Widths [${widths.join(' ')}] /Encoding /WinAnsiEncoding `
       + '/FontDescriptor 14 0 R >>',
-    descriptor('CSTLDD+SourceSans3-Regular', 32, 'FontFile3', 15),
+    descriptor('CSTLDD+CastleTestSans-Regular', 32, 'FontFile3', 15),
     program(fontFile('source-sans-subset.otf'), 'OpenType'),
   ], '1.6');
 }

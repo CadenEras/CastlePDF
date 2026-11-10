@@ -164,7 +164,9 @@ fn errors_name_their_cause() {
         height: 64,
     };
     match call(&worker, &tile(4, rect)) {
-        Response::Tile { skipped, .. } => assert_eq!(skipped, Skipped(Skipped::TEXT)),
+        Response::Tile { skipped, .. } => {
+            assert_eq!(skipped, Skipped(Skipped::FONT_SUBSTITUTED));
+        }
         other => panic!("tile expected, got {other:?}"),
     }
     for (id, rect) in [

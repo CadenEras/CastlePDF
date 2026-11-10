@@ -92,7 +92,11 @@ fn reports_what_is_not_rendered_and_errors() {
     let output = fresh("minimal-1.ppm");
     let (code, out, err) = render(&[os(&corpus("minimal.pdf")), "1".as_ref(), os(&output)]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(out, "page 1: 595x842 pixels; not rendered: text\n");
+    // Helvetica is not embedded: drawn with a replacement font.
+    assert_eq!(
+        out,
+        "page 1: 595x842 pixels; not rendered: original fonts (substituted)\n"
+    );
 
     let output = fresh("missing-page.ppm");
     let (code, _, err) = render(&[os(&corpus("shapes.pdf")), "4".as_ref(), os(&output)]);

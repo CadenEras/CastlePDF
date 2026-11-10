@@ -159,8 +159,10 @@ impl Skipped {
     pub const ALPHA_IS_SHAPE: u16 = 1 << 9;
     pub const TRANSFER_FUNCTION: u16 = 1 << 10;
     pub const OPTIONAL_CONTENT: u16 = 1 << 11;
+    /// Text drawn with a replacement font (protocol version 4).
+    pub const FONT_SUBSTITUTED: u16 = 1 << 12;
     pub const OTHER: u16 = 1 << 15;
-    const KNOWN: u16 = ((1 << 12) - 1) | Self::OTHER;
+    const KNOWN: u16 = ((1 << 13) - 1) | Self::OTHER;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -695,13 +697,14 @@ mod tests {
         }
         assert_eq!(Response::decode(&unknown), Err(DecodeError));
         assert!(tile(1, 1, Skipped::OPTIONAL_CONTENT, 4).is_ok());
+        assert!(tile(1, 1, Skipped::FONT_SUBSTITUTED, 4).is_ok());
         for (width, height, skipped, len) in [
             (0, 1, 0, 0),
             (1, 0, 0, 0),
             (257, 1, 0, 257 * 4),
             (2, 2, 0, 15),
             (2, 2, 0, 17),
-            (1, 1, 1 << 12, 4),
+            (1, 1, 1 << 13, 4),
         ] {
             assert_eq!(tile(width, height, skipped, len), Err(DecodeError));
         }

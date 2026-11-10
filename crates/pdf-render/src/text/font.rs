@@ -28,7 +28,7 @@ use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
 use super::encodings::{GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, WIN_ANSI};
-use super::{resolve, resolve_dictionary, stream_bytes};
+use super::{resolve, resolve_dictionary, standard, stream_bytes};
 use crate::Error;
 use crate::geometry::{Point, Segment};
 
@@ -46,6 +46,8 @@ pub(crate) struct Font {
     format: Format,
     units_per_em: f64,
     mapping: Mapping,
+    /// Drawn with a replacement font (`standard`): reported.
+    substituted: bool,
 }
 
 /// How the program bytes are read.
@@ -117,6 +119,12 @@ pub(crate) struct Code {
 impl Font {
     pub fn units_per_em(&self) -> f64 {
         self.units_per_em
+    }
+
+    /// Drawn with a replacement font: the glyphs only resemble the
+    /// original ones.
+    pub fn substituted(&self) -> bool {
+        self.substituted
     }
 
     /// The codes of `string`: one byte each for a simple font, two bytes
@@ -335,20 +343,20 @@ fn program<S: Source>(
     Ok(Some((Arc::from(bytes), format, units_per_em)))
 }
 
-/// A simple font: one byte per code.
+/// A simple font: one byte per code. Without a program that can be read
+/// (none embedded, a Type 1 one, or a damaged one), a non-symbolic font is
+/// drawn with a replacement font (`standard`).
 fn simple<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
     budget: &mut Budget,
 ) -> Result<Option<Font>, Error> {
-    let Some(descriptor) = font.get(b"FontDescriptor") else {
-        return Ok(None);
-    };
-    let Some(descriptor) = resolve_dictionary(file, descriptor, budget)? else {
-        return Ok(None);
-    };
-    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
-        return Ok(None);
+    let descriptor = match font.get(b"FontDescriptor") {
+        Some(object) => match resolve_dictionary(file, object, budget)? {
+            Some(descriptor) => descriptor,
+            None => return Ok(None),
+        },
+        None => Dictionary::new(),
     };
     let flags = descriptor
         .get(b"Flags")
@@ -358,6 +366,9 @@ fn simple<S: Source>(
     let encoding = match font.get(b"Encoding") {
         Some(object) => resolve(file, object, budget)?,
         None => None,
+    };
+    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
+        return substitute(file, font, &descriptor, encoding.as_ref(), budget);
     };
     let (glyphs, missing, font_ref) = match format {
         Format::OpenType => {
@@ -397,6 +408,75 @@ fn simple<S: Source>(
             missing,
             widths,
         },
+        substituted: false,
+    }))
+}
+
+/// A simple font drawn with a replacement font (ADR-0005, step 5.3): its
+/// codes go through glyph names (the default base encoding is Standard) to
+/// Unicode and the replacement's `cmap`; its widths are the PDF's, or else
+/// those of the replacement, which match the font it replaces. A symbolic
+/// font (`Symbol`, `ZapfDingbats`, a dingbat font) is not replaced yet.
+fn substitute<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    descriptor: &Dictionary,
+    encoding: Option<&Object>,
+    budget: &mut Budget,
+) -> Result<Option<Font>, Error> {
+    let name = font
+        .get(b"BaseFont")
+        .and_then(Object::as_name)
+        .unwrap_or_default();
+    let base = match name.get(6) {
+        Some(b'+') => name.get(7..).unwrap_or_default(),
+        _ => name,
+    };
+    let flags = descriptor
+        .get(b"Flags")
+        .and_then(Object::as_integer)
+        .unwrap_or(0);
+    let symbolic_name = matches!(base, b"Symbol" | b"ZapfDingbats");
+    if symbolic_name || (flags & 4 != 0 && flags & 32 == 0) {
+        return Ok(None);
+    }
+    let weight = descriptor.get(b"FontWeight").and_then(number);
+    let angle = descriptor
+        .get(b"ItalicAngle")
+        .and_then(number)
+        .unwrap_or(0.0);
+    let (family, bold, italic) = standard::choose(base, flags, weight, angle);
+    let Some(bytes) = standard::program(family, bold, italic) else {
+        return Ok(None);
+    };
+    let Ok(font_ref) = FontRef::new(bytes) else {
+        return Ok(None);
+    };
+    let units_per_em = match font_ref.head() {
+        Ok(head) => f64::from(head.units_per_em()),
+        Err(_) => return Ok(None),
+    };
+    let names = encoding_names(file, encoding, Some(&STANDARD), budget)?;
+    let (glyphs, missing) = simple_glyphs(&font_ref, &names, true, false);
+    let widths = simple_widths(
+        file,
+        font,
+        descriptor,
+        Some(&font_ref),
+        &glyphs,
+        units_per_em,
+        budget,
+    )?;
+    Ok(Some(Font {
+        program: Arc::from(bytes),
+        format: Format::OpenType,
+        units_per_em,
+        mapping: Mapping::Simple {
+            glyphs,
+            missing,
+            widths,
+        },
+        substituted: true,
     }))
 }
 
@@ -803,6 +883,7 @@ fn cid<S: Source>(
         format,
         units_per_em,
         mapping: Mapping::Cid { cid_to_gid, widths },
+        substituted: false,
     }))
 }
 

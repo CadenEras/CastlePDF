@@ -9,6 +9,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **polices de remplacement** (ADR-0005, étape 5.3a). Une police simple non
+  symbolique que le PDF nomme sans l'inclure (les 14 polices standard, Arial, Times New
+  Roman…), ou dont le programme est Type 1 ou endommagé, est dessinée avec Arimo, Tinos ou
+  Cousine. Ces polices (SIL OFL 1.1), en quatre styles chacune et réduites aux caractères
+  des encodages Standard, WinAnsi et MacRoman, pèsent environ 280 Kio et sont incluses
+  derrière la fonction `standard-fonts`, active par défaut. Famille et style viennent du
+  nom de la police et de son descripteur. Les largeurs sont celles du PDF, ou celles des
+  remplaçantes, identiques aux métriques AFM d'Adobe (test). Le texte remplacé est signalé
+  `FontSubstituted`. Le protocole du worker passe en v4 (bit `FONT_SUBSTITUTED`), et l'UI
+  affiche « Polices remplacées » à part du rendu partiel. Symbol et ZapfDingbats restent
+  signalés `Text` (étape 5.3b). Inventaire : `crates/pdf-render/fonts/README.md`.
 - `pdf-render` : **texte des polices CFF et OpenType incluses** (ADR-0005, étape 5.2b).
   Sont pris en charge `/FontFile3` `/Type1C` (polices simples `/Type1`), `/CIDFontType0C`
   (polices Type 0 à descendante `CIDFontType0`) et `/OpenType`. Le CFF nu est lu par
@@ -134,6 +145,8 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Fixtures de test : le sous-ensemble de Source Sans 3 (étape 5.2b) portait encore le nom
+  réservé « Source » de sa licence OFL ; il est renommé « CastleTest Sans ».
 - Une police TrueType malformée (glyphe sans point mais avec des données) faisait paniquer
   `read-fonts` 0.41.0 : passage à `skrifa` 0.49.0 / `read-fonts` 0.46.0, test de
   régression (trouvé par la cible de fuzzing `font`).

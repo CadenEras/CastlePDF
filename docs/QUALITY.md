@@ -98,7 +98,16 @@ Après les polices CFF et OpenType incluses (étape 5.2b, même protocole) : 990
 (SafeDocs) et 1 238 → 989 (UNSAFE) premières pages où du texte manque, sans crash ni timeout ;
 `cff.pdf` identique à `pdftoppm` à 216 dpi (0,000 %) ; fuzzing `font` TrueType et CFF :
 180 345 exécutions en 900 s, aucun crash. Le texte restant vient des polices standard, non
-incluses, Type 1 et Type 3 (étapes 5.3 et 5.5). La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
+incluses, Type 1 et Type 3 (étapes 5.3 et 5.5).
+
+Après les polices de remplacement (étape 5.3a, même protocole) :
+- premières pages où du texte manque : 726 → 80 (SafeDocs), 989 → 61 (UNSAFE) ;
+- pages au moins en partie dessinées avec une police remplacée, et signalées : 649 et 906 ;
+- taux, crashs et timeouts inchangés ;
+- temps médian par fichier : 9 à 12 ms (SafeDocs).
+
+Le texte restant vient de Symbol, ZapfDingbats, polices symboliques, CID non incluses et
+Type 3. La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
 `truetype.pdf` à 216 dpi, et 0,28 % à 72 dpi, dû au calage des fûts sur la grille de pixels

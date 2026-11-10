@@ -153,6 +153,18 @@ Contraintes :
   dépendance optionnelle `glifo` de `vello_cpu`, qui n'est pas compilée (fonction `text`
   désactivée). Le cas est un test de régression de `pdf-render`
   (`a_glyph_without_points_does_not_panic`).
+- **Amendement du 2026-11-10 (étape 5.3a) :**
+  - **Courier** : remplacé par **Cousine** plutôt que Liberation Mono. Liberation Mono 2.x
+    dérive de Cousine ; Cousine a les mêmes largeurs que Courier New, la même licence, la
+    même source (googlefonts) qu'Arimo et Tinos, et sa licence ne déclare pas de nom réservé.
+  - **Styles** : quatre styles par famille, italiques comprises, au lieu d'obliques
+    obtenues par inclinaison. Douze fichiers réduits font environ 280 Kio, sous l'objectif
+    de 1,5 Mio, sans code de déformation des glyphes.
+  - **Programmes endommagés** : le remplacement s'applique aussi à une police non symbolique
+    dont le programme inclus est illisible, et pas seulement au Type 1.
+  - **Polices symboliques** : Symbol, ZapfDingbats et les polices marquées symboliques ne
+    sont pas encore remplacées. Leurs glyphes se répartissent sur plusieurs polices Noto,
+    ce qui demande une chaîne de repli par glyphe (étape 5.3b). Leur texte reste `Text`.
 - **Acceptation (2026-11-10) :**
   - ADR-0002 est amendé sur la ligne « Réutiliser » : `skrifa` et `zune-jpeg` sont retenus,
     sans le code SIMD de `zune-jpeg` ;
