@@ -704,23 +704,29 @@ impl Manager<'_> {
                     ..
                 },
             ) => {
-                // Answered first: if nobody waits any more (the opening timed
-                // out and the UI was told it failed), the new document is
-                // closed and the one shown stays current.
-                let answered = reply
-                    .send(Ok(DocumentInfo {
-                        document,
-                        pages,
-                        name,
-                        repair: repair.into(),
-                    }))
-                    .is_ok();
-                let closed = if answered {
-                    lock(&self.shared.current)
-                        .replace(Current { document, pages })
-                        .map(|previous| previous.document)
-                } else {
-                    Some(document)
+                // The new document is current before anyone learns its id,
+                // so that a request sent right after the answer finds it.
+                // If nobody waits any more (the opening timed out and the
+                // UI was told it failed), the previous document is put back
+                // and the new one closed. The lock is held throughout: no
+                // request sees the new document unless it was announced.
+                let closed = {
+                    let mut current = lock(&self.shared.current);
+                    let previous = current.replace(Current { document, pages });
+                    let answered = reply
+                        .send(Ok(DocumentInfo {
+                            document,
+                            pages,
+                            name,
+                            repair: repair.into(),
+                        }))
+                        .is_ok();
+                    if answered {
+                        previous.map(|previous| previous.document)
+                    } else {
+                        *current = previous;
+                        Some(document)
+                    }
                 };
                 if let Some(closed) = closed {
                     lock(&self.shared.cache).remove_document(closed);
@@ -1153,6 +1159,22 @@ mod tests {
             .unwrap();
         // Bytes 6 and 7 of the header: repair state (1, repaired), padding.
         assert_eq!(tile.get(6..8), Some(&[1, 0][..]));
+    }
+
+    #[test]
+    fn a_document_is_current_as_soon_as_it_is_announced() {
+        // The answer used to come before the document became current: a
+        // request sent at once could find no document (seen on CI).
+        let (handle, _events) = start();
+        for _ in 0..20 {
+            let info = handle.open(&fixture("shapes.pdf")).wait(TIMEOUT).unwrap();
+            assert!(
+                handle
+                    .page_size(info.document, 0, 1.0)
+                    .wait(TIMEOUT)
+                    .is_ok()
+            );
+        }
     }
 
     #[test]
