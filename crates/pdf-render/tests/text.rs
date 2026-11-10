@@ -65,22 +65,59 @@ fn with_font(content: &str, font_extra: &str, program: &[u8]) -> Vec<u8> {
 
 /// `with_font` with the descriptor's `/Flags`.
 fn with_font_flags(content: &str, font_extra: &str, program: &[u8], flags: u32) -> Vec<u8> {
+    with_program(
+        content,
+        "TrueType",
+        font_extra,
+        "FontFile2",
+        "",
+        program,
+        flags,
+    )
+}
+
+/// `with_font` with an embedded bare CFF program (`/Type1`, `/FontFile3
+/// /Type1C`).
+fn with_cff(content: &str, font_extra: &str, program: &[u8]) -> Vec<u8> {
+    with_program(
+        content,
+        "Type1",
+        font_extra,
+        "FontFile3",
+        " /Subtype /Type1C",
+        program,
+        32,
+    )
+}
+
+/// A one-page file (200 x 100) whose /F1 has `/Subtype` `subtype` and
+/// `font_extra`, and an embedded program in `file_key` with `stream_extra`
+/// in its stream dictionary.
+fn with_program(
+    content: &str,
+    subtype: &str,
+    font_extra: &str,
+    file_key: &str,
+    stream_extra: &str,
+    program: &[u8],
+    flags: u32,
+) -> Vec<u8> {
     let bodies: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
         format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).into_bytes(),
         format!(
-            "<< /Type /Font /Subtype /TrueType /BaseFont /Arimo /FontDescriptor 7 0 R{font_extra} >>"
+            "<< /Type /Font /Subtype /{subtype} /BaseFont /Arimo /FontDescriptor 7 0 R{font_extra} >>"
         )
         .into_bytes(),
         [
-            format!("<< /Length {} >>\nstream\n", program.len()).as_bytes(),
+            format!("<< /Length {}{stream_extra} >>\nstream\n", program.len()).as_bytes(),
             program,
             b"\nendstream",
         ]
         .concat(),
-        format!("<< /Type /FontDescriptor /FontName /Arimo /Flags {flags} /FontFile2 6 0 R >>")
+        format!("<< /Type /FontDescriptor /FontName /Arimo /Flags {flags} /{file_key} 6 0 R >>")
             .into_bytes(),
     ];
     let mut out = b"%PDF-1.7\n".to_vec();
@@ -328,4 +365,81 @@ fn a_glyph_name_the_font_lacks_is_reported() {
         &arimo(),
     ));
     assert!(rendering.skipped.is_empty());
+}
+
+fn source_sans_cff() -> Vec<u8> {
+    std::fs::read(repo("tests/fonts/source-sans-subset.cff")).expect("font")
+}
+
+#[test]
+fn the_cff_fixture_draws_every_line() {
+    let rendering = render(std::fs::read(repo("tests/corpus/public/cff.pdf")).expect("fixture"));
+    assert!(rendering.skipped.is_empty(), "{:?}", rendering.skipped);
+    // Type1C (WinAnsi and built-in encoding), CID-keyed CFF, OpenType CFF.
+    for baseline in [125, 95, 60, 25] {
+        assert!(
+            dark(&rendering, 150, (10, baseline, 150, baseline + 14)) > 50,
+            "line at {baseline}"
+        );
+    }
+    assert_eq!(dark(&rendering, 150, (260, 0, 300, 150)), 0);
+}
+
+#[test]
+fn cff_glyphs_are_found_by_name() {
+    // Both through WinAnsi names and through the built-in encoding.
+    for extra in [WINANSI, ""] {
+        let rendering = render(with_cff(
+            "BT /F1 40 Tf 20 30 Td (AB) Tj ET",
+            extra,
+            &source_sans_cff(),
+        ));
+        assert!(rendering.skipped.is_empty(), "{extra}");
+        assert!(dark(&rendering, 100, (20, 30, 70, 60)) > 100, "{extra}");
+    }
+    // A name the CFF charset lacks is reported; the A is still drawn.
+    let rendering = render(with_cff(
+        "BT /F1 40 Tf 20 30 Td (AB) Tj ET",
+        " /Encoding << /Differences [66 /nosuchglyph] >>",
+        &source_sans_cff(),
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::Text]
+    );
+    assert!(dark(&rendering, 100, (20, 30, 40, 60)) > 50);
+}
+
+#[test]
+fn a_damaged_cff_program_is_skipped() {
+    let mut program = source_sans_cff();
+    program.truncate(40);
+    let rendering = render(with_cff(
+        "BT /F1 40 Tf 20 30 Td (AB) Tj ET",
+        WINANSI,
+        &program,
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::Text]
+    );
+    assert_eq!(dark(&rendering, 100, (0, 0, 200, 100)), 0);
+}
+
+#[test]
+fn a_type1_program_is_still_reported() {
+    // /FontFile (Type 1) is not read (ADR-0005): its text is skipped.
+    let rendering = render(with_program(
+        "BT /F1 40 Tf 20 30 Td (A) Tj ET",
+        "Type1",
+        WINANSI,
+        "FontFile",
+        "",
+        b"%!PS-AdobeFont-1.0",
+        32,
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::Text]
+    );
 }

@@ -14,3 +14,5 @@ Cargo.lock text eol=lf
 *.ttf binary
 fuzz/seeds/** binary
 *.bin binary
+*.cff binary
+*.otf binary

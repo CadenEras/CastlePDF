@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **texte des polices CFF et OpenType incluses** (ADR-0005, étape 5.2b).
+  Sont pris en charge `/FontFile3` `/Type1C` (polices simples `/Type1`), `/CIDFontType0C`
+  (polices Type 0 à descendante `CIDFontType0`) et `/OpenType`. Le CFF nu est lu par
+  `read-fonts` (`ps::cff`), sans conteneur OpenType reconstruit. Les codes passent par les
+  noms de glyphe du jeu de caractères CFF, ou par l'encodage intégré du CFF quand le PDF ne
+  donne pas de nom (9.6.5.2). Les CID passent par le jeu de caractères d'un CFF à CID. Un
+  nom absent est signalé. Le programme Type 1 (`/FontFile`) reste signalé `Text`.
+  Fixture `cff.pdf` (sous-ensembles OFL de Source Sans 3 et Noto Sans CJK), identique à
+  `pdftoppm` à 216 dpi ; la cible de fuzzing `font` couvre aussi le CFF.
 - `pdf-render` : **texte des polices TrueType incluses** (ADR-0005, étape 5.2a). Sont pris
   en charge :
   - les polices simples `/TrueType` et les polices Type 0 `Identity-H` à descendante
