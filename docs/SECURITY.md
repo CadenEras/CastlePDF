@@ -49,6 +49,16 @@ viennent ni du système ni du réseau, ce qui garde un rendu déterministe. Leur
 `cargo-deny` ne voit pas ces fichiers. Un texte dessiné avec elles est signalé, jamais
 présenté comme exact.
 
+Images (ADR-0005) :
+- **taille** : largeur × hauteur est vérifiée contre `max_image_pixels` avant tout
+  décodage, ce qui refuse une image déclarée géante avec peu de données sans rien allouer ;
+- **budget** : les données décodées et chaque tampon de pixels sont facturés à
+  `max_decoded_bytes` ;
+- **JPEG** : décodé par `zune-jpeg`, sans `unsafe` (fonctions SIMD désactivées), avec des
+  dimensions maximales. Seules des paires d'espaces de couleur que la bibliothèque convertit
+  lui sont demandées, car une autre paire atteint un `unreachable!()` ;
+- **cache** : les images décodées d'un rendu sont gardées dans la limite de 128 Mio.
+
 Réparation de la structure (ADR-0004) : un seul balayage linéaire, jamais de retour en
 arrière ; chaque en-tête d'objet est facturé à `max_objects_visited` ; les dictionnaires
 lus pendant le balayage sont bornés aux octets qui précèdent le mot-clé suivant, et seuls

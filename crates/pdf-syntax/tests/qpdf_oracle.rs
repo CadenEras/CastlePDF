@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pdf_syntax::{
-    Budget, CancellationToken, IndirectValue, MemorySource, ObjectId, PdfFile, ResourceLimits,
-    XrefEntry,
+    Budget, CancellationToken, IndirectValue, MemorySource, Object, ObjectId, PdfFile,
+    ResourceLimits, XrefEntry,
 };
 
 /// (number, generation) -> where the object lives, in qpdf's terms:
@@ -156,6 +156,11 @@ fn decoded_streams_match_qpdf() {
             else {
                 continue;
             };
+            // JPEG data is an image codec, decoded by pdf-render (ADR-0005),
+            // not a pdf-syntax filter; qpdf leaves it encoded as well.
+            if stream.dictionary.get(b"Filter") == Some(&Object::Name(b"DCTDecode".to_vec())) {
+                continue;
+            }
             let ours = file
                 .decoded_stream_data(&stream, &mut budget)
                 .unwrap_or_else(|e| panic!("{} object {}: {e}", path.display(), id.number));

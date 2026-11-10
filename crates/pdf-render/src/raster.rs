@@ -14,12 +14,14 @@
 //! same lines. Clipping a closed polygon to a convex window keeps the
 //! winding number of every point inside the window, so both fill rules hold.
 
+use std::sync::Arc;
 use vello_cpu::color::{AlphaColor, Srgb};
+
 use vello_cpu::kurbo::{
-    self, Affine, BezPath, Cap, Join, PathEl, Point as KPoint, Rect, Stroke, StrokeOpts,
+    self, Affine, BezPath, Cap, Join, PathEl, Point as KPoint, Rect, Shape, Stroke, StrokeOpts,
 };
-use vello_cpu::peniko::{Fill, ImageAlphaType};
-use vello_cpu::{Pixmap, RenderContext, Resources};
+use vello_cpu::peniko::{Extend, Fill, ImageAlphaType, ImageQuality, ImageSampler};
+use vello_cpu::{Image, ImageSource, PixelMetadata, Pixmap, RenderContext, Resources};
 
 use crate::geometry::{Matrix, Path, Segment};
 
@@ -194,6 +196,47 @@ impl Canvas {
         self.context.fill_path(&device);
     }
 
+    /// Draws `image` over the unit square of image space mapped by `matrix`
+    /// (ISO 32000-2, 8.9.4), its first row at the top, with constant `alpha`.
+    /// An image enlarged on both axes is sampled at the nearest pixel unless
+    /// `interpolate` (`/Interpolate`, 8.9.5.3) asks for smoothing; any other
+    /// is sampled bilinearly, so that a reduced image does not alias.
+    pub fn draw_image(
+        &mut self,
+        image: &Arc<Pixmap>,
+        matrix: &Matrix,
+        alpha: f32,
+        interpolate: bool,
+    ) {
+        let unit = Rect::new(0.0, 0.0, 1.0, 1.0).to_path(0.1);
+        let device = self.device_polygons(unit, affine(matrix));
+        let (width, height) = (f64::from(image.width()), f64::from(image.height()));
+        // Image pixel (u, v) to unit square (u / w, 1 - v / h), then device.
+        let pixels = Affine::new([1.0 / width, 0.0, 0.0, -1.0 / height, 0.0, 1.0]);
+        // Device pixels per image pixel along each image axis.
+        let across = matrix.a.hypot(matrix.b) / width;
+        let down = matrix.c.hypot(matrix.d) / height;
+        let quality = if !interpolate && across >= 1.0 && down >= 1.0 {
+            ImageQuality::Low
+        } else {
+            ImageQuality::Medium
+        };
+        self.context.set_paint(Image {
+            image: ImageSource::Pixmap(Arc::clone(image)),
+            sampler: ImageSampler {
+                x_extend: Extend::Pad,
+                y_extend: Extend::Pad,
+                quality,
+                alpha,
+            },
+        });
+        self.context.set_transform(Affine::IDENTITY);
+        self.context.set_fill_rule(Fill::NonZero);
+        self.context.set_paint_transform(affine(matrix) * pixels);
+        self.context.fill_path(&device);
+        self.context.reset_paint_transform();
+    }
+
     pub fn push_clip(&mut self, path: &Path, matrix: &Matrix, even_odd: bool) {
         let device = self.device_polygons(bez_path(path), affine(matrix));
         self.context.set_transform(Affine::IDENTITY);
@@ -213,6 +256,20 @@ impl Canvas {
         self.context.render(&mut pixmap, &mut resources);
         pixmap.take_rgba8(ImageAlphaType::Alpha)
     }
+}
+
+/// A pixmap of straight RGBA8 pixels (`width × height × 4` bytes, checked
+/// by the caller).
+pub(crate) fn pixmap(rgba: Vec<u8>, width: u16, height: u16, transparent: bool) -> Arc<Pixmap> {
+    Arc::new(Pixmap::from_parts(
+        rgba,
+        width,
+        height,
+        PixelMetadata {
+            may_have_transparency: transparent,
+            alpha_type: ImageAlphaType::Alpha,
+        },
+    ))
 }
 
 fn affine(matrix: &Matrix) -> Affine {

@@ -332,6 +332,87 @@ function cffPage() {
   ], '1.6');
 }
 
+// An image XObject: dictionary entries `extra` and raw sample bytes,
+// Flate-compressed when `flate`.
+function imageStream(width, height, extra, bytes, flate = false) {
+  const data = Buffer.from(bytes).toString('latin1');
+  const body = flate ? zlibFixedHuffman(data) : data;
+  return stream(body, ` /Type /XObject /Subtype /Image /Width ${width} /Height ${height}${extra}`
+    + (flate ? ' /Filter /FlateDecode' : ''));
+}
+
+// Two pages of image XObjects (ADR-0005, step 5.4a), each 200 x 200 with
+// four 80 x 80 images at (10, 110), (110, 110), (10, 10) and (110, 10).
+// Page 1: a 4 x 4 RGB image (Flate; rows red, green, blue, gray ramp), an
+// 8 x 8 1-bit gray checkerboard (white first), a 4 x 1 Indexed image (2 bits:
+// yellow, cyan, magenta, black) and an 8 x 8 stencil mask (a diagonal
+// band) painted blue. Page 2, on a red background: a 2 x 1 green image with
+// an /SMask (opaque left, transparent right), a 4 x 1 gray image with a
+// colour key masking value 0 (black), a 2 x 1 16-bit RGB image (white,
+// blue) and a 2 x 1 gray image with /Decode [1 0] (black, white).
+function imagesPage() {
+  const rgb = [];
+  const rows = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+  for (const color of rows) for (let x = 0; x < 4; x += 1) rgb.push(...color);
+  for (let x = 0; x < 4; x += 1) rgb.push(x * 85, x * 85, x * 85);
+  const checker = [];
+  for (let y = 0; y < 8; y += 1) checker.push(y % 2 === 0 ? 0b10101010 : 0b01010101);
+  const band = [];
+  for (let y = 0; y < 8; y += 1) band.push(~(0b11000000 >> y) & 0xff);
+  const draw = (name, x, y) => `q 80 0 0 80 ${x} ${y} cm /${name} Do Q`;
+  const page1 = [draw('A', 10, 110), draw('B', 110, 110), draw('C', 10, 10),
+    '0 0 1 rg', draw('D', 110, 10)].join('\n');
+  const page2 = ['1 0 0 rg 0 0 200 200 re f', draw('E', 10, 110), draw('F', 110, 110),
+    draw('G', 10, 10), draw('H', 110, 10)].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /XObject << /A 7 0 R /B 8 0 R /C 9 0 R /D 10 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /XObject << /E 11 0 R /F 13 0 R /G 14 0 R /H 15 0 R >> >> /Contents 6 0 R >>',
+    stream(page1),
+    stream(page2),
+    imageStream(4, 4, ' /ColorSpace /DeviceRGB /BitsPerComponent 8', rgb, true),
+    imageStream(8, 8, ' /ColorSpace /DeviceGray /BitsPerComponent 1', checker),
+    imageStream(4, 1, ' /ColorSpace [/Indexed /DeviceRGB 3 <FFFF0000FFFFFF00FF000000>] '
+      + '/BitsPerComponent 2', [0b00011011]),
+    imageStream(8, 8, ' /ImageMask true', band),
+    imageStream(2, 1, ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 12 0 R',
+      [0, 160, 0, 0, 160, 0]),
+    imageStream(2, 1, ' /ColorSpace /DeviceGray /BitsPerComponent 8', [255, 0]),
+    imageStream(4, 1, ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Mask [0 0]',
+      [0, 255, 0, 255]),
+    imageStream(2, 1, ' /ColorSpace /DeviceRGB /BitsPerComponent 16',
+      [255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255]),
+    imageStream(2, 1, ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0]', [0, 255]),
+  ], '1.4');
+}
+
+// JPEG (DCTDecode) images: synthetic content encoded by Pillow 11.3.0
+// (tests/images, scripts/make-test-jpegs.sh). The Adobe CMYK one stores
+// inverted samples, compensated by /Decode as producers do. Page 1: RGB and
+// gray; page 2: CMYK, apart because CMYK to RGB differs from pdftoppm by
+// design (no colour management, as for paths).
+function jpegPage() {
+  const jpeg = (name, extra) => stream(
+    readFileSync(path.join(root, 'tests', 'images', name)).toString('latin1'),
+    ` /Type /XObject /Subtype /Image /Width 32 /Height 16 /BitsPerComponent 8${extra} /Filter /DCTDecode`);
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /XObject << /R 5 0 R /G 6 0 R >> >> /Contents 4 0 R >>',
+    stream(['q 160 0 0 80 20 110 cm /R Do Q', 'q 160 0 0 40 20 60 cm /G Do Q'].join('\n')),
+    jpeg('rgb.jpg', ' /ColorSpace /DeviceRGB'),
+    jpeg('gray.jpg', ' /ColorSpace /DeviceGray'),
+    jpeg('cmyk.jpg', ' /ColorSpace /DeviceCMYK /Decode [1 0 1 0 1 0 1 0]'),
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /XObject << /C 7 0 R >> >> /Contents 9 0 R >>',
+    stream('q 160 0 0 80 20 110 cm /C Do Q'),
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -412,6 +493,11 @@ export const fixtures = {
   // Embedded CFF text: Type1C (WinAnsi and built-in encoding), CID-keyed
   // CIDFontType0C, OpenType with CFF outlines; see cffPage.
   'cff.pdf': cffPage(),
+  // Image XObjects: colour spaces, bit depths, masks and /Decode; see
+  // imagesPage.
+  'images.pdf': imagesPage(),
+  // JPEG images: YCbCr, gray and Adobe CMYK; see jpegPage.
+  'jpeg.pdf': jpegPage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

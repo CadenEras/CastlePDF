@@ -102,7 +102,7 @@ fn small(content: &str) -> Vec<u8> {
         concat!(
             "/Resources << /ExtGState << /G 5 0 R /G2 8 0 R >> ",
             "/ColorSpace << /CS0 6 0 R /CS1 /DeviceRGB /P /Pattern >> ",
-            "/XObject << /Im1 6 0 R >> /Shading << /Sh1 6 0 R >> /Pattern << /P1 6 0 R >> ",
+            "/XObject << /Im1 7 0 R >> /Shading << /Sh1 6 0 R >> /Pattern << /P1 6 0 R >> ",
             "/Properties << /L1 << /Type /OCG >> >> >>",
         ),
         content,

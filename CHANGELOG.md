@@ -9,6 +9,27 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **images** (ADR-0005, étape 5.4a). Les XObjects `/Image` dessinés par `Do`
+  sont rendus :
+  - **données** passées par les filtres existants, ou décodées par `zune-jpeg` 0.5.15
+    (`DCTDecode`, sans ses chemins SIMD `unsafe`) ;
+  - **espaces de couleur** DeviceGray, RGB et CMYK (conversion ISO, comme pour les tracés),
+    ICCBased réduit à `/N`, CalGray, CalRGB et Indexed ;
+  - **échantillons** de 1, 2, 4, 8 et 16 bits, avec `/Decode` ;
+  - **masques** : masques de pochoir (`/ImageMask`, couleur de remplissage), `/SMask`,
+    `/Mask` en pochoir (rééchantillonnés si leur taille diffère) ou par clé de couleur ;
+  - **JPEG** CMYK et YCCK, y compris l'inversion Adobe compensée par `/Decode`.
+
+  Le dessin passe par la peinture image de `vello_cpu` et le même découpage en double
+  précision que les tracés. Une image agrandie est échantillonnée au plus proche, sauf
+  `/Interpolate` ; une image réduite l'est en bilinéaire. La taille (largeur × hauteur) est
+  vérifiée avant toute allocation, contre la nouvelle limite `max_image_pixels`. Chaque
+  rendu garde un cache d'images borné. Restent signalés : autres filtres (JPX, JBIG2,
+  CCITT…) en `Image`, Lab, Separation et DeviceN en `ColorSpace`, `/Matte` en `SoftMask`,
+  XObjects de formulaire en `XObject`.
+
+  Fixtures `images.pdf` et `jpeg.pdf`, identiques à `pdftoppm` hors CMYK. Nouvelle cible de
+  fuzzing `image`.
 - `pdf-render` : **polices de remplacement** (ADR-0005, étape 5.3a). Une police simple non
   symbolique que le PDF nomme sans l'inclure (les 14 polices standard, Arial, Times New
   Roman…), ou dont le programme est Type 1 ou endommagé, est dessinée avec Arimo, Tinos ou
