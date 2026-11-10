@@ -190,3 +190,77 @@ fn the_pixel_limit_applies_to_the_area() {
     // `page_size` does not apply `max_pixels`.
     assert_eq!(page_size(page, &options), Ok((800, 800)));
 }
+
+/// A 64 x 64 page whose content is `content`.
+fn page_with_content(content: &[u8]) -> Document<MemorySource> {
+    let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    stream.extend_from_slice(content);
+    stream.extend_from_slice(b"\nendstream");
+    let bodies: [&[u8]; 4] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Contents 4 0 R >>",
+        &stream,
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 5\n0000000000 65535 f \n").as_bytes());
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    Document::open(
+        MemorySource::from_vec(out, &ResourceLimits::default()).expect("source"),
+        &mut budget(),
+    )
+    .expect("document")
+}
+
+/// Found by the `render` fuzz target: a shear of 71 069 makes a sliver
+/// millions of pixels long. The rasteriser keeps segments in single
+/// precision, so before paths were clipped in double precision the tile
+/// and the page placed its edge differently (a channel off by 34).
+#[test]
+fn far_geometry_renders_the_same_in_a_tile() {
+    let input = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/far-shear-tile.bin"),
+    )
+    .expect("fuzz input");
+    // As in the fuzz target: the first byte chooses the scale.
+    let (scale, content) = input.split_first().expect("input");
+    let scale = u32::from(scale % 8) + 1;
+    let document = page_with_content(content);
+    let page = document.page(0).expect("page");
+    let options = options(f64::from(scale));
+    let whole = render_page(document.file(), page, &options, &mut budget()).expect("page");
+    let side = 64 * scale;
+    let area = PixelRect {
+        x: side / 3 + 1,
+        y: side / 5 + 1,
+        width: side / 2,
+        height: side / 2,
+    };
+    let part = render_area(document.file(), page, &options, area, &mut budget()).expect("area");
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let got = part.bitmap.pixel(x, y).expect("area pixel");
+            let want = whole
+                .bitmap
+                .pixel(area.x + x, area.y + y)
+                .expect("page pixel");
+            assert!(
+                got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
+                "({x}, {y}) {got:?} != {want:?}"
+            );
+        }
+    }
+}

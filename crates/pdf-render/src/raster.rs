@@ -4,9 +4,20 @@
 //! The adapter only uses fills, strokes and the clip stack. It never pushes
 //! a layer: `vello_cpu` asserts that every layer is popped before rendering,
 //! whereas pending clip paths are allowed.
+//!
+//! Every path reaches `vello_cpu` already in device space, flattened and
+//! clipped to the canvas (plus `MARGIN`), in double precision. `vello_cpu`
+//! keeps its line segments in single precision: a point millions of pixels
+//! away would lose about a quarter of a pixel, differently in a tile and in
+//! the whole page. Flattening uses the same tolerance as `vello_cpu` and
+//! does not depend on where the canvas lies, so a tile and the page cut the
+//! same lines. Clipping a closed polygon to a convex window keeps the
+//! winding number of every point inside the window, so both fill rules hold.
 
 use vello_cpu::color::{AlphaColor, Srgb};
-use vello_cpu::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point as KPoint, Rect, Stroke};
+use vello_cpu::kurbo::{
+    self, Affine, BezPath, Cap, Join, PathEl, Point as KPoint, Rect, Stroke, StrokeOpts,
+};
 use vello_cpu::peniko::{Fill, ImageAlphaType};
 use vello_cpu::{Pixmap, RenderContext, Resources};
 
@@ -53,6 +64,13 @@ pub(crate) struct StrokeStyle {
 /// be rendered" (ISO 32000-2, 8.4.3.2).
 pub(crate) const HAIRLINE: f64 = 1.0;
 
+/// Flattening tolerance in device pixels: the one `vello_cpu` 0.3 uses
+/// (`vello_common::flatten::TOL`), so that curves look the same.
+const TOLERANCE: f64 = 0.25;
+/// Pixels kept around the canvas when clipping: edges there do not change
+/// any pixel of the canvas, yet stay clear of its border.
+const MARGIN: f64 = 2.0;
+
 pub(crate) struct Canvas {
     context: RenderContext,
     width: u16,
@@ -78,10 +96,50 @@ impl Canvas {
     }
 
     pub fn fill(&mut self, path: &Path, matrix: &Matrix, even_odd: bool, color: Rgba) {
-        self.context.set_transform(affine(matrix));
+        let device = self.device_polygons(bez_path(path), affine(matrix));
+        self.context.set_transform(Affine::IDENTITY);
         self.context.set_fill_rule(fill_rule(even_odd));
         self.context.set_paint(paint(color));
-        self.context.fill_path(&bez_path(path));
+        self.context.fill_path(&device);
+    }
+
+    /// `path` through `transform`, flattened and clipped to the canvas
+    /// window: closed polygons in device space.
+    fn device_polygons(&self, path: BezPath, transform: Affine) -> BezPath {
+        let window = Rect::new(
+            -MARGIN,
+            -MARGIN,
+            f64::from(self.width) + MARGIN,
+            f64::from(self.height) + MARGIN,
+        );
+        let mut out = BezPath::new();
+        let mut polygon: Vec<KPoint> = Vec::new();
+        let flush = |polygon: &mut Vec<KPoint>, out: &mut BezPath| {
+            let clipped = clip_polygon(polygon, window);
+            polygon.clear();
+            let mut points = clipped.into_iter();
+            if let Some(first) = points.next() {
+                out.move_to(first);
+                for point in points {
+                    out.line_to(point);
+                }
+                out.close_path();
+            }
+        };
+        kurbo::flatten(path.into_iter().map(|el| transform * el), TOLERANCE, |el| {
+            match el {
+                PathEl::MoveTo(point) => {
+                    flush(&mut polygon, &mut out);
+                    polygon.push(point);
+                }
+                PathEl::LineTo(point) => polygon.push(point),
+                PathEl::ClosePath => flush(&mut polygon, &mut out),
+                // `flatten` emits moves, lines and closes only.
+                PathEl::QuadTo(..) | PathEl::CurveTo(..) => {}
+            }
+        });
+        flush(&mut polygon, &mut out);
+        out
     }
 
     /// Strokes `path` (ISO 32000-2, 8.5.3.2). Dashes are always cut in
@@ -105,26 +163,42 @@ impl Canvas {
         } else {
             Some(HAIRLINE)
         };
-        match device_width {
+        // The outline is expanded as `vello_cpu` would (same tolerance,
+        // scaled down by the matrix in user space), then filled.
+        let outline = match device_width {
             Some(width) => {
                 let mut device = user;
                 device.apply_affine(affine(matrix));
-                self.context.set_transform(Affine::IDENTITY);
-                self.context.set_stroke(stroke(style, width));
-                self.context.stroke_path(&device);
+                kurbo::stroke(
+                    device,
+                    &stroke(style, width),
+                    &StrokeOpts::default(),
+                    TOLERANCE,
+                )
             }
             None => {
-                self.context.set_transform(affine(matrix));
-                self.context.set_stroke(stroke(style, style.width));
-                self.context.stroke_path(&user);
+                let scale = matrix.a.abs().max(matrix.d.abs()).max(1.0);
+                let mut outline = kurbo::stroke(
+                    user,
+                    &stroke(style, style.width),
+                    &StrokeOpts::default(),
+                    TOLERANCE / scale,
+                );
+                outline.apply_affine(affine(matrix));
+                outline
             }
-        }
+        };
+        let device = self.device_polygons(outline, Affine::IDENTITY);
+        self.context.set_transform(Affine::IDENTITY);
+        self.context.set_fill_rule(Fill::NonZero);
+        self.context.fill_path(&device);
     }
 
     pub fn push_clip(&mut self, path: &Path, matrix: &Matrix, even_odd: bool) {
-        self.context.set_transform(affine(matrix));
+        let device = self.device_polygons(bez_path(path), affine(matrix));
+        self.context.set_transform(Affine::IDENTITY);
         self.context.set_fill_rule(fill_rule(even_odd));
-        self.context.push_clip_path(&bez_path(path));
+        self.context.push_clip_path(&device);
     }
 
     pub fn pop_clip(&mut self) {
@@ -201,6 +275,52 @@ fn path_from(elements: impl Iterator<Item = PathEl>) -> BezPath {
     out
 }
 
+/// Sutherland-Hodgman: `polygon` (implicitly closed) clipped to `window`
+/// one side at a time. Points on a side count as inside.
+fn clip_polygon(polygon: &[KPoint], window: Rect) -> Vec<KPoint> {
+    type Side = (
+        fn(KPoint, f64) -> bool,
+        fn(KPoint, KPoint, f64) -> KPoint,
+        f64,
+    );
+    let at_x = |a: KPoint, b: KPoint, x: f64| {
+        let t = (x - a.x) / (b.x - a.x);
+        KPoint::new(x, a.y + t * (b.y - a.y))
+    };
+    let at_y = |a: KPoint, b: KPoint, y: f64| {
+        let t = (y - a.y) / (b.y - a.y);
+        KPoint::new(a.x + t * (b.x - a.x), y)
+    };
+    let sides: [Side; 4] = [
+        (|p, x| p.x >= x, at_x, window.x0),
+        (|p, x| p.x <= x, at_x, window.x1),
+        (|p, y| p.y >= y, at_y, window.y0),
+        (|p, y| p.y <= y, at_y, window.y1),
+    ];
+    let mut points = polygon.to_vec();
+    for (inside, cross, edge) in sides {
+        let Some(&last) = points.last() else {
+            break;
+        };
+        let mut next = Vec::with_capacity(points.len() + 4);
+        let mut previous = last;
+        for &point in &points {
+            match (inside(previous, edge), inside(point, edge)) {
+                (true, true) => next.push(point),
+                (true, false) => next.push(cross(previous, point, edge)),
+                (false, true) => {
+                    next.push(cross(previous, point, edge));
+                    next.push(point);
+                }
+                (false, false) => {}
+            }
+            previous = point;
+        }
+        points = next;
+    }
+    if points.len() < 3 { Vec::new() } else { points }
+}
+
 fn bez_path(path: &Path) -> BezPath {
     let point = |p: crate::geometry::Point| KPoint::new(p.x, p.y);
     let mut out = BezPath::new();
@@ -218,6 +338,54 @@ fn bez_path(path: &Path) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window() -> Rect {
+        Rect::new(0.0, 0.0, 10.0, 10.0)
+    }
+
+    #[test]
+    fn polygons_inside_the_window_are_kept() {
+        let square = [
+            KPoint::new(2.0, 2.0),
+            KPoint::new(8.0, 2.0),
+            KPoint::new(8.0, 8.0),
+            KPoint::new(2.0, 8.0),
+        ];
+        assert_eq!(clip_polygon(&square, window()), square);
+        assert!(clip_polygon(&square[..2], window()).is_empty());
+    }
+
+    #[test]
+    fn far_points_are_cut_at_the_window() {
+        // A sliver from x = -3e6 to 3e6 crossing the window at y 4..6.
+        let sliver = [
+            KPoint::new(-3e6, 4.0),
+            KPoint::new(3e6, 4.0),
+            KPoint::new(3e6, 6.0),
+            KPoint::new(-3e6, 6.0),
+        ];
+        let clipped = clip_polygon(&sliver, window());
+        // Closed window: points on its sides are kept.
+        assert!(
+            clipped
+                .iter()
+                .all(|p| (0.0..=10.0).contains(&p.x) && (0.0..=10.0).contains(&p.y))
+        );
+        let area: f64 = clipped
+            .iter()
+            .zip(clipped.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f64>()
+            / 2.0;
+        assert!((area.abs() - 20.0).abs() < 1e-9, "{area}");
+        // Entirely outside: nothing left.
+        let outside = [
+            KPoint::new(20.0, 20.0),
+            KPoint::new(30.0, 20.0),
+            KPoint::new(30.0, 30.0),
+        ];
+        assert!(clip_polygon(&outside, window()).is_empty());
+    }
 
     #[test]
     fn conformal_matrices_are_recognised() {
