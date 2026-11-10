@@ -88,7 +88,10 @@ fuzz_target!(|data: &[u8]| {
             width: side / 2,
             height: side / 2,
         };
-        let part = render_area(document.file(), page, &options, area, &mut budget)
+        // A budget of its own: the decoded-bytes limit is cumulative, and the
+        // page rendering may have used most of it (images).
+        let mut area_budget = Budget::new(limits, CancellationToken::new());
+        let part = render_area(document.file(), page, &options, area, &mut area_budget)
             .expect("the area of a rendered page renders");
         assert_eq!(part.skipped, rendering.skipped);
         for y in 0..area.height {

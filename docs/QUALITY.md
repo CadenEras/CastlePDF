@@ -122,7 +122,22 @@ Après les XObjects image (étape 5.4a, même protocole) :
 - temps par fichier : médiane 12 → 21 ms, p95 43 → 211 ms (SafeDocs), car le décodage des
   images est refait à chaque rendu ;
 - fuzzing `image` : 428 313 puis 96 969 exécutions (15 et 5 min), aucun crash ;
-- `images.pdf` et page 1 de `jpeg.pdf` identiques à `pdftoppm` (0,000 %). La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
+- `images.pdf` et page 1 de `jpeg.pdf` identiques à `pdftoppm` (0,000 %).
+
+Après les images en ligne (étape 5.4b, même protocole, deux exécutions) :
+- images non dessinées et signalées (`Image`) : 123 → 112 premières pages (SafeDocs),
+  169 → 149 (UNSAFE). Le reste : surtout des filtres secondaires (ASCIIHex, ASCII85, LZW,
+  RunLength, CCITT, JPX, JBIG2), renvoyés en P3 ;
+- premières pages rendues inchangées (1 911 et 2 205) : un espace de couleur absent des
+  ressources ne fait sauter que l'image (`ColorSpace`), pas la page ;
+- aucun crash ni timeout ; temps par fichier : médiane 21 à 22 ms, p95 215 à 254 ms
+  (SafeDocs ; la dispersion entre deux exécutions est du même ordre que l'écart) ;
+- fuzzing `render` (graine d'images en ligne ajoutée) : 382 152 puis 348 808 exécutions
+  (5 min chacune), aucun crash ;
+- `inline-images.pdf` identique à `pdftoppm` (0,000 %) ; oracle qpdf : 12 fixtures,
+  37 flux identiques.
+
+La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
 `truetype.pdf` à 216 dpi, et 0,28 % à 72 dpi, dû au calage des fûts sur la grille de pixels

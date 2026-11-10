@@ -616,7 +616,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 self.skipped.insert(Unsupported::Shading);
             }
             b"BI" => {
-                self.skipped.insert(Unsupported::Image);
+                if let Some((dictionary, data)) = op.inline_image {
+                    self.inline_image(dictionary, data, at, budget)?;
+                }
             }
             // Marked content (14.6): optional content may hide what follows.
             b"BMC" | b"BDC" | b"MP" | b"DP" => {
@@ -687,34 +689,19 @@ impl<'a, S: Source> Interpreter<'a, S> {
             return Ok(());
         }
         // A stencil mask takes the fill colour: cached per colour.
-        let mask = stream.dictionary.get(b"ImageMask") == Some(&Object::Boolean(true));
-        let fill = if mask {
-            match self.state.fill.rgba() {
-                Ok(color) => {
-                    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    [byte(color.r), byte(color.g), byte(color.b)]
-                }
-                Err(capability) => {
-                    self.skipped.insert(capability);
-                    return Ok(());
-                }
-            }
-        } else {
-            [0; 3]
+        let Some(fill) = self.stencil_fill(&stream.dictionary) else {
+            return Ok(());
         };
         let key = (*id, fill);
         let image = match self.images.get(&key) {
             Some(cached) => cached.clone(),
             None => {
-                let space = match stream.dictionary.get(b"ColorSpace") {
-                    Some(Object::Name(name)) if !is_device_name(name) => {
-                        Some(self.resource(b"ColorSpace", name, at, budget)?)
-                    }
-                    other => other.cloned(),
+                let Some(space) = self.image_space(&stream.dictionary, at, budget)? else {
+                    return Ok(());
                 };
                 let decoded = image::decode(
                     self.file,
-                    &stream,
+                    image::Body::Stream(&stream),
                     space.as_ref(),
                     fill,
                     &self.limits,
@@ -745,6 +732,101 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 return Ok(());
             }
         };
+        let interpolate = stream.dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
+        self.paint_image(&image, interpolate, at)
+    }
+
+    /// `BI ... ID ... EI` (8.9.7): an inline image, decoded each time it is
+    /// drawn (its data is part of the content, already budgeted).
+    fn inline_image(
+        &mut self,
+        raw: &Dictionary,
+        data: &[u8],
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        let dictionary = image::inline_dictionary(raw);
+        let Some(fill) = self.stencil_fill(&dictionary) else {
+            return Ok(());
+        };
+        let Some(space) = self.image_space(&dictionary, at, budget)? else {
+            return Ok(());
+        };
+        let body = image::Body::Inline {
+            dictionary: &dictionary,
+            data,
+        };
+        let decoded = image::decode(self.file, body, space.as_ref(), fill, &self.limits, budget)?;
+        let decoded = match decoded {
+            Ok(decoded) => decoded,
+            Err(capability) => {
+                self.skipped.insert(capability);
+                return Ok(());
+            }
+        };
+        let image = raster::pixmap(
+            decoded.rgba,
+            decoded.width,
+            decoded.height,
+            decoded.transparent,
+        );
+        let interpolate = dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
+        self.paint_image(&image, interpolate, at)
+    }
+
+    /// The colour painted through an image of `dictionary` if it is a
+    /// stencil mask (8.9.6.2), black otherwise (unused). `None` when the
+    /// fill colour cannot be drawn: the image is skipped and reported.
+    fn stencil_fill(&mut self, dictionary: &Dictionary) -> Option<[u8; 3]> {
+        if dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
+            return Some([0; 3]);
+        }
+        match self.state.fill.rgba() {
+            Ok(color) => {
+                let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                Some([byte(color.r), byte(color.g), byte(color.b)])
+            }
+            Err(capability) => {
+                self.skipped.insert(capability);
+                None
+            }
+        }
+    }
+
+    /// The `/ColorSpace` of an image (none for a stencil mask), looked up in
+    /// the resources when it names one. `None` when that name is not in the
+    /// resources: only the image depends on it, so the image alone is
+    /// skipped and reported (`ColorSpace`), the rest of the page drawn.
+    fn image_space(
+        &mut self,
+        dictionary: &Dictionary,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<Option<Option<Object>>, Error> {
+        if dictionary.get(b"ImageMask") == Some(&Object::Boolean(true)) {
+            return Ok(Some(None));
+        }
+        match dictionary.get(b"ColorSpace") {
+            Some(Object::Name(name)) if !is_device_name(name) => {
+                match self.category(b"ColorSpace", at, budget)?.get(name) {
+                    None | Some(Object::Null) => {
+                        self.skipped.insert(Unsupported::ColorSpace);
+                        Ok(None)
+                    }
+                    Some(object) => Ok(Some(Some(object.clone()))),
+                }
+            }
+            other => Ok(Some(other.cloned())),
+        }
+    }
+
+    /// Paints `image` in the unit square of the current transformation.
+    fn paint_image(
+        &mut self,
+        image: &Arc<vello_cpu::Pixmap>,
+        interpolate: bool,
+        at: u64,
+    ) -> Result<(), Error> {
         let matrix = self.state.ctm.then(&self.base);
         let mut unit = Path::default();
         unit.rectangle(0.0, 0.0, 1.0, 1.0);
@@ -753,9 +835,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
         }
         let (width, height) = self.canvas_size;
         self.charge_work(unit.work(&matrix, 0.0, width, height))?;
-        let interpolate = stream.dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
         self.canvas
-            .draw_image(&image, &matrix, self.state.fill.alpha, interpolate);
+            .draw_image(image, &matrix, self.state.fill.alpha, interpolate);
         Ok(())
     }
 

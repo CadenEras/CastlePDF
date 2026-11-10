@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **images en ligne** (ADR-0005, étape 5.4b). `BI … ID … EI` est dessiné
+  comme une image XObject, avec les mêmes espaces de couleur, profondeurs, masques de
+  pochoir, filtres et limites. Les abréviations d'ISO 32000-2 (8.9.7) sont développées :
+  clés (`/W`, `/CS`, `/F`…), filtres (`/Fl`, `/DCT`…) et espaces (`/G`, `/RGB`, `/CMYK`,
+  `/I`, y compris la base d'un Indexed). Un espace de couleur peut être nommé dans les
+  ressources. La fin des données vient de `/L` (PDF 2.0) quand il est présent, sinon de
+  l'heuristique déjà utilisée pour sauter l'image. Une image en ligne est décodée à chaque
+  dessin (pas de cache : elle n'a pas d'identifiant d'objet). Fixture `inline-images.pdf`,
+  identique à `pdftoppm`.
 - `pdf-render` : **images** (ADR-0005, étape 5.4a). Les XObjects `/Image` dessinés par `Do`
   sont rendus :
   - **données** passées par les filtres existants, ou décodées par `zune-jpeg` 0.5.15
@@ -25,8 +34,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   `/Interpolate` ; une image réduite l'est en bilinéaire. La taille (largeur × hauteur) est
   vérifiée avant toute allocation, contre la nouvelle limite `max_image_pixels`. Chaque
   rendu garde un cache d'images borné. Restent signalés : autres filtres (JPX, JBIG2,
-  CCITT…) en `Image`, Lab, Separation et DeviceN en `ColorSpace`, `/Matte` en `SoftMask`,
-  XObjects de formulaire en `XObject`.
+  CCITT…) en `Image`, Lab, Separation et DeviceN en `ColorSpace`, un masque inapplicable
+  en `SoftMask`, XObjects de formulaire en `XObject`. `/Matte` (couleurs prémultipliées)
+  est restitué.
 
   Fixtures `images.pdf` et `jpeg.pdf`, identiques à `pdftoppm` hors CMYK. Nouvelle cible de
   fuzzing `image`.

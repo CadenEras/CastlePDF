@@ -1,7 +1,9 @@
 //! Content stream syntax (ISO 32000-2, 7.8.2): operands followed by an
-//! operator, with inline images (8.9.7) skipped as one operation.
+//! operator, with an inline image (8.9.7) read as one `BI` operation.
 
-use pdf_syntax::{Budget, Lexer, Object, ObjectId, Parser, Token};
+use std::ops::Range;
+
+use pdf_syntax::{Budget, Dictionary, Lexer, Object, ObjectId, Parser, Token};
 
 use crate::error::{ContentErrorKind, Error};
 
@@ -19,6 +21,9 @@ pub(crate) struct Operation<'a> {
     /// Offset of the operator keyword in the decoded content.
     pub offset: u64,
     pub operands: &'a [Object],
+    /// For `BI`: the image's dictionary, as written (abbreviated keys),
+    /// and its encoded data.
+    pub inline_image: Option<(&'a Dictionary, &'a [u8])>,
 }
 
 pub(crate) struct ContentReader<'a> {
@@ -26,6 +31,8 @@ pub(crate) struct ContentReader<'a> {
     lexer: Lexer<'a>,
     page: ObjectId,
     operands: Vec<Object>,
+    /// The last inline image read: dictionary and data range.
+    inline_image: (Dictionary, Range<usize>),
 }
 
 impl<'a> ContentReader<'a> {
@@ -35,6 +42,7 @@ impl<'a> ContentReader<'a> {
             lexer: Lexer::new(data),
             page,
             operands: Vec::new(),
+            inline_image: (Dictionary::new(), 0..0),
         }
     }
 
@@ -80,11 +88,14 @@ impl<'a> ContentReader<'a> {
                     if !self.operands.is_empty() {
                         return Err(self.error(offset, ContentErrorKind::InvalidOperands));
                     }
-                    self.skip_inline_image(offset, budget)?;
+                    self.read_inline_image(offset, budget)?;
+                    let (dictionary, range) = &self.inline_image;
+                    let data = self.data.get(range.clone()).unwrap_or_default();
                     return Ok(Some(Operation {
                         operator: b"BI",
                         offset,
                         operands: &[],
+                        inline_image: Some((dictionary, data)),
                     }));
                 }
                 Token::Keyword(operator) => {
@@ -92,6 +103,7 @@ impl<'a> ContentReader<'a> {
                         operator,
                         offset,
                         operands: &self.operands,
+                        inline_image: None,
                     }));
                 }
                 Token::Integer(value) => Object::Integer(value),
@@ -128,15 +140,17 @@ impl<'a> ContentReader<'a> {
         Ok(object)
     }
 
-    /// Skips `BI <key value pairs> ID <data> EI`. The data length comes from
-    /// `/L` or `/Length` (PDF 2.0) when present; otherwise the data ends at the
-    /// first `EI` preceded by white space and followed by white space, a
-    /// delimiter or the end of the content (the usual heuristic: images are
-    /// not decoded yet, only skipped).
-    fn skip_inline_image(&mut self, start: u64, budget: &mut Budget) -> Result<(), Error> {
+    /// Reads `BI <key value pairs> ID <data> EI` into `inline_image`. The
+    /// data length comes from `/L` or `/Length` (PDF 2.0) when it is
+    /// followed by `EI`; otherwise (no length, or a wrong one, as readers
+    /// that ignore it accept) the data ends before the white space preceding
+    /// the first `EI` followed by white space, a delimiter or the end of the
+    /// content (the usual heuristic: binary data can contain such an `EI`).
+    fn read_inline_image(&mut self, start: u64, budget: &mut Budget) -> Result<(), Error> {
         let invalid = |reader: &Self| reader.error(start, ContentErrorKind::InvalidInlineImage);
         let mut length = None;
         let mut entries = 0usize;
+        let mut dictionary = Dictionary::new();
         loop {
             let Some(spanned) = self.lexer.next_token(budget).map_err(|e| self.syntax(e))? else {
                 return Err(invalid(self));
@@ -150,35 +164,40 @@ impl<'a> ContentReader<'a> {
                     }
                     let value = self.inline_value(budget)?;
                     if key == b"L" || key == b"Length" {
-                        length = Some(value.as_integer().ok_or_else(|| invalid(self))?);
+                        length = value.as_integer().and_then(|v| usize::try_from(v).ok());
                     }
+                    dictionary.insert(key, value);
                 }
                 _ => return Err(invalid(self)),
             }
         }
-        // Exactly one white-space byte separates `ID` from the data.
-        let data_start = usize::try_from(self.lexer.position())
-            .ok()
-            .and_then(|p| p.checked_add(1))
-            .filter(|p| *p <= self.data.len())
-            .ok_or_else(|| invalid(self))?;
-        let end = match length {
-            Some(length) => {
-                let length = usize::try_from(length).map_err(|_| invalid(self))?;
-                let data_end = data_start
-                    .checked_add(length)
-                    .filter(|e| *e <= self.data.len())
-                    .ok_or_else(|| invalid(self))?;
-                self.lexer
-                    .seek(data_end as u64)
-                    .map_err(|e| self.syntax(e))?;
-                match self.lexer.next_token(budget).map_err(|e| self.syntax(e))? {
-                    Some(t) if t.token == Token::Keyword(b"EI") => return Ok(()),
-                    _ => return Err(invalid(self)),
-                }
-            }
-            None => find_end_marker(self.data, data_start).ok_or_else(|| invalid(self))?,
+        // One white-space byte separates `ID` from the data. The keyword may
+        // also end at a delimiter, which is then the first data byte.
+        let after_id = usize::try_from(self.lexer.position()).map_err(|_| invalid(self))?;
+        let data_start = match self.data.get(after_id) {
+            Some(byte) if pdf_syntax::is_whitespace(*byte) => after_id + 1,
+            Some(_) => after_id,
+            None => return Err(invalid(self)),
         };
+        if let Some(data_end) = length
+            .and_then(|length| data_start.checked_add(length))
+            .filter(|end| *end <= self.data.len())
+        {
+            self.lexer
+                .seek(data_end as u64)
+                .map_err(|e| self.syntax(e))?;
+            if let Some(t) = self.lexer.next_token(budget).map_err(|e| self.syntax(e))?
+                && t.token == Token::Keyword(b"EI")
+            {
+                self.inline_image = (dictionary, data_start..data_end);
+                return Ok(());
+            }
+        }
+        let end = find_end_marker(self.data, data_start).ok_or_else(|| invalid(self))?;
+        // `EI` and the white space before it are not data; an image with no
+        // data at all ends right after `ID `.
+        let data_end = end.saturating_sub(3).max(data_start);
+        self.inline_image = (dictionary, data_start..data_end);
         self.lexer.seek(end as u64).map_err(|e| self.syntax(e))
     }
 
@@ -262,21 +281,73 @@ mod tests {
         Ok(())
     }
 
+    /// Dictionary keys and data of an inline image.
+    type Inline = (Vec<String>, Vec<u8>);
+
+    /// The dictionary keys and data of each inline image of \`data\`.
+    fn inline_images(data: &[u8]) -> Result<Vec<Inline>, Error> {
+        let mut reader = ContentReader::new(data, page());
+        let mut budget = budget();
+        let mut out = Vec::new();
+        while let Some(op) = reader.next(&mut budget)? {
+            if let Some((dictionary, bytes)) = op.inline_image {
+                let keys = dictionary
+                    .iter()
+                    .map(|(key, _)| String::from_utf8_lossy(key).into_owned())
+                    .collect();
+                out.push((keys, bytes.to_vec()));
+            }
+        }
+        Ok(out)
+    }
+
     #[test]
-    fn skips_inline_images() -> Result<(), Error> {
+    fn reads_inline_images() -> Result<(), Error> {
         let ops = operators(b"q BI /W 2 /H 1 /CS /G /BPC 8 ID \x00EI\xff EI Q")?;
         assert_eq!(
             ops.iter().map(|(o, _)| o.as_str()).collect::<Vec<_>>(),
             ["q", "BI", "Q"]
         );
+        // Without /L: data up to the white space before the delimited `EI`.
+        let images = inline_images(b"q BI /W 2 /H 1 /CS /G /BPC 8 ID \x00EI\xff EI Q")?;
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].0.len(), 4);
+        assert_eq!(images[0].1, b"\x00EI\xff");
         // PDF 2.0 length: the data may contain a delimited `EI`.
         let ops = operators(b"BI /W 4 /H 1 /L 4 ID  EI EI Q")?;
         assert_eq!(
             ops.iter().map(|(o, _)| o.as_str()).collect::<Vec<_>>(),
             ["BI", "Q"]
         );
+        assert_eq!(
+            inline_images(b"BI /W 4 /H 1 /L 4 ID  EI EI Q")?[0].1,
+            b" EI "
+        );
         let ops = operators(b"BI /W 1 /D [1 0] ID x EI")?;
         assert_eq!(ops.len(), 1);
+        // No data at all.
+        assert_eq!(inline_images(b"BI /W 1 ID EI")?[0].1, b"");
+        // A wrong /L (too long, negative, not a number, not followed by
+        // `EI`) is ignored, as by readers that do not know it.
+        for content in [
+            &b"BI /L 9 ID x EI Q"[..],
+            b"BI /L -1 ID x EI Q",
+            b"BI /L /A ID x EI Q",
+            b"BI /L 0 ID x EI Q",
+        ] {
+            let images = inline_images(content)?;
+            assert_eq!(images[0].1, b"x", "{}", String::from_utf8_lossy(content));
+            assert_eq!(operators(content)?.len(), 2);
+        }
+        // `ID` ended by a delimiter: no separator byte to skip.
+        assert_eq!(inline_images(b"BI /W 1 ID<ab> EI")?[0].1, b"<ab>");
+        // CR LF after `ID`: only the CR separates.
+        assert_eq!(inline_images(b"BI /W 1 ID\r\nx EI")?[0].1, b"\nx");
+        // Each image has its own dictionary and data.
+        let images = inline_images(b"BI /W 1 ID a EI BI /H 2 /W 1 ID bc EI")?;
+        assert_eq!(images[0], (vec!["W".to_owned()], b"a".to_vec()));
+        assert_eq!(images[1].1, b"bc");
+        assert_eq!(images[1].0.len(), 2);
         Ok(())
     }
 
@@ -307,12 +378,9 @@ mod tests {
             kind(b"BI 1 ID x EI"),
             Some((0, ContentErrorKind::InvalidInlineImage))
         );
+        // A wrong /L falls back to the `EI` heuristic, which can still fail.
         assert_eq!(
-            kind(b"BI /L 9 ID x EI"),
-            Some((0, ContentErrorKind::InvalidInlineImage))
-        );
-        assert_eq!(
-            kind(b"BI /L -1 ID x EI"),
+            kind(b"BI /L 9 ID xEI"),
             Some((0, ContentErrorKind::InvalidInlineImage))
         );
         let many = "0 ".repeat(MAX_OPERANDS + 1) + "m";

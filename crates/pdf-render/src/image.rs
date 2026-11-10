@@ -1,5 +1,5 @@
-//! Image XObjects (ISO 32000-2, 8.9): decoded to straight RGBA8 for the
-//! rasteriser (ADR-0005, step 5.4a).
+//! Image XObjects and inline images (ISO 32000-2, 8.9): decoded to
+//! straight RGBA8 for the rasteriser (ADR-0005, steps 5.4a and 5.4b).
 //!
 //! Supported: data through the existing filters, a final `DCTDecode`
 //! decoded by `zune-jpeg` (without its SIMD, `unsafe`, paths); colour spaces
@@ -68,21 +68,156 @@ impl Space {
 /// What a decoding yields: the image, or why it is not drawn.
 pub(crate) type Outcome = Result<Decoded, Unsupported>;
 
-/// Decodes the image XObject `stream`. \`space\` is its `/ColorSpace`,
+/// Where an image is described and its data lives.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Body<'a> {
+    /// An image XObject, read from the file.
+    Stream(&'a Stream),
+    /// An inline image (8.9.7): its dictionary, abbreviations expanded by
+    /// [`inline_dictionary`], and its still encoded data, taken from the
+    /// decoded content.
+    Inline {
+        dictionary: &'a Dictionary,
+        data: &'a [u8],
+    },
+}
+
+impl Body<'_> {
+    fn dictionary(&self) -> &Dictionary {
+        match self {
+            Self::Stream(stream) => &stream.dictionary,
+            Self::Inline { dictionary, .. } => dictionary,
+        }
+    }
+
+    /// The data through the filters of `filters` (the image's own
+    /// dictionary when `None`).
+    fn decoded<S: Source>(
+        self,
+        file: &PdfFile<S>,
+        filters: Option<Dictionary>,
+        budget: &mut Budget,
+    ) -> Result<Vec<u8>, pdf_syntax::Error> {
+        match (self, filters) {
+            (Self::Stream(stream), None) => file.decoded_stream_data(stream, budget),
+            (Self::Stream(stream), Some(dictionary)) => file.decoded_stream_data(
+                &Stream {
+                    dictionary,
+                    data: stream.data.clone(),
+                },
+                budget,
+            ),
+            // Filters of an inline image are direct objects; offsets in its
+            // errors are not file offsets, and such errors are reported as
+            // an undrawn image anyway.
+            (Self::Inline { dictionary, data }, filters) => {
+                pdf_syntax::decode_stream(filters.as_ref().unwrap_or(dictionary), data, 0, budget)
+            }
+        }
+    }
+}
+
+/// The dictionary of an inline image with the abbreviations of ISO 32000-2,
+/// tables 92 and 93, expanded: keys, filter names and colour space names
+/// (alone, first in an array, or the base of `/Indexed`). Full names are
+/// kept; a name that is no abbreviation, such as a colour space resource,
+/// is left as it is.
+pub(crate) fn inline_dictionary(raw: &Dictionary) -> Dictionary {
+    let mut dictionary = Dictionary::new();
+    for (key, value) in raw.iter() {
+        let key: &[u8] = match key {
+            b"BPC" => b"BitsPerComponent",
+            b"CS" => b"ColorSpace",
+            b"D" => b"Decode",
+            b"DP" => b"DecodeParms",
+            b"F" => b"Filter",
+            b"H" => b"Height",
+            b"IM" => b"ImageMask",
+            b"I" => b"Interpolate",
+            b"L" => b"Length",
+            b"W" => b"Width",
+            other => other,
+        };
+        let value = match key {
+            b"Filter" => expand_names(value, filter_name),
+            b"ColorSpace" => match value {
+                Object::Name(_) => expand_names(value, space_name),
+                Object::Array(items) => {
+                    let mut items = items.clone();
+                    let indexed = items.first().and_then(Object::as_name).map(space_name)
+                        == Some(b"Indexed".as_slice());
+                    if let Some(first) = items.first_mut() {
+                        *first = expand_names(first, space_name);
+                    }
+                    if indexed && let Some(base) = items.get_mut(1) {
+                        *base = expand_names(base, space_name);
+                    }
+                    Object::Array(items)
+                }
+                other => other.clone(),
+            },
+            _ => value.clone(),
+        };
+        dictionary.insert(key.to_vec(), value);
+    }
+    dictionary
+}
+
+/// `value` with each name, alone or in an array, through `expand`.
+fn expand_names(value: &Object, expand: fn(&[u8]) -> &[u8]) -> Object {
+    match value {
+        Object::Name(name) => Object::Name(expand(name).to_vec()),
+        Object::Array(items) => Object::Array(
+            items
+                .iter()
+                .map(|item| match item {
+                    Object::Name(name) => Object::Name(expand(name).to_vec()),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn filter_name(name: &[u8]) -> &[u8] {
+    match name {
+        b"AHx" => b"ASCIIHexDecode",
+        b"A85" => b"ASCII85Decode",
+        b"LZW" => b"LZWDecode",
+        b"Fl" => b"FlateDecode",
+        b"RL" => b"RunLengthDecode",
+        b"CCF" => b"CCITTFaxDecode",
+        b"DCT" => b"DCTDecode",
+        other => other,
+    }
+}
+
+fn space_name(name: &[u8]) -> &[u8] {
+    match name {
+        b"G" => b"DeviceGray",
+        b"RGB" => b"DeviceRGB",
+        b"CMYK" => b"DeviceCMYK",
+        b"I" => b"Indexed",
+        other => other,
+    }
+}
+
+/// Decodes the image `body`. `space` is its `/ColorSpace`,
 /// already resolved if it named a resource; `fill` the fill colour (sRGB, 0
 /// to 255) painted through a stencil mask. Limits, cancellation and input
 /// errors are errors; a damaged or unsupported image is an `Outcome` error.
 pub(crate) fn decode<S: Source>(
     file: &PdfFile<S>,
-    stream: &Stream,
+    body: Body<'_>,
     space: Option<&Object>,
     fill: [u8; 3],
     limits: &RenderLimits,
     budget: &mut Budget,
 ) -> Result<Outcome, Error> {
-    let dictionary = &stream.dictionary;
+    let dictionary = body.dictionary();
     let mask = dictionary.get(b"ImageMask") == Some(&Object::Boolean(true));
-    let Some(samples) = samples(file, stream, limits, budget)? else {
+    let Some(samples) = samples(file, body, limits, budget)? else {
         return Ok(Err(Unsupported::Image));
     };
     if mask {
@@ -143,11 +278,11 @@ struct Samples {
 /// `None` for a damaged or unsupported image.
 fn samples<S: Source>(
     file: &PdfFile<S>,
-    stream: &Stream,
+    body: Body<'_>,
     limits: &RenderLimits,
     budget: &mut Budget,
 ) -> Result<Option<Samples>, Error> {
-    let dictionary = &stream.dictionary;
+    let dictionary = body.dictionary();
     let dimension = |key: &[u8]| {
         dictionary
             .get(key)
@@ -176,12 +311,12 @@ fn samples<S: Source>(
         }
     };
     if last_filter(dictionary) == Some(b"DCTDecode".as_slice()) {
-        let Some(encoded) = without_last_filter(file, stream, budget)? else {
+        let Some(encoded) = without_last_filter(file, body, budget)? else {
             return Ok(None);
         };
         return jpeg(&encoded, limits, budget);
     }
-    let data = match file.decoded_stream_data(stream, budget) {
+    let data = match body.decoded(file, None, budget) {
         Ok(data) => data,
         Err(pdf_syntax::Error::Unsupported(_)) => return Ok(None),
         Err(pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. }) => {
@@ -212,13 +347,13 @@ fn last_filter(dictionary: &Dictionary) -> Option<&[u8]> {
     }
 }
 
-/// The data of `stream` through every filter but the last (`DCTDecode`).
+/// The data of `body` through every filter but the last (`DCTDecode`).
 fn without_last_filter<S: Source>(
     file: &PdfFile<S>,
-    stream: &Stream,
+    body: Body<'_>,
     budget: &mut Budget,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let mut dictionary = stream.dictionary.clone();
+    let mut dictionary = body.dictionary().clone();
     match dictionary.get(b"Filter").cloned() {
         Some(Object::Array(mut names)) => {
             names.pop();
@@ -233,11 +368,7 @@ fn without_last_filter<S: Source>(
             dictionary.remove(b"DecodeParms");
         }
     }
-    let stream = Stream {
-        dictionary,
-        data: stream.data.clone(),
-    };
-    match file.decoded_stream_data(&stream, budget) {
+    match body.decoded(file, Some(dictionary), budget) {
         Ok(data) => Ok(Some(data)),
         Err(
             pdf_syntax::Error::Unsupported(_)
@@ -599,6 +730,9 @@ fn stencil(
     let reader = Reader::new(samples, 1);
     let mut rgba = vec![0u8; width * height * 4];
     for (y, row) in rgba.chunks_exact_mut(width * 4).enumerate() {
+        if y % 256 == 0 {
+            budget.check_cancelled()?;
+        }
         for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let painted = (reader.sample(y, x) == 0) != inverted;
             *pixel = if painted {
@@ -618,11 +752,19 @@ fn stencil(
 
 /// Opacity of each pixel of `image` from a mask image, resampled (nearest)
 /// when its size differs: `opacity(mask sample)` from 0 to 255.
-fn apply_mask(image: &mut Decoded, mask: &Samples, opacity: impl Fn(u32) -> u8) {
+fn apply_mask(
+    image: &mut Decoded,
+    mask: &Samples,
+    budget: &Budget,
+    opacity: impl Fn(u32) -> u8,
+) -> Result<(), Error> {
     let reader = Reader::new(mask, 1);
     let (width, height) = (usize::from(image.width), usize::from(image.height));
     let (mask_width, mask_height) = (mask.width as usize, mask.height as usize);
     for (y, row) in image.rgba.chunks_exact_mut(width * 4).enumerate() {
+        if y % 256 == 0 {
+            budget.check_cancelled()?;
+        }
         let my = y * mask_height / height;
         for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let mx = x * mask_width / width;
@@ -630,6 +772,7 @@ fn apply_mask(image: &mut Decoded, mask: &Samples, opacity: impl Fn(u32) -> u8) 
         }
     }
     image.transparent = true;
+    Ok(())
 }
 
 /// `/SMask` (11.6.5.3): a gray image whose samples are the opacity.
@@ -662,7 +805,7 @@ fn soft_mask<S: Source>(
         }
         Some(_) => return Ok(Err(Unsupported::SoftMask)),
     };
-    let Some(mask) = samples(file, &stream, limits, budget)? else {
+    let Some(mask) = samples(file, Body::Stream(&stream), limits, budget)? else {
         return Ok(Err(Unsupported::SoftMask));
     };
     if mask.jpeg.is_some_and(|components| components != 1) {
@@ -671,9 +814,9 @@ fn soft_mask<S: Source>(
     let max = (1u32 << mask.bits) - 1;
     let ranges = decode_ranges(&stream.dictionary, 1, mask.bits, false);
     let (low, high) = ranges.first().copied().unwrap_or((0.0, 1.0));
-    apply_mask(image, &mask, |sample| {
+    apply_mask(image, &mask, budget, |sample| {
         to_byte((low + sample as f32 * (high - low) / max as f32).clamp(0.0, 1.0) * 255.0)
-    });
+    })?;
     if let Some(matte) = matte {
         for pixel in image.rgba.as_chunks_mut::<4>().0 {
             let alpha = f32::from(pixel[3]) / 255.0;
@@ -700,16 +843,16 @@ fn stencil_mask<S: Source>(
     let Some(stream) = mask_stream(file, object, budget)? else {
         return Ok(Err(Unsupported::SoftMask));
     };
-    let Some(mask) = samples(file, &stream, limits, budget)? else {
+    let Some(mask) = samples(file, Body::Stream(&stream), limits, budget)? else {
         return Ok(Err(Unsupported::SoftMask));
     };
     let inverted = matches!(
         stream.dictionary.get(b"Decode"),
         Some(Object::Array(items)) if matches!(items.first(), Some(Object::Integer(1)) | Some(Object::Real(1.0)))
     );
-    apply_mask(image, &mask, |sample| {
+    apply_mask(image, &mask, budget, |sample| {
         if (sample == 0) != inverted { 255 } else { 0 }
-    });
+    })?;
     Ok(Ok(()))
 }
 
@@ -759,5 +902,125 @@ fn color_key(samples: &Samples, space: &Space, ranges: &[Object], image: &mut De
                 image.transparent = true;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name(value: &str) -> Object {
+        Object::Name(value.as_bytes().to_vec())
+    }
+
+    fn dictionary(entries: &[(&str, Object)]) -> Dictionary {
+        let mut dictionary = Dictionary::new();
+        for (key, value) in entries {
+            dictionary.insert(key.as_bytes().to_vec(), value.clone());
+        }
+        dictionary
+    }
+
+    #[test]
+    fn inline_abbreviations_are_expanded() {
+        let raw = dictionary(&[
+            ("W", Object::Integer(2)),
+            ("H", Object::Integer(1)),
+            ("BPC", Object::Integer(8)),
+            (
+                "D",
+                Object::Array(vec![Object::Integer(1), Object::Integer(0)]),
+            ),
+            (
+                "DP",
+                Object::Dictionary(dictionary(&[("Columns", Object::Integer(2))])),
+            ),
+            ("F", Object::Array(vec![name("AHx"), name("Fl")])),
+            ("I", Object::Boolean(true)),
+            ("IM", Object::Boolean(false)),
+            ("L", Object::Integer(4)),
+            ("Intent", name("Perceptual")),
+            (
+                "CS",
+                Object::Array(vec![
+                    name("I"),
+                    name("RGB"),
+                    Object::Integer(1),
+                    Object::String(vec![0; 6]),
+                ]),
+            ),
+        ]);
+        let expanded = inline_dictionary(&raw);
+        let get = |key: &str| expanded.get(key.as_bytes()).cloned();
+        assert_eq!(get("Width"), Some(Object::Integer(2)));
+        assert_eq!(get("Height"), Some(Object::Integer(1)));
+        assert_eq!(get("BitsPerComponent"), Some(Object::Integer(8)));
+        assert!(matches!(get("Decode"), Some(Object::Array(_))));
+        assert!(matches!(get("DecodeParms"), Some(Object::Dictionary(_))));
+        assert_eq!(
+            get("Filter"),
+            Some(Object::Array(vec![
+                name("ASCIIHexDecode"),
+                name("FlateDecode")
+            ]))
+        );
+        // `/I` is Interpolate as a key, Indexed as a colour space name.
+        assert_eq!(get("Interpolate"), Some(Object::Boolean(true)));
+        assert_eq!(get("ImageMask"), Some(Object::Boolean(false)));
+        assert_eq!(get("Length"), Some(Object::Integer(4)));
+        assert_eq!(get("Intent"), Some(name("Perceptual")));
+        assert_eq!(
+            get("ColorSpace"),
+            Some(Object::Array(vec![
+                name("Indexed"),
+                name("DeviceRGB"),
+                Object::Integer(1),
+                Object::String(vec![0; 6]),
+            ]))
+        );
+        assert_eq!(expanded.len(), raw.len());
+    }
+
+    #[test]
+    fn inline_names_are_expanded_only_where_they_are_abbreviations() {
+        for (raw, full) in [
+            ("G", "DeviceGray"),
+            ("RGB", "DeviceRGB"),
+            ("CMYK", "DeviceCMYK"),
+            ("DeviceCMYK", "DeviceCMYK"),
+            // A resource name is left for the resources.
+            ("CS0", "CS0"),
+        ] {
+            let expanded = inline_dictionary(&dictionary(&[("CS", name(raw))]));
+            assert_eq!(expanded.get(b"ColorSpace"), Some(&name(full)), "{raw}");
+        }
+        for (raw, full) in [
+            ("A85", "ASCII85Decode"),
+            ("LZW", "LZWDecode"),
+            ("RL", "RunLengthDecode"),
+            ("CCF", "CCITTFaxDecode"),
+            ("DCT", "DCTDecode"),
+            ("FlateDecode", "FlateDecode"),
+        ] {
+            let expanded = inline_dictionary(&dictionary(&[("F", name(raw))]));
+            assert_eq!(expanded.get(b"Filter"), Some(&name(full)), "{raw}");
+        }
+        // Only the base of an Indexed space is a colour space name; other
+        // array spaces keep their operands.
+        let expanded = inline_dictionary(&dictionary(&[(
+            "CS",
+            Object::Array(vec![name("ICCBased"), name("G")]),
+        )]));
+        assert_eq!(
+            expanded.get(b"ColorSpace"),
+            Some(&Object::Array(vec![name("ICCBased"), name("G")]))
+        );
+        // The full key wins over its abbreviation, in any order (sorted
+        // dictionary: the full key is inserted last).
+        let expanded = inline_dictionary(&dictionary(&[
+            ("Width", Object::Integer(3)),
+            ("W", Object::Integer(2)),
+        ]));
+        assert_eq!(expanded.get(b"Width"), Some(&Object::Integer(3)));
     }
 }
