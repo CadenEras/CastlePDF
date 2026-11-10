@@ -128,6 +128,13 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 - Une police TrueType malformée (glyphe sans point mais avec des données) faisait paniquer
   `read-fonts` 0.41.0 : passage à `skrifa` 0.49.0 / `read-fonts` 0.46.0, test de
   régression (trouvé par la cible de fuzzing `font`).
+- `pdf-render` : une forme très lointaine (par exemple un rectangle cisaillé d'un facteur
+  71 069, long de plusieurs millions de pixels) ne se rendait pas pareil dans une tuile et
+  dans la page entière. Le rasteriseur garde ses segments en simple précision, d'où environ
+  un quart de pixel d'écart à cette distance. Désormais, chaque remplissage, contour et
+  découpe est transformé, aplati (même tolérance que `vello_cpu`) et découpé au canevas en
+  double précision avant d'être passé à `vello_cpu`. Trouvé par la cible de fuzzing
+  `render` ; test de régression `far_geometry_renders_the_same_in_a_tile`.
 - `pdf-render` : `/Contents` référençant un tableau indirect de flux (ISO 32000-2,
   7.7.3.3) était refusé avec `InvalidContents` ; trouvé par la mesure sur corpus réel.
 
