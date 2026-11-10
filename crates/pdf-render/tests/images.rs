@@ -77,6 +77,29 @@ fn with_image(before: &str, image: &str, data: &[u8], more: &[&str]) -> Vec<u8> 
         .concat(),
     ];
     bodies.extend(more.iter().map(|body| body.as_bytes().to_vec()));
+    assemble(&bodies)
+}
+
+/// A 200 x 200 page whose content is \`content\` (bytes: inline image data
+/// is binary), with \`resources\` (dictionary entries); \`more\` objects from 5.
+fn with_content(content: &[u8], resources: &str, more: &[&str]) -> Vec<u8> {
+    let mut bodies: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {resources} >> /Contents 4 0 R >>").into_bytes(),
+        [
+            format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+            content,
+            b"\nendstream",
+        ]
+        .concat(),
+    ];
+    bodies.extend(more.iter().map(|body| body.as_bytes().to_vec()));
+    assemble(&bodies)
+}
+
+/// A PDF file of objects 1, 2, ... with \`bodies\`; object 1 is the catalog.
+fn assemble(bodies: &[Vec<u8>]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (index, body) in bodies.iter().enumerate() {
@@ -214,6 +237,14 @@ fn what_is_not_drawn_is_reported() {
             vec![],
             Unsupported::ColorSpace,
         ),
+        // A colour space name absent from the resources: only the image
+        // depends on it.
+        (
+            format!("{base} /ColorSpace /Missing"),
+            &[0u8; 4][..],
+            vec![],
+            Unsupported::ColorSpace,
+        ),
         (
             format!("{base} /ColorSpace /DeviceGray /Filter /DCTDecode"),
             &b"not a jpeg"[..],
@@ -325,6 +356,148 @@ fn matte_colours_are_restored() {
         "{:?}",
         [r, g, b]
     );
+}
+
+/// \`BI <entries> ID <data> EI\` drawn over (50, 50, 100, 100) after \`before\`.
+fn inline(before: &str, entries: &str, data: &[u8]) -> Vec<u8> {
+    [
+        format!("{before} q 100 0 0 100 50 50 cm BI {entries} ID ").as_bytes(),
+        data,
+        b" EI Q",
+    ]
+    .concat()
+}
+
+#[test]
+fn the_inline_image_fixture_draws_every_kind() {
+    let page = render(fixture("inline-images.pdf"), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    // RGB: red, green / blue, white.
+    assert_eq!(at(&page, 30, 170), [255, 0, 0]);
+    assert_eq!(at(&page, 70, 170), [0, 255, 0]);
+    assert_eq!(at(&page, 30, 130), [0, 0, 255]);
+    assert_eq!(at(&page, 70, 130), [255, 255, 255]);
+    // Indexed through a resource, Flate: yellow, cyan, magenta, black.
+    assert_eq!(at(&page, 120, 150), [255, 255, 0]);
+    assert_eq!(at(&page, 140, 150), [0, 255, 255]);
+    assert_eq!(at(&page, 160, 150), [255, 0, 255]);
+    assert_eq!(at(&page, 180, 150), [0, 0, 0]);
+    // Stencil with /D [1 0]: the band from top left is blue, the rest white.
+    assert_eq!(at(&page, 15, 85), [0, 0, 255]);
+    assert_eq!(at(&page, 80, 85), [255, 255, 255]);
+    // Gray JPEG ramp.
+    assert!(at(&page, 112, 50)[0] < 30, "{:?}", at(&page, 112, 50));
+    assert!(at(&page, 188, 50)[0] > 225, "{:?}", at(&page, 188, 50));
+}
+
+#[test]
+fn inline_images_are_drawn() {
+    // Abbreviated keys and colour space: red then blue.
+    let content = inline("", "/W 2 /H 1 /BPC 8 /CS /RGB", &[255, 0, 0, 0, 0, 255]);
+    let page = render(with_content(&content, "", &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 75, 100), [255, 0, 0]);
+    assert_eq!(at(&page, 125, 100), [0, 0, 255]);
+    assert_eq!(at(&page, 25, 100), [255, 255, 255]);
+    // Full names are accepted too.
+    let content = inline(
+        "",
+        "/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray",
+        &[0],
+    );
+    assert_eq!(
+        at(&render(with_content(&content, "", &[]), 0), 100, 100),
+        [0, 0, 0]
+    );
+}
+
+#[test]
+fn inline_image_colour_spaces_and_masks() {
+    // /I over /G with a lookup string: entry 0 black, 1 white, 1 bit each.
+    let content = inline("", "/W 2 /H 1 /BPC 1 /CS [/I /G 1 <00ff>]", &[0b0100_0000]);
+    let page = render(with_content(&content, "", &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 75, 100), [0, 0, 0]);
+    assert_eq!(at(&page, 125, 100), [255, 255, 255]);
+    // A colour space named in the resources.
+    let content = inline("", "/W 1 /H 1 /BPC 8 /CS /Sp", &[1]);
+    let resources = "/ColorSpace << /Sp [/Indexed /DeviceRGB 1 <ff0000 00ff00>] >>";
+    let page = render(with_content(&content, resources, &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 100, 100), [0, 255, 0]);
+    // A stencil mask in the fill colour; /D [1 0] inverts it.
+    let content = inline("0 0 1 rg", "/IM true /W 2 /H 1", &[0b0100_0000]);
+    let page = render(with_content(&content, "", &[]), 0);
+    assert_eq!(at(&page, 75, 100), [0, 0, 255]);
+    assert_eq!(at(&page, 125, 100), [255, 255, 255]);
+    let content = inline("0 0 1 rg", "/IM true /W 2 /H 1 /D [1 0]", &[0b0100_0000]);
+    let page = render(with_content(&content, "", &[]), 0);
+    assert_eq!(at(&page, 75, 100), [255, 255, 255]);
+    assert_eq!(at(&page, 125, 100), [0, 0, 255]);
+}
+
+#[test]
+fn inline_jpeg_images_are_decoded() {
+    // `/F /DCT` with the PDF 2.0 length: JPEG data may contain ` EI `.
+    let jpeg = std::fs::read(repo("tests/images/gray.jpg")).expect("jpeg");
+    let content = inline(
+        "",
+        &format!("/W 32 /H 16 /BPC 8 /CS /G /F /DCT /L {}", jpeg.len()),
+        &jpeg,
+    );
+    let page = render(with_content(&content, "", &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    // Gradient from black (left) to white (right).
+    assert!(at(&page, 52, 100)[0] < 30, "{:?}", at(&page, 52, 100));
+    assert!(at(&page, 148, 100)[0] > 225, "{:?}", at(&page, 148, 100));
+}
+
+#[test]
+fn inline_images_not_drawn_are_reported() {
+    for (entries, data, expected) in [
+        // A filter of P3, a missing colour space, a missing size.
+        (
+            "/W 1 /H 1 /BPC 8 /CS /G /F /AHx",
+            &b"00>"[..],
+            Unsupported::Image,
+        ),
+        ("/W 1 /H 1 /BPC 8", &[0][..], Unsupported::ColorSpace),
+        ("/W 1 /BPC 8 /CS /G", &[0][..], Unsupported::Image),
+        (
+            "/W 1 /H 1 /BPC 8 /CS [/Lab << /WhitePoint [1 1 1] >>]",
+            &[0, 0, 0][..],
+            Unsupported::ColorSpace,
+        ),
+    ] {
+        let page = render(with_content(&inline("", entries, data), "", &[]), 0);
+        assert_eq!(skipped(&page), [expected], "{entries}");
+        assert_eq!(at(&page, 100, 100), [255, 255, 255], "{entries}");
+    }
+    // The size limit applies before decoding.
+    let content = inline("", "/W 4 /H 4 /BPC 8 /CS /G", &[0; 16]);
+    let mut options = RenderOptions::default();
+    options.limits.max_image_pixels = 15;
+    let page = render_with(with_content(&content, "", &[]), 0, &options).expect("rendering");
+    assert_eq!(skipped(&page), [Unsupported::Image]);
+    options.limits.max_image_pixels = 16;
+    let page = render_with(with_content(&content, "", &[]), 0, &options).expect("rendering");
+    assert!(skipped(&page).is_empty());
+    // A colour space name absent from the resources: the image alone is
+    // skipped, the rest of the page drawn.
+    let content = inline(
+        "0 0 1 rg 0 0 20 20 re f",
+        "/W 1 /H 1 /BPC 8 /CS /Missing",
+        &[0],
+    );
+    let page = render(with_content(&content, "", &[]), 0);
+    assert_eq!(skipped(&page), [Unsupported::ColorSpace]);
+    assert_eq!(at(&page, 10, 10), [0, 0, 255]);
+    assert_eq!(at(&page, 100, 100), [255, 255, 255]);
+    // A stencil mask has no colour space: a wrong /CS is not looked up.
+    let content = inline("0 0 1 rg", "/IM true /W 1 /H 1 /CS /Missing", &[0]);
+    let page = render(with_content(&content, "", &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 100, 100), [0, 0, 255]);
 }
 
 #[test]

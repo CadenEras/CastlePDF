@@ -258,7 +258,7 @@ fn ext_g_state_and_unsupported_capabilities_are_reported() {
     let rendering = render_small(
         "q /G gs 0 0 1 RG 2 2 m 18 2 l S Q \
          BT /F1 12 Tf 2 2 Td (x) Tj ET \
-         /Im1 Do /Sh1 sh BI /W 1 /H 1 /BPC 8 /CS /G ID \x7f EI \
+         /Im1 Do /Sh1 sh BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 7f> EI \
          /OC /L1 BDC EMC \
          /CS0 cs 0.5 0.5 0.5 sc 0 0 5 5 re f",
     )

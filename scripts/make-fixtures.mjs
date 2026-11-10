@@ -413,6 +413,37 @@ function jpegPage() {
   ], '1.4');
 }
 
+// Inline images (ADR-0005, step 5.4b), with the abbreviations of ISO
+// 32000-2, 8.9.7: one 200 x 200 page with four 80 x 80 images at (10, 110),
+// (110, 110), (10, 10) and (110, 10). A 2 x 2 RGB image (red, green / blue,
+// white); a 4 x 1 Indexed image (2 bits: yellow, cyan, magenta, black)
+// whose colour space is a resource and whose data is Flate-compressed; an
+// 8 x 8 stencil mask (diagonal band) painted blue with /D [1 0]; the gray
+// JPEG of tests/images with /L. No data contains a delimited `EI`, so readers
+// without /L (PDF 2.0) find the same end.
+function inlinePage() {
+  const latin = bytes => Buffer.from(bytes).toString('latin1');
+  const band = [];
+  for (let y = 0; y < 8; y += 1) band.push(0b11000000 >> y);
+  const jpeg = readFileSync(path.join(root, 'tests', 'images', 'gray.jpg')).toString('latin1');
+  const image = (x, y, entries, data) => `q 80 0 0 80 ${x} ${y} cm BI ${entries} ID ${data} EI Q`;
+  const content = [
+    image(10, 110, '/W 2 /H 2 /BPC 8 /CS /RGB',
+      latin([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])),
+    image(110, 110, '/W 4 /H 1 /BPC 2 /CS /Sp /F /Fl', zlibFixedHuffman(latin([0b00011011]))),
+    '0 0 1 rg',
+    image(10, 10, '/IM true /W 8 /H 8 /D [1 0]', latin(band)),
+    image(110, 10, `/W 32 /H 16 /BPC 8 /CS /G /F [/DCT] /L ${Buffer.byteLength(jpeg, 'latin1')}`, jpeg),
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /ColorSpace '
+      + '<< /Sp [/Indexed /DeviceRGB 3 <FFFF0000FFFFFF00FF000000>] >> >> /Contents 4 0 R >>',
+    stream(content),
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -498,6 +529,9 @@ export const fixtures = {
   'images.pdf': imagesPage(),
   // JPEG images: YCbCr, gray and Adobe CMYK; see jpegPage.
   'jpeg.pdf': jpegPage(),
+  // Inline images: abbreviations, resource colour space, Flate, stencil,
+  // JPEG; see inlinePage.
+  'inline-images.pdf': inlinePage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

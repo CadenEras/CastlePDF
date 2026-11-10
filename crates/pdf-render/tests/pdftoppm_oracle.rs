@@ -51,7 +51,7 @@ const MAX_MISMATCHES: f64 = 0.0001;
 const MAX_TEXT_MISMATCHES: f64 = 0.0003;
 
 /// Fixtures, page indices, scales and largest share of mismatching pixels.
-const CASES: [(&str, usize, f64, f64); 9] = [
+const CASES: [(&str, usize, f64, f64); 10] = [
     ("shapes.pdf", 0, 1.0, MAX_MISMATCHES),
     ("shapes.pdf", 0, 2.5, MAX_MISMATCHES),
     ("shapes.pdf", 1, 1.0, MAX_MISMATCHES),
@@ -61,6 +61,7 @@ const CASES: [(&str, usize, f64, f64); 9] = [
     ("images.pdf", 0, 2.0, MAX_MISMATCHES),
     ("images.pdf", 1, 2.0, MAX_MISMATCHES),
     ("jpeg.pdf", 0, 2.0, MAX_MISMATCHES),
+    ("inline-images.pdf", 0, 2.0, MAX_MISMATCHES),
 ];
 
 fn corpus(name: &str) -> PathBuf {
