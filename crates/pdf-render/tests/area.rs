@@ -211,7 +211,7 @@ fn page_with_content(content: &[u8]) -> Document<MemorySource> {
         out.extend_from_slice(b"\nendobj\n");
     }
     let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 5\n0000000000 65535 f \n").as_bytes());
+    out.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
     for offset in offsets {
         out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
