@@ -216,6 +216,58 @@ function onePage(text) {
   ];
 }
 
+// Subset of Arimo Regular (SIL OFL 1.1, tests/fonts), built by
+// scripts/subset-test-font.sh, with the glyph id and advance of each kept
+// character.
+const arimo = readFileSync(path.join(root, 'tests', 'fonts', 'arimo-subset.ttf'));
+const arimoGlyphs = JSON.parse(readFileSync(path.join(root, 'tests', 'fonts', 'arimo-subset.json'), 'utf8'));
+const arimoWidth = ch => Math.round(arimoGlyphs.glyphs[ch][1] * 1000 / arimoGlyphs.unitsPerEm);
+
+// One page in Arimo embedded as TrueType (FontFile2): a simple font with
+// WinAnsiEncoding and /Widths (F1), and a Type 0 font with Identity-H and a
+// CIDFontType2 descendant whose CIDs are glyph ids (F2).
+function trueTypePage() {
+  const first = 32;
+  const last = 122;
+  const widths = [];
+  for (let code = first; code <= last; code += 1) {
+    const ch = String.fromCharCode(code);
+    widths.push(arimoGlyphs.glyphs[ch] ? arimoWidth(ch) : 0);
+  }
+  const cidLine = 'Identity H 2026';
+  const gids = [...cidLine].map(ch => arimoGlyphs.glyphs[ch][0]);
+  const hex = gids.map(g => g.toString(16).padStart(4, '0')).join('');
+  const w = [...new Set(gids)].sort((a, b) => a - b)
+    .map(g => {
+      const ch = Object.keys(arimoGlyphs.glyphs).find(c => arimoGlyphs.glyphs[c][0] === g);
+      return `${g} [${arimoWidth(ch)}]`;
+    }).join(' ');
+  const content = [
+    'BT /F1 24 Tf 10 120 Td (CastlePDF TrueType) Tj ET',
+    'BT /F1 18 Tf 2 Tc 10 Tw 80 Tz 10 85 Td [(Spacing) -500 (and scale)] TJ ET',
+    `BT /F2 24 Tf 10 50 Td <${hex}> Tj ET`,
+    '0 0 1 rg BT /F1 20 Tf 1 Tr 1 w 10 15 Td (Stroked) Tj ET',
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 150] '
+      + '/Resources << /Font << /F1 5 0 R /F2 8 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    `<< /Type /Font /Subtype /TrueType /BaseFont /CSTLAA+Arimo /FirstChar ${first} `
+      + `/LastChar ${last} /Widths [${widths.join(' ')}] /Encoding /WinAnsiEncoding `
+      + '/FontDescriptor 6 0 R >>',
+    '<< /Type /FontDescriptor /FontName /CSTLAA+Arimo /Flags 32 /FontBBox [-544 -303 2700 1060] '
+      + '/ItalicAngle 0 /Ascent 905 /Descent -212 /CapHeight 716 /StemV 80 /FontFile2 7 0 R >>',
+    stream(arimo.toString('latin1'), ` /Length1 ${arimo.length}`),
+    '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLAA+Arimo /Encoding /Identity-H '
+      + '/DescendantFonts [9 0 R] >>',
+    '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CSTLAA+Arimo '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+      + `/FontDescriptor 6 0 R /CIDToGIDMap /Identity /DW 1000 /W [${w}] >>`,
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -290,6 +342,9 @@ export const fixtures = {
     stream('1 0 0 0 k 0 10 10 10 re f 0 1 0 0 k 10 10 10 10 re f '
       + '0 0 1 0 k 0 0 10 10 re f 0 0 0 1 k 10 0 10 10 re f'),
   ]),
+  // Embedded TrueType text: simple font (F1), spacing, TJ and stroked text,
+  // and a Type 0 Identity-H font (F2); see trueTypePage.
+  'truetype.pdf': trueTypePage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

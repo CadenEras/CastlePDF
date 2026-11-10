@@ -13,6 +13,12 @@
 //! (an erased dash, a 2-pixel shift, a filled hole) must be detected: they
 //! prove that the tolerance does not hide such defects.
 //!
+//! Text is compared at scale 3 only, with its own tolerance: poppler draws
+//! glyphs through FreeType, which fits stems to the pixel grid, while
+//! CastlePDF draws unhinted outlines (ADR-0005). At 72 dpi a stem one pixel
+//! wide is then darker in poppler (0.28 % of `truetype.pdf` measured); at
+//! 216 dpi the difference falls to 0.010 %. An erased glyph stays detected.
+//!
 //! DeviceCMYK is not compared (page 3 of `shapes.pdf`): without colour
 //! management, CastlePDF applies the conversion of ISO 32000-2, 10.4.2.4
 //! (cyan is (0, 255, 255)) and poppler approximates a press profile (cyan is
@@ -39,12 +45,18 @@ const MARGIN: u8 = 16;
 /// (0.03 %), stays well above it.
 const MAX_MISMATCHES: f64 = 0.0001;
 
-/// Fixtures, page indices and scales compared.
-const CASES: [(&str, usize, f64); 4] = [
-    ("shapes.pdf", 0, 1.0),
-    ("shapes.pdf", 0, 2.5),
-    ("shapes.pdf", 1, 1.0),
-    ("shapes.pdf", 1, 3.0),
+/// Text pages, at 216 dpi: three times the 0.010 % measured with poppler
+/// 22.02 (grid fitting of stems, see above). Erasing the narrow "I" of
+/// "Identity" gives 0.078 %.
+const MAX_TEXT_MISMATCHES: f64 = 0.0003;
+
+/// Fixtures, page indices, scales and largest share of mismatching pixels.
+const CASES: [(&str, usize, f64, f64); 5] = [
+    ("shapes.pdf", 0, 1.0, MAX_MISMATCHES),
+    ("shapes.pdf", 0, 2.5, MAX_MISMATCHES),
+    ("shapes.pdf", 1, 1.0, MAX_MISMATCHES),
+    ("shapes.pdf", 1, 3.0, MAX_MISMATCHES),
+    ("truetype.pdf", 0, 3.0, MAX_TEXT_MISMATCHES),
 ];
 
 fn corpus(name: &str) -> PathBuf {
@@ -180,10 +192,10 @@ fn pages_match_pdftoppm() {
         return;
     };
     let executable = PathBuf::from(executable);
-    for (name, page_index, scale) in CASES {
+    for (name, page_index, scale, max) in CASES {
         let ratio = mismatch_ratio(&executable, name, page_index, scale);
         assert!(
-            ratio <= MAX_MISMATCHES,
+            ratio <= max,
             "{name} page {} at {scale} differs from pdftoppm",
             page_index + 1
         );
@@ -224,6 +236,21 @@ fn pages_match_pdftoppm() {
             }
         }
     });
+    // Text: the "I" of "Identity" (x 10..13, baseline 50, cap height 17)
+    // erased must exceed the text tolerance.
+    let (ours, reference, w, h) = renderings(&executable, "truetype.pdf", 0, 3.0);
+    let mut erased = ours.clone();
+    for y in 246..303 {
+        for x in 28..44 {
+            erased[y * w + x] = [255, 255, 255];
+        }
+    }
+    let ratio = mismatch(&erased, &reference, w, h);
+    eprintln!("mutation erased glyph: {:.3} % mismatching", ratio * 100.0);
+    assert!(
+        ratio > MAX_TEXT_MISMATCHES,
+        "an erased glyph is not detected"
+    );
     // The known CMYK disagreement is detected as well.
     let cmyk = mismatch_ratio(&executable, "shapes.pdf", 2, 1.0);
     assert!(

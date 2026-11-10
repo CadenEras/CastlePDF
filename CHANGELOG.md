@@ -9,6 +9,22 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **texte des polices TrueType incluses** (ADR-0005, étape 5.2a). Sont pris
+  en charge :
+  - les polices simples `/TrueType` et les polices Type 0 `Identity-H` à descendante
+    `CIDFontType2`, dont le programme `/FontFile2` est lu par `skrifa` 0.49.0 ;
+  - encodages `/Encoding` (Standard, WinAnsi, MacRoman, MacExpert, `/Differences`), Adobe
+    Glyph List, tables `cmap` (3,1), (3,0) et (1,0), `/CIDToGIDMap` ;
+  - largeurs `/Widths`, `/W` et `/DW` ;
+  - état du texte `Tc Tw Tz TL Ts Tf Tr`, positionnement `Td TD Tm T*` et `Tj TJ ' "` ;
+  - modes de rendu remplissage, contour, les deux, invisible.
+
+  Les glyphes sont dessinés sans hinting par le pipeline vectoriel. Toute autre police
+  reste signalée `Text` (polices standard, non incluses, CFF, Type 1, Type 3). Une police
+  absente des ressources ou illisible saute son texte sans faire échouer la page. Nouvelle
+  limite `max_glyph_segments` ; cache des contours borné par rendu. Fixture
+  `truetype.pdf` (sous-ensemble OFL d'Arimo, `tests/fonts`), comparée à `pdftoppm` avec
+  une tolérance propre au texte. Nouvelle cible de fuzzing `font`.
 - `pdf-render` : `page_font_kinds` classe les polices déclarées par une page (programme
   inclus Type 1, CFF, TrueType, OpenType, CID ; police standard ; non incluse ; Type 3)
   sans lire aucun programme de police. `probe` l'écrit (`fonts=`) et `survey` compte les
@@ -107,6 +123,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Une police TrueType malformée (glyphe sans point mais avec des données) faisait paniquer
+  `read-fonts` 0.41.0 : passage à `skrifa` 0.49.0 / `read-fonts` 0.46.0, test de
+  régression (trouvé par la cible de fuzzing `font`).
 - `pdf-render` : `/Contents` référençant un tableau indirect de flux (ISO 32000-2,
   7.7.3.3) était refusé avec `InvalidContents` ; trouvé par la mesure sur corpus réel.
 

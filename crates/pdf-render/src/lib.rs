@@ -35,6 +35,7 @@ mod fonts;
 mod geometry;
 mod interpret;
 mod raster;
+mod text;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -82,6 +83,8 @@ pub struct RenderLimits {
     pub max_path_work: u64,
     /// Clip paths active at once (each `W n` adds one until its `Q`).
     pub max_clips: u32,
+    /// Segments of one glyph outline.
+    pub max_glyph_segments: u64,
 }
 
 impl Default for RenderLimits {
@@ -93,6 +96,7 @@ impl Default for RenderLimits {
             max_state_depth: 256,
             max_path_work: 50_000_000,
             max_clips: 1024,
+            max_glyph_segments: 100_000,
         }
     }
 }

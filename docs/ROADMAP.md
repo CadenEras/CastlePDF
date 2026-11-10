@@ -21,7 +21,7 @@ Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objet
 3. interpréteur minimal ; 4. tuiles, cache et IPC jusqu'à la première page (fait) ;
 **4 bis. reconstruction de la xref (ADR-0004)** (fait) ; 5. polices, texte et images
 (ADR-0005), par étapes : 5.1 décompte des types de police dans `survey` (fait) ; 5.2 polices
-incluses TrueType et CFF ; 5.3 polices non incluses (jeu OFL) ; 5.4 images Flate et DCT ;
+incluses TrueType (5.2a, fait) et CFF (5.2b) ; 5.3 polices non incluses (jeu OFL) ; 5.4 images Flate et DCT ;
 5.5 polices Type 3.
 
 ### Limites ouvertes à lever avant la fin de P2
@@ -41,6 +41,7 @@ de cette liste sans preuve.
 | Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
 | Navigation page par page, pas de défilement continu | « UI réactive » et virtualisation des pages | Défilement virtualisé, tuiles invisibles annulées |
 | Chaque tuile réinterprète tout le contenu de la page | Coût multiplié par le nombre de tuiles sur une page lourde | Mesure sur pages lourdes, puis cache de la liste d'affichage si nécessaire |
+| Polices relues à chaque rendu, donc à chaque tuile (pas encore de cache par document) | Le texte fait passer le temps médian par fichier de `survey` de 5 à 13 ms (SafeDocs, 2026-11-10) | Cache borné par document dans le worker (ADR-0005), mesuré par tuile |
 | Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
 | Pas de jobs CI ARM64 ni de build macOS x86_64 | Annoncés par ADR-0003 | Jobs ajoutés ou report motivé |
 
