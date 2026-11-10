@@ -31,6 +31,7 @@
 
 mod content;
 mod error;
+mod fonts;
 mod geometry;
 mod interpret;
 mod raster;
@@ -53,6 +54,7 @@ pub const MAX_SIDE: u16 = 16_384;
 /// a longer array is an `InvalidOperands` or `InvalidResource` error.
 pub const MAX_DASH_ENTRIES: usize = 64;
 pub use error::{ContentErrorKind, Error, RenderLimitKind};
+pub use fonts::{FontKind, MAX_PAGE_FONTS, page_font_kinds};
 
 use geometry::Matrix;
 use interpret::Interpreter;
