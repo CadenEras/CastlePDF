@@ -13,6 +13,7 @@ pdf-syntax.workspace = true
 # Rasteriser (ADR-0003). Exact version: its 0.x API is wrapped by `raster.rs`
 # only. No `png` (decoder) nor `text` (glyph stack) nor multithreading.
 vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline"] }
+skrifa = { version = "=0.49.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

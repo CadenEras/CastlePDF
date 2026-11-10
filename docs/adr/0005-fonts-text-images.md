@@ -89,7 +89,7 @@ Contraintes :
 
 | Sujet | Proposition |
 | --- | --- |
-| Lecteur de polices | `skrifa = "=0.44.0"` (même version que celle déjà verrouillée), sans fonctions par défaut sauf `std`. Utilisé seulement dans `pdf-render`, dans un module `text`. Un CFF nu (`/Type1C`, `/CIDFontType0C`) est lu par `read-fonts` comme table `CFF`. Si `skrifa` exige une police OpenType complète, on l'enveloppe dans un conteneur OpenType minimal construit en mémoire ; à valider au prototype |
+| Lecteur de polices | `skrifa = "=0.44.0"` (même version que celle déjà verrouillée ; amendée en 0.49.0, voir plus bas), sans fonctions par défaut sauf `std`. Utilisé seulement dans `pdf-render`, dans un module `text`. Un CFF nu (`/Type1C`, `/CIDFontType0C`) est lu par `read-fonts` comme table `CFF`. Si `skrifa` exige une police OpenType complète, on l'enveloppe dans un conteneur OpenType minimal construit en mémoire ; à valider au prototype |
 | Rendu des glyphes | Option (b) : les contours sont convertis en chemins `kurbo` (crate déjà présente). Positions selon ISO 32000-2, 9.4 : matrice de texte, `Tc`, `Tw`, `Tz`, `TL`, `Ts`, et largeurs `/Widths`, `/W` ou métriques AFM des polices standard. Modes `Tr` : 0 à 2 et 7 rendus, 4 à 6 (découpe) toujours signalés par `TextClip`, 3 (invisible) rien. Pas de hinting. La fonction `text` de `vello_cpu` reste désactivée |
 | Encodages | `/Encoding` (Standard, WinAnsi, MacRoman, MacExpert, `/Differences`), noms de glyphes vers Unicode via l'Adobe Glyph List (BSD-3-Clause), tables `cmap` des polices TrueType, y compris symboliques (3,0) et (1,0). Type 0 : `Identity-H`, `Identity-V` et CMap incluses. Les CMap prédéfinies non Identity (CJK) sont `Unsupported`, signalées |
 | Type 1 inclus (`FontFile`) | Non lu par `skrifa`. En P2, la police est remplacée comme une police non incluse, et la page porte un nouveau bit `Skipped` (`FontSubstituted`). La première étape de la tranche ajoute à `survey` le décompte des types de police rencontrés. Un lecteur Type 1 maison (déchiffrement `eexec`, charstrings) fera l'objet d'une décision mesurée |
@@ -145,6 +145,14 @@ Contraintes :
   - polices et images sont isolées dans des modules de `pdf-render` ;
   - retirer la fonction `standard-fonts` ramène au remplacement sans dessin ;
   - chaque dépendance est épinglée et vérifiée par `cargo-deny`.
+- **Amendement du 2026-11-10 (étape 5.2a) :** la cible de fuzzing `font` a trouvé une panique
+  dans `read-fonts` 0.41.0. Un glyphe simple qui a des données mais aucun point fait indexer
+  un tableau vide (`glyf.rs`, `read_points_fast`). La correction est publiée depuis
+  `read-fonts` 0.42.0. `skrifa` passe donc à `=0.49.0` (`read-fonts` 0.46.0), et les deux
+  déclarent toujours `#![forbid(unsafe_code)]`. `Cargo.lock` garde `skrifa` 0.44.0 pour la
+  dépendance optionnelle `glifo` de `vello_cpu`, qui n'est pas compilée (fonction `text`
+  désactivée). Le cas est un test de régression de `pdf-render`
+  (`a_glyph_without_points_does_not_panic`).
 - **Acceptation (2026-11-10) :**
   - ADR-0002 est amendé sur la ligne « Réutiliser » : `skrifa` et `zune-jpeg` sont retenus,
     sans le code SIMD de `zune-jpeg` ;

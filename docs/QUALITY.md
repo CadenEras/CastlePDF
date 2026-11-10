@@ -86,6 +86,22 @@ Les polices TrueType et CFF incluses, lues par `skrifa`, et les polices de rempl
 couvrent l'essentiel. Le Type 1 inclus, que `skrifa` ne lit pas, touche environ 1,5 % des
 premières pages ouvertes : il reste remplacé (ADR-0005).
 
+Après la lecture des polices TrueType incluses (2026-11-10, ADR-0005 étape 5.2a, même
+protocole) :
+- premières pages rendues où du texte manque encore : 1 660 → 990 (SafeDocs), 1 991 → 1 238
+  (UNSAFE) ;
+- taux d'ouverture et de rendu inchangés, aucun crash ni timeout ;
+- temps médian par fichier : de 5 ms à 8 ou 13 ms selon l'exécution (SafeDocs), car les
+  polices sont relues à chaque rendu.
+
+Le texte restant vient des polices standard, non incluses, CFF, Type 1 et Type 3 (étapes
+5.2b à 5.5). La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
+par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
+aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
+`truetype.pdf` à 216 dpi, et 0,28 % à 72 dpi, dû au calage des fûts sur la grille de pixels
+par FreeType. Le texte est donc comparé à 216 dpi, avec la tolérance documentée dans
+`pdftoppm_oracle.rs`.
+
 Le fuzzing de la cible `repair` (600 s, environ 2,5 millions d'exécutions, WSL) n'a trouvé
 aucun crash. Sur les fixtures abîmées, qpdf 10.6 reconstruit la même liste d'objets quand
 il trouve un trailer. Sans trailer, il refuse le fichier là où CastlePDF prend le dernier

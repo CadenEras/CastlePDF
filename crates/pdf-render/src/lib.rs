@@ -2,8 +2,9 @@
 //! rasteriser behind an internal adapter (ADR-0003).
 //!
 //! Supported: graphics state (`q Q cm w J j M d ri i gs`), paths, painting,
-//! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`)
-//! and constant alpha. Text, images, XObjects, shadings, patterns, other
+//! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`),
+//! constant alpha, and text in embedded TrueType fonts (ADR-0005). Text in
+//! other fonts, images, XObjects, shadings, patterns, other
 //! colour spaces, blend modes, soft masks, transfer functions and optional
 //! content are not rendered yet: when a page uses them, the rendering is
 //! partial and `Rendering::skipped` lists them, so that the caller can say
@@ -35,6 +36,7 @@ mod fonts;
 mod geometry;
 mod interpret;
 mod raster;
+mod text;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -68,7 +70,8 @@ use raster::Canvas;
 pub struct RenderLimits {
     /// Pixels of the output bitmap (4 bytes each).
     pub max_pixels: u64,
-    /// Operators interpreted.
+    /// Operators interpreted, each segment of a glyph drawn counting as one
+    /// (as the path operator that would draw it).
     pub max_operations: u64,
     /// `q` nesting.
     pub max_state_depth: u32,
@@ -82,6 +85,8 @@ pub struct RenderLimits {
     pub max_path_work: u64,
     /// Clip paths active at once (each `W n` adds one until its `Q`).
     pub max_clips: u32,
+    /// Segments of one glyph outline.
+    pub max_glyph_segments: u64,
 }
 
 impl Default for RenderLimits {
@@ -93,6 +98,7 @@ impl Default for RenderLimits {
             max_state_depth: 256,
             max_path_work: 50_000_000,
             max_clips: 1024,
+            max_glyph_segments: 100_000,
         }
     }
 }
@@ -119,7 +125,9 @@ impl Default for RenderOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Unsupported {
-    /// Text showing operators, or a font set by an `ExtGState`.
+    /// Text not drawn: a font not read yet (standard, not embedded, CFF,
+    /// Type 1, Type 3), a font set by an `ExtGState`, or a glyph the font
+    /// program does not have or cannot draw.
     Text,
     /// Text rendering modes 4 to 7 (text added to the clip): what follows is
     /// painted without that clip, so the rendering may show too much.

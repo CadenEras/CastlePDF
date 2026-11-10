@@ -3,14 +3,22 @@
 //! are skipped and reported in `Rendering::skipped`, never silently.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, PdfFile, Source};
 
 use crate::content::{ContentReader, Operation};
 use crate::error::{ContentErrorKind, Error, RenderLimitKind};
-use crate::geometry::{Matrix, Path, Point};
+use crate::geometry::{Matrix, Path, Point, Segment};
 use crate::raster::{Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
+use crate::text::{self, Selected, TextState, font};
 use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
+
+/// Most glyph outline segments kept in the cache of one rendering (about
+/// 56 bytes each); outlines beyond are drawn but not kept.
+const MAX_CACHED_SEGMENTS: usize = 1_000_000;
+/// Cancellation is checked every this many codes shown.
+const CANCEL_CHECK_CODES: u64 = 4096;
 
 /// Largest device coordinate accepted, padding of strokes included: far
 /// beyond any canvas (65 535 pixels), yet small enough for the rasteriser's
@@ -96,6 +104,7 @@ struct GraphicsState {
     fill: Paint,
     stroke: Paint,
     style: StrokeStyle,
+    text: TextState,
     /// Clip paths pushed on the canvas since the matching `q`.
     clips: u32,
 }
@@ -145,6 +154,19 @@ pub(crate) struct Interpreter<'a, S> {
     categories: BTreeMap<&'static [u8], Dictionary>,
     color_spaces: BTreeMap<Vec<u8>, ColorSpace>,
     ext_g_states: BTreeMap<Vec<u8>, ExtGState>,
+    /// Text matrix and text line matrix (9.4.2), set by `BT`.
+    text_matrix: Matrix,
+    line_matrix: Matrix,
+    /// Fonts by resource name, loaded once.
+    fonts: BTreeMap<Vec<u8>, Selected>,
+    /// The same fonts by object, so that two names of one font share it.
+    font_objects: BTreeMap<ObjectId, Selected>,
+    /// Fonts loaded, numbered in load order: the number keys the glyph cache.
+    loaded_fonts: usize,
+    /// Glyph outlines in font units, by font number and glyph id; `None` for
+    /// a glyph the program cannot draw.
+    glyphs: BTreeMap<(usize, u16), Option<Arc<Vec<Segment>>>>,
+    cached_segments: usize,
 }
 
 impl<'a, S: Source> Interpreter<'a, S> {
@@ -177,6 +199,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     dashes: Vec::new(),
                     dash_phase: 0.0,
                 },
+                text: TextState::default(),
                 clips: 0,
             },
             saved: Vec::new(),
@@ -192,6 +215,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
             categories: BTreeMap::new(),
             color_spaces: BTreeMap::new(),
             ext_g_states: BTreeMap::new(),
+            text_matrix: Matrix::IDENTITY,
+            line_matrix: Matrix::IDENTITY,
+            fonts: BTreeMap::new(),
+            font_objects: BTreeMap::new(),
+            loaded_fonts: 0,
+            glyphs: BTreeMap::new(),
+            cached_segments: 0,
         }
     }
 
@@ -459,13 +489,16 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     }
                 }
             }
-            // Text (9.4): not rendered yet; operands are still checked.
+            // Text (9.3, 9.4). Fonts read so far: embedded TrueType
+            // (ADR-0005); other fonts set `Text`.
             b"BT" => {
                 no_operands(ops).ok_or_else(bad)?;
                 if self.in_text {
                     return Err(misplaced());
                 }
                 self.in_text = true;
+                self.text_matrix = Matrix::IDENTITY;
+                self.line_matrix = Matrix::IDENTITY;
             }
             b"ET" => {
                 no_operands(ops).ok_or_else(bad)?;
@@ -475,13 +508,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 self.in_text = false;
             }
             b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" => {
-                let [_] = numbers(ops).ok_or_else(bad)?;
+                let [value] = numbers(ops).ok_or_else(bad)?;
+                let text = &mut self.state.text;
+                match op.operator {
+                    b"Tc" => text.char_spacing = value,
+                    b"Tw" => text.word_spacing = value,
+                    b"Tz" => text.horizontal_scale = value / 100.0,
+                    b"TL" => text.leading = value,
+                    _ => text.rise = value,
+                }
             }
             b"Tf" => {
-                let [Object::Name(_), size] = ops else {
+                let [Object::Name(name), size] = ops else {
                     return Err(bad());
                 };
-                number(size).ok_or_else(bad)?;
+                let size = number(size).ok_or_else(bad)?;
+                self.state.text.font = self.font(name, at, budget)?;
+                self.state.text.size = size;
             }
             b"Tr" => {
                 let [mode] = numbers(ops).ok_or_else(bad)?;
@@ -491,26 +534,47 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 if mode >= 4.0 {
                     self.skipped.insert(Unsupported::TextClip);
                 }
+                // Checked above: an integer from 0 to 7.
+                self.state.text.render_mode = mode as u8;
             }
             b"Td" | b"TD" => {
-                let [_, _] = numbers(ops).ok_or_else(bad)?;
+                let [tx, ty] = numbers(ops).ok_or_else(bad)?;
+                if op.operator == b"TD" {
+                    self.state.text.leading = -ty;
+                }
+                self.next_line(tx, ty, at)?;
             }
             b"Tm" => {
-                let [_, _, _, _, _, _] = numbers(ops).ok_or_else(bad)?;
+                let [a, b, c, d, e, f] = numbers(ops).ok_or_else(bad)?;
+                let matrix = Matrix::new(a, b, c, d, e, f);
+                if !matrix.is_finite() {
+                    return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
+                }
+                self.text_matrix = matrix;
+                self.line_matrix = matrix;
             }
-            b"T*" => no_operands(ops).ok_or_else(bad)?,
+            b"T*" => {
+                no_operands(ops).ok_or_else(bad)?;
+                self.next_line(0.0, -self.state.text.leading, at)?;
+            }
             b"Tj" | b"'" => {
-                let [Object::String(_)] = ops else {
+                let [Object::String(string)] = ops else {
                     return Err(bad());
                 };
-                self.skipped.insert(Unsupported::Text);
+                if op.operator == b"'" {
+                    self.next_line(0.0, -self.state.text.leading, at)?;
+                }
+                self.show(&[Object::String(string.clone())], at, budget)?;
             }
             b"\"" => {
-                let [word, character, Object::String(_)] = ops else {
+                let [word, character, Object::String(string)] = ops else {
                     return Err(bad());
                 };
-                number(word).and(number(character)).ok_or_else(bad)?;
-                self.skipped.insert(Unsupported::Text);
+                let (word, character) = number(word).zip(number(character)).ok_or_else(bad)?;
+                self.state.text.word_spacing = word;
+                self.state.text.char_spacing = character;
+                self.next_line(0.0, -self.state.text.leading, at)?;
+                self.show(&[Object::String(string.clone())], at, budget)?;
             }
             b"TJ" => {
                 let [Object::Array(items)] = ops else {
@@ -522,7 +586,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 {
                     return Err(bad());
                 }
-                self.skipped.insert(Unsupported::Text);
+                self.show(items, at, budget)?;
             }
             // Type 3 glyph operators are only valid in a glyph description.
             b"d0" | b"d1" => return Err(misplaced()),
@@ -583,6 +647,196 @@ impl<'a, S: Source> Interpreter<'a, S> {
             _ => return Err(self.error(at, ContentErrorKind::UnknownOperator)),
         }
         Ok(())
+    }
+
+    /// `Td`: moves to the start of the next line, offset by (tx, ty).
+    fn next_line(&mut self, tx: f64, ty: f64, at: u64) -> Result<(), Error> {
+        let matrix = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, ty).then(&self.line_matrix);
+        if !matrix.is_finite() {
+            return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
+        }
+        self.line_matrix = matrix;
+        self.text_matrix = matrix;
+        Ok(())
+    }
+
+    /// The font named `name` in the page's `/Font` resources, loaded once.
+    /// A name absent from the resources, or a font this renderer does not
+    /// read yet, selects `Unsupported`: its text is skipped and reported.
+    fn font(&mut self, name: &[u8], at: u64, budget: &mut Budget) -> Result<Selected, Error> {
+        if let Some(selected) = self.fonts.get(name) {
+            return Ok(selected.clone());
+        }
+        let entry = self.category(b"Font", at, budget)?.get(name).cloned();
+        let id = match &entry {
+            Some(Object::Reference(id)) => Some(*id),
+            _ => None,
+        };
+        if let Some(selected) = id.and_then(|id| self.font_objects.get(&id)) {
+            let selected = selected.clone();
+            self.fonts.insert(name.to_vec(), selected.clone());
+            return Ok(selected);
+        }
+        let loaded = match entry {
+            Some(object) => match text::resolve_dictionary(self.file, &object, budget)? {
+                Some(dictionary) => font::load(self.file, &dictionary, budget)?,
+                None => None,
+            },
+            None => None,
+        };
+        let selected = match loaded {
+            Some(font) => {
+                self.loaded_fonts += 1;
+                Selected::Font {
+                    number: self.loaded_fonts,
+                    font: Arc::new(font),
+                }
+            }
+            None => Selected::Unsupported,
+        };
+        self.fonts.insert(name.to_vec(), selected.clone());
+        if let Some(id) = id {
+            self.font_objects.insert(id, selected.clone());
+        }
+        Ok(selected)
+    }
+
+    /// Shows the strings of `items`, with the numbers between them moving
+    /// the text position (`TJ`), and advances the text matrix (9.4.4). The
+    /// glyphs of one operator are painted as one path, in the text
+    /// rendering mode: filled (nonzero), stroked, both, or neither.
+    fn show(&mut self, items: &[Object], at: u64, budget: &mut Budget) -> Result<(), Error> {
+        let (font_number, font) = match &self.state.text.font {
+            Selected::Font { number, font } => (*number, Arc::clone(font)),
+            Selected::None | Selected::Unsupported => {
+                self.skipped.insert(Unsupported::Text);
+                return Ok(());
+            }
+        };
+        let text = self.state.text.clone();
+        let mode = text.render_mode;
+        let draws = !matches!(mode, 3 | 7);
+        let scale = text.size / font.units_per_em();
+        let glyph_space = Matrix::new(
+            scale * text.horizontal_scale,
+            0.0,
+            0.0,
+            scale,
+            0.0,
+            text.rise,
+        );
+        let mut path = Path::default();
+        let mut shown: u64 = 0;
+        for item in items {
+            let string = match item {
+                Object::String(string) => string,
+                other => {
+                    let adjust = number(other).unwrap_or(0.0);
+                    let tx = -adjust / 1000.0 * text.size * text.horizontal_scale;
+                    self.advance(tx, at)?;
+                    continue;
+                }
+            };
+            for code in font.codes(string) {
+                shown += 1;
+                if shown.is_multiple_of(CANCEL_CHECK_CODES) {
+                    budget.check_cancelled()?;
+                }
+                if draws && code.missing {
+                    self.skipped.insert(Unsupported::Text);
+                }
+                if draws && let Some(glyph) = code.glyph {
+                    match self.outline(font_number, &font, glyph, budget)? {
+                        Some(outline) => {
+                            // Bounded before allocating. Each segment of a
+                            // glyph counts as an operation, as a path segment
+                            // drawn by an operator would, and at least one
+                            // unit of path work (`Path::work`), charged
+                            // when painted.
+                            self.operations += outline.len() as u64;
+                            if self.operations > self.limits.max_operations {
+                                return Err(Error::LimitExceeded {
+                                    kind: RenderLimitKind::Operations,
+                                    limit: self.limits.max_operations,
+                                });
+                            }
+                            let segments = path.segments().len() + outline.len();
+                            if self.work + segments as f64 > self.limits.max_path_work as f64 {
+                                return Err(Error::LimitExceeded {
+                                    kind: RenderLimitKind::PathWork,
+                                    limit: self.limits.max_path_work,
+                                });
+                            }
+                            let matrix = glyph_space.then(&self.text_matrix);
+                            append(&mut path, &outline, &matrix);
+                        }
+                        None => {
+                            self.skipped.insert(Unsupported::Text);
+                        }
+                    }
+                }
+                let spacing = text.char_spacing
+                    + if code.is_space {
+                        text.word_spacing
+                    } else {
+                        0.0
+                    };
+                let tx = (code.width / 1000.0 * text.size + spacing) * text.horizontal_scale;
+                self.advance(tx, at)?;
+            }
+        }
+        let fill = matches!(mode, 0 | 2 | 4 | 6);
+        let stroke = matches!(mode, 1 | 2 | 5 | 6);
+        if path.is_empty() || !(fill || stroke) {
+            return Ok(());
+        }
+        self.path = path;
+        self.paint(at, fill.then_some(false), stroke)
+    }
+
+    fn advance(&mut self, tx: f64, at: u64) -> Result<(), Error> {
+        let matrix = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0).then(&self.text_matrix);
+        if !matrix.is_finite() {
+            return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
+        }
+        self.text_matrix = matrix;
+        Ok(())
+    }
+
+    /// The outline of `glyph`, from the cache or drawn now. Each outline drawn
+    /// is charged one object; an outline over `max_glyph_segments` is an
+    /// error. `None` for a glyph the program cannot draw.
+    fn outline(
+        &mut self,
+        number: usize,
+        font: &font::Font,
+        glyph: u16,
+        budget: &mut Budget,
+    ) -> Result<Option<Arc<Vec<Segment>>>, Error> {
+        let key = (number, glyph);
+        if let Some(outline) = self.glyphs.get(&key) {
+            return Ok(outline.clone());
+        }
+        budget.charge_object()?;
+        let max = usize::try_from(self.limits.max_glyph_segments).unwrap_or(usize::MAX);
+        let outline = match font.outline(glyph, max) {
+            Ok(Some(outline)) => Arc::new(outline),
+            Ok(None) => {
+                self.glyphs.insert(key, None);
+                return Ok(None);
+            }
+            Err(()) => {
+                return Err(Error::LimitExceeded {
+                    kind: RenderLimitKind::GlyphSegments,
+                    limit: self.limits.max_glyph_segments,
+                });
+            }
+        };
+        if self.cached_segments + outline.len() <= MAX_CACHED_SEGMENTS {
+            self.cached_segments += outline.len();
+            self.glyphs.insert(key, Some(Arc::clone(&outline)));
+        }
+        Ok(Some(outline))
     }
 
     fn need_point(&self, added: bool, at: u64) -> Result<(), Error> {
@@ -927,6 +1181,22 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 Err(self.error(at, ContentErrorKind::InvalidResource))
             }
             IndirectValue::Object(object) => Ok(object),
+        }
+    }
+}
+
+/// Appends `outline` (font units) to `path` through `matrix`.
+fn append(path: &mut Path, outline: &[Segment], matrix: &Matrix) {
+    for segment in outline {
+        match segment {
+            Segment::MoveTo(point) => path.move_to(matrix.apply(*point)),
+            Segment::LineTo(point) => {
+                path.line_to(matrix.apply(*point));
+            }
+            Segment::CurveTo(c1, c2, end) => {
+                path.curve_to(matrix.apply(*c1), matrix.apply(*c2), matrix.apply(*end));
+            }
+            Segment::Close => path.close(),
         }
     }
 }

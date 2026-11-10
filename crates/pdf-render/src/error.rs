@@ -77,6 +77,8 @@ pub enum RenderLimitKind {
     PathWork,
     /// Clip paths active at once.
     Clips,
+    /// Segments of one glyph outline.
+    GlyphSegments,
 }
 
 impl From<pdf_syntax::Error> for Error {

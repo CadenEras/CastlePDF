@@ -82,7 +82,7 @@ cargo install --locked cargo-fuzz@0.13.2
 cargo fuzz run lexer -- -max_total_time=300 -rss_limit_mb=2048 -dict=dict/pdf.dict   # ou objects
 ```
 
-Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
+Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType arbitraire ; graines dans `fuzz/seeds/font`), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
 puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`) lance
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 

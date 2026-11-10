@@ -30,6 +30,18 @@ tué sans bloquer l'application. Définir droits et limites de processus pour ch
   taille correspond exactement à ses dimensions ;
 - le worker n'a encore aucune restriction de droits propre à l'OS.
 
+Polices (ADR-0005) : le programme d'une police incluse est lu par `skrifa` / `read-fonts`,
+en Rust sans `unsafe`. Il est décodé sous `max_decoded_bytes`. Chaque contour de glyphe est
+limité à `max_glyph_segments` segments et facturé au budget d'objets. Chacun de ses segments
+compte comme une opération (`max_operations`, comme un segment tracé par un opérateur) et
+est vérifié contre `max_path_work` avant d'être ajouté au chemin : une chaîne courte ne peut
+pas faire allouer un chemin démesuré. L'annulation est vérifiée toutes les 4 096 lettres. Le
+cache des contours d'un rendu est borné, et les échecs y sont gardés. Un nom de glyphe
+absent du programme est signalé (`Text`), jamais remplacé par un autre glyphe. Une police illisible saute son
+texte (signalé `Text`). Une dépendance peut toutefois paniquer : la cible de fuzzing
+`font` en a trouvé une dans `read-fonts` 0.41.0, corrigée en 0.42.0. Le worker isolé reste
+la protection contre ce qui n'a pas encore été trouvé.
+
 Réparation de la structure (ADR-0004) : un seul balayage linéaire, jamais de retour en
 arrière ; chaque en-tête d'objet est facturé à `max_objects_visited` ; les dictionnaires
 lus pendant le balayage sont bornés aux octets qui précèdent le mot-clé suivant, et seuls
