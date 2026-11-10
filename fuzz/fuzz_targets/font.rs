@@ -1,6 +1,7 @@
-//! Arbitrary bytes embedded as a TrueType program (`/FontFile2`), in a
-//! simple font (first byte even) or a Type 0 `Identity-H` font (odd), then
-//! every code shown on a small page (ADR-0005).
+//! Arbitrary bytes embedded as a font program, then every code shown on a
+//! small page (ADR-0005). The first byte chooses: bit 0, a simple font or a
+//! Type 0 `Identity-H` font; bit 1, a TrueType program (`/FontFile2`) or a
+//! bare CFF one (`/FontFile3` `/Type1C` or `/CIDFontType0C`).
 //! Properties: no panic, overflow or unbounded work; a font that cannot be
 //! read is reported as `Text`, never fatal.
 #![no_main]
@@ -17,15 +18,20 @@ fn budget() -> Budget {
     Budget::new(limits, CancellationToken::new())
 }
 
-fn pdf(program: &[u8], cid: bool) -> Vec<u8> {
+fn pdf(program: &[u8], cid: bool, cff: bool) -> Vec<u8> {
+    let (simple, descendant, file, stream) = if cff {
+        ("Type1", "CIDFontType0", "FontFile3", if cid { " /Subtype /CIDFontType0C" } else { " /Subtype /Type1C" })
+    } else {
+        ("TrueType", "CIDFontType2", "FontFile2", "")
+    };
     let (font, codes) = if cid {
         (
-            "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 /BaseFont /F /FontDescriptor 6 0 R /W [0 [500 600] 10 300 700] >>] >>".to_owned(),
+            format!("<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Type /Font /Subtype /{descendant} /BaseFont /F /FontDescriptor 6 0 R /W [0 [500 600] 10 300 700] >>] >>"),
             (0u16..300).map(|c| format!("{c:04x}")).collect::<String>(),
         )
     } else {
         (
-            "<< /Type /Font /Subtype /TrueType /BaseFont /F /FontDescriptor 6 0 R /Encoding << /Differences [65 /A /uni00E9 /g3] >> >>".to_owned(),
+            format!("<< /Type /Font /Subtype /{simple} /BaseFont /F /FontDescriptor 6 0 R /Encoding << /Differences [65 /A /uni00E9 /g3] >> >>"),
             (0u16..256).map(|c| format!("{c:02x}")).collect::<String>(),
         )
     };
@@ -36,9 +42,9 @@ fn pdf(program: &[u8], cid: bool) -> Vec<u8> {
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 40] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
         format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).into_bytes(),
         font.into_bytes(),
-        b"<< /Type /FontDescriptor /FontName /F /Flags 4 /FontFile2 7 0 R >>".to_vec(),
+        format!("<< /Type /FontDescriptor /FontName /F /Flags 4 /{file} 7 0 R >>").into_bytes(),
         [
-            format!("<< /Length {} >>\nstream\n", program.len()).as_bytes(),
+            format!("<< /Length {}{stream} >>\nstream\n", program.len()).as_bytes(),
             program,
             b"\nendstream",
         ]
@@ -71,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
     let Some((first, program)) = data.split_first() else {
         return;
     };
-    let bytes = pdf(program, first % 2 == 1);
+    let bytes = pdf(program, first & 1 == 1, first & 2 == 2);
     let Ok(source) = MemorySource::from_vec(bytes, &ResourceLimits::default()) else {
         return;
     };

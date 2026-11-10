@@ -30,8 +30,9 @@ tué sans bloquer l'application. Définir droits et limites de processus pour ch
   taille correspond exactement à ses dimensions ;
 - le worker n'a encore aucune restriction de droits propre à l'OS.
 
-Polices (ADR-0005) : le programme d'une police incluse est lu par `skrifa` / `read-fonts`,
-en Rust sans `unsafe`. Il est décodé sous `max_decoded_bytes`. Chaque contour de glyphe est
+Polices (ADR-0005) : le programme d'une police incluse est lu par `skrifa` (TrueType,
+OpenType) ou `read-fonts` (`ps::cff`, CFF nu), en Rust sans `unsafe`. La lecture du jeu de
+caractères CFF est facturée au budget d'objets, glyphe par glyphe. Il est décodé sous `max_decoded_bytes`. Chaque contour de glyphe est
 limité à `max_glyph_segments` segments et facturé au budget d'objets. Chacun de ses segments
 compte comme une opération (`max_operations`, comme un segment tracé par un opérateur) et
 est vérifié contre `max_path_work` avant d'être ajouté au chemin : une chaîne courte ne peut

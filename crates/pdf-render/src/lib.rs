@@ -3,7 +3,8 @@
 //!
 //! Supported: graphics state (`q Q cm w J j M d ri i gs`), paths, painting,
 //! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`),
-//! constant alpha, and text in embedded TrueType fonts (ADR-0005). Text in
+//! constant alpha, and text in embedded TrueType, OpenType and CFF fonts
+//! (ADR-0005). Text in
 //! other fonts, images, XObjects, shadings, patterns, other
 //! colour spaces, blend modes, soft masks, transfer functions and optional
 //! content are not rendered yet: when a page uses them, the rendering is
@@ -125,8 +126,8 @@ impl Default for RenderOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Unsupported {
-    /// Text not drawn: a font not read yet (standard, not embedded, CFF,
-    /// Type 1, Type 3), a font set by an `ExtGState`, or a glyph the font
+    /// Text not drawn: a font not read yet (standard, not embedded, Type 1
+    /// program, Type 3), a font set by an `ExtGState`, or a glyph the font
     /// program does not have or cannot draw.
     Text,
     /// Text rendering modes 4 to 7 (text added to the clip): what follows is

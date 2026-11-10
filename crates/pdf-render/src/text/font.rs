@@ -1,13 +1,19 @@
-//! Fonts whose program the renderer reads (ADR-0005, step 5.2a): simple
-//! TrueType fonts and Type 0 fonts with a `CIDFontType2` descendant, both
-//! with an embedded `/FontFile2` program, read by `skrifa`.
+//! Fonts whose program the renderer reads (ADR-0005, steps 5.2a and 5.2b):
+//! simple fonts (`/TrueType`, `/Type1`, `/MMType1`) and Type 0 fonts with a
+//! `CIDFontType2` or `CIDFontType0` descendant, whose embedded program is
+//! TrueType (`/FontFile2`) or OpenType (`/FontFile3 /OpenType`), read by
+//! `skrifa`, or bare CFF (`/FontFile3 /Type1C` or `/CIDFontType0C`), read by
+//! `read-fonts`.
 //!
 //! A font is loaded once per rendering from its dictionary: widths (ISO
 //! 32000-2, 9.2.4, 9.7.4.3), the mapping from character codes to glyph ids
-//! (9.6.5.4 for simple TrueType fonts, `/CIDToGIDMap` for CID fonts) and
-//! the program bytes. Any other font, an encoding other than `Identity-H`,
-//! or a program `skrifa` cannot open is `Unsupported`: its text is not drawn
-//! and the page reports `Text`.
+//! and the program bytes. Simple TrueType and OpenType fonts map codes
+//! through `cmap` (9.6.5.4); simple CFF fonts through glyph names and the
+//! CFF charset, or the CFF's built-in encoding where the PDF gives no name
+//! (9.6.5.2); CID fonts through `/CIDToGIDMap` or the charset of a
+//! CID-keyed CFF. Any other font (Type 1 program, Type 3, not embedded), an
+//! encoding other than `Identity-H`, or a program that cannot be opened is
+//! `Unsupported`: its text is not drawn and the page reports `Text`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,6 +23,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::metrics::GlyphMetrics;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
+use skrifa::raw::ps::cff::CffFontRef;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
@@ -36,8 +43,18 @@ const MAX_CIDS: usize = 65_536;
 #[derive(Debug)]
 pub(crate) struct Font {
     program: Arc<[u8]>,
+    format: Format,
     units_per_em: f64,
     mapping: Mapping,
+}
+
+/// How the program bytes are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    /// TrueType or OpenType file, read by `skrifa`.
+    OpenType,
+    /// Bare CFF (Compact Font Format), read by `read-fonts`.
+    Cff,
 }
 
 #[derive(Debug)]
@@ -138,15 +155,34 @@ impl Font {
     /// program has no such glyph or cannot draw it; an outline with more
     /// than `max_segments` segments is `Err(())`.
     pub fn outline(&self, glyph: u16, max_segments: usize) -> Result<Option<Vec<Segment>>, ()> {
-        let Ok(font) = FontRef::new(&self.program) else {
-            return Ok(None);
-        };
-        let Some(outline) = font.outline_glyphs().get(GlyphId::new(u32::from(glyph))) else {
-            return Ok(None);
-        };
         let mut pen = Pen::new(max_segments);
-        let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
-        if outline.draw(settings, &mut pen).is_err() {
+        let glyph = GlyphId::new(u32::from(glyph));
+        let drawn = match self.format {
+            Format::OpenType => {
+                let Ok(font) = FontRef::new(&self.program) else {
+                    return Ok(None);
+                };
+                let Some(outline) = font.outline_glyphs().get(glyph) else {
+                    return Ok(None);
+                };
+                let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
+                outline.draw(settings, &mut pen).is_ok()
+            }
+            Format::Cff => {
+                // Unscaled: font units, the CFF `FontMatrix` applied.
+                let Ok(cff) = CffFontRef::new_cff(&self.program, 0, None) else {
+                    return Ok(None);
+                };
+                let Some(subfont) = cff
+                    .subfont_index(glyph)
+                    .and_then(|index| cff.subfont(index, &[]).ok())
+                else {
+                    return Ok(None);
+                };
+                cff.draw(&subfont, glyph, &[], None, &mut pen).is_ok()
+            }
+        };
+        if !drawn {
             return Ok(None);
         }
         if pen.overflow {
@@ -240,39 +276,67 @@ pub(crate) fn load<S: Source>(
     budget: &mut Budget,
 ) -> Result<Option<Font>, Error> {
     match font.get(b"Subtype").and_then(Object::as_name) {
-        Some(b"TrueType") => simple_true_type(file, font, budget),
-        Some(b"Type0") => cid_true_type(file, font, budget),
+        Some(b"TrueType" | b"Type1" | b"MMType1") => simple(file, font, budget),
+        Some(b"Type0") => cid(file, font, budget),
         _ => Ok(None),
     }
 }
 
-/// A font program and its units per em.
-type Program = (Arc<[u8]>, f64);
+/// Glyph of each code of a simple font, and the codes whose glyph name
+/// names no glyph of the program.
+type SimpleGlyphs = (Box<[Option<u16>; 256]>, Box<[bool; 256]>);
 
-/// The `/FontFile2` program of a descriptor, if `skrifa` can open it.
+/// A font program, how to read it, and its units per em.
+type Program = (Arc<[u8]>, Format, f64);
+
+/// The embedded program of a descriptor, if it can be opened: `/FontFile2`
+/// (TrueType), or `/FontFile3` with `/Subtype /OpenType`, `/Type1C` or
+/// `/CIDFontType0C`. `/FontFile` (Type 1) is not read (ADR-0005).
 fn program<S: Source>(
     file: &PdfFile<S>,
     descriptor: &Dictionary,
     budget: &mut Budget,
 ) -> Result<Option<Program>, Error> {
-    let Some(object) = descriptor.get(b"FontFile2") else {
+    let (object, format) = if let Some(object) = descriptor.get(b"FontFile2") {
+        (object, Format::OpenType)
+    } else if let Some(object) = descriptor.get(b"FontFile3") {
+        let subtype = match resolve_dictionary(file, object, budget)? {
+            Some(stream) => stream
+                .get(b"Subtype")
+                .and_then(Object::as_name)
+                .map(<[u8]>::to_vec),
+            None => None,
+        };
+        match subtype.as_deref() {
+            Some(b"OpenType") => (object, Format::OpenType),
+            Some(b"Type1C" | b"CIDFontType0C") => (object, Format::Cff),
+            _ => return Ok(None),
+        }
+    } else {
         return Ok(None);
     };
     let Some(bytes) = stream_bytes(file, object, budget)? else {
         return Ok(None);
     };
-    let units_per_em = match FontRef::new(&bytes).and_then(|font| font.head()) {
-        Ok(head) => f64::from(head.units_per_em()),
-        Err(_) => return Ok(None),
+    let units_per_em = match format {
+        Format::OpenType => match FontRef::new(&bytes).and_then(|font| font.head()) {
+            Ok(head) => f64::from(head.units_per_em()),
+            Err(_) => return Ok(None),
+        },
+        Format::Cff => match CffFontRef::new_cff(&bytes, 0, None) {
+            Ok(cff) => f64::from(cff.upem()),
+            Err(_) => return Ok(None),
+        },
     };
     // 16 to 16 384 units per em (OpenType `head`); anything else is damaged.
     if !(16.0..=16_384.0).contains(&units_per_em) {
         return Ok(None);
     }
-    Ok(Some((Arc::from(bytes), units_per_em)))
+    Ok(Some((Arc::from(bytes), format, units_per_em)))
 }
 
-fn simple_true_type<S: Source>(
+/// A simple font: one byte per code.
+fn simple<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
     budget: &mut Budget,
@@ -283,7 +347,7 @@ fn simple_true_type<S: Source>(
     let Some(descriptor) = resolve_dictionary(file, descriptor, budget)? else {
         return Ok(None);
     };
-    let Some((program, units_per_em)) = program(file, &descriptor, budget)? else {
+    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
         return Ok(None);
     };
     let flags = descriptor
@@ -295,22 +359,38 @@ fn simple_true_type<S: Source>(
         Some(object) => resolve(file, object, budget)?,
         None => None,
     };
-    let names = encoding_names(file, encoding.as_ref(), symbolic, budget)?;
-    let Ok(font_ref) = FontRef::new(&program) else {
-        return Ok(None);
+    let (glyphs, missing, font_ref) = match format {
+        Format::OpenType => {
+            let default = if symbolic { None } else { Some(&STANDARD) };
+            let names = encoding_names(file, encoding.as_ref(), default, budget)?;
+            let Ok(font_ref) = FontRef::new(&program) else {
+                return Ok(None);
+            };
+            let (glyphs, missing) = simple_glyphs(&font_ref, &names, encoding.is_some(), symbolic);
+            (glyphs, missing, Some(font_ref))
+        }
+        Format::Cff => {
+            // Without a base encoding, the font's own (built-in) one applies.
+            let names = encoding_names(file, encoding.as_ref(), None, budget)?;
+            let Ok(cff) = CffFontRef::new_cff(&program, 0, None) else {
+                return Ok(None);
+            };
+            let (glyphs, missing) = cff_glyphs(&cff, &names, budget)?;
+            (glyphs, missing, None)
+        }
     };
-    let (glyphs, missing) = simple_glyphs(&font_ref, &names, encoding.is_some(), symbolic);
     let widths = simple_widths(
         file,
         font,
         &descriptor,
-        &font_ref,
+        font_ref.as_ref(),
         &glyphs,
         units_per_em,
         budget,
     )?;
     Ok(Some(Font {
-        program,
+        program: Arc::clone(&program),
+        format,
         units_per_em,
         mapping: Mapping::Simple {
             glyphs,
@@ -320,14 +400,49 @@ fn simple_true_type<S: Source>(
     }))
 }
 
-/// Glyph name of each code: `/BaseEncoding` (or the default: Standard for a
-/// non-symbolic font, none for a symbolic one) with `/Differences` applied.
-/// Codes WinAnsi or MacRoman leave undefined take their Standard name
-/// (ISO 32000-2, 9.6.5.4).
+/// Glyph of each code of a simple CFF font: the name the encoding gives,
+/// looked up among the CFF charset names; a code without a name uses the
+/// CFF's built-in encoding. A name the font lacks is reported (`missing`).
+fn cff_glyphs(
+    cff: &CffFontRef<'_>,
+    names: &[Option<Vec<u8>>],
+    budget: &mut Budget,
+) -> Result<SimpleGlyphs, Error> {
+    let mut by_name: BTreeMap<&[u8], u16> = BTreeMap::new();
+    if let Some(charset) = cff.charset() {
+        for (gid, sid) in charset.iter() {
+            budget.charge_object()?;
+            if let (Some(name), Ok(gid)) = (cff.string(sid), u16::try_from(gid.to_u32())) {
+                by_name.entry(name).or_insert(gid);
+            }
+        }
+    }
+    let builtin = cff.encoding();
+    let mut glyphs = Box::new([None; 256]);
+    let mut missing = Box::new([false; 256]);
+    for ((code, slot), lost) in (0_u8..=255).zip(glyphs.iter_mut()).zip(missing.iter_mut()) {
+        let name = names.get(usize::from(code)).and_then(Option::as_deref);
+        let glyph = match name {
+            Some(name) => by_name.get(name).copied(),
+            None => builtin
+                .as_ref()
+                .and_then(|encoding| encoding.map(code))
+                .and_then(|gid| u16::try_from(gid.to_u32()).ok()),
+        }
+        .filter(|gid| *gid != 0);
+        *slot = glyph;
+        *lost = glyph.is_none() && name.is_some_and(|name| name != b".notdef");
+    }
+    Ok((glyphs, missing))
+}
+
+/// Glyph name of each code: `/BaseEncoding` (or `default`) with
+/// `/Differences` applied. Codes WinAnsi or MacRoman leave undefined take
+/// their Standard name (ISO 32000-2, 9.6.5.4).
 fn encoding_names<S: Source>(
     file: &PdfFile<S>,
     encoding: Option<&Object>,
-    symbolic: bool,
+    default: Option<&'static [&'static str; 256]>,
     budget: &mut Budget,
 ) -> Result<Vec<Option<Vec<u8>>>, Error> {
     let base = |name: &[u8]| -> Option<&'static [&'static str; 256]> {
@@ -339,7 +454,6 @@ fn encoding_names<S: Source>(
             _ => None,
         }
     };
-    let default = if symbolic { None } else { Some(&STANDARD) };
     let (table, differences) = match encoding {
         Some(Object::Name(name)) => (base(name).or(default), None),
         Some(Object::Dictionary(dictionary)) => {
@@ -427,7 +541,7 @@ fn simple_glyphs(
     names: &[Option<Vec<u8>>],
     has_encoding: bool,
     symbolic: bool,
-) -> (Box<[Option<u16>; 256]>, Box<[bool; 256]>) {
+) -> SimpleGlyphs {
     let mut unicode_map = None;
     let mut symbol_map = None;
     let mut mac_map = None;
@@ -534,12 +648,13 @@ fn simple_glyphs(
 }
 
 /// `/FirstChar` and `/Widths`, `/MissingWidth` outside them; without
-/// `/Widths`, the advance widths of the program.
+/// `/Widths`, the advance widths of an OpenType program (a CFF program
+/// keeps `/MissingWidth`).
 fn simple_widths<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
     descriptor: &Dictionary,
-    font_ref: &FontRef<'_>,
+    font_ref: Option<&FontRef<'_>>,
     glyphs: &[Option<u16>; 256],
     units_per_em: f64,
     budget: &mut Budget,
@@ -573,6 +688,9 @@ fn simple_widths<S: Source>(
             }
         }
         _ => {
+            let Some(font_ref) = font_ref else {
+                return Ok(widths);
+            };
             let metrics = GlyphMetrics::new(font_ref, Size::unscaled(), LocationRef::default());
             for (slot, glyph) in widths.iter_mut().zip(glyphs.iter()) {
                 if let Some(advance) =
@@ -595,8 +713,9 @@ fn number(object: &Object) -> Option<f64> {
     .filter(|value| value.is_finite())
 }
 
-/// A Type 0 font with `Identity-H` and a `CIDFontType2` descendant.
-fn cid_true_type<S: Source>(
+/// A Type 0 font with `Identity-H` and a `CIDFontType2` or `CIDFontType0`
+/// descendant.
+fn cid<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
     budget: &mut Budget,
@@ -617,7 +736,10 @@ fn cid_true_type<S: Source>(
     let Some(descendant) = resolve_dictionary(file, descendant, budget)? else {
         return Ok(None);
     };
-    if descendant.get(b"Subtype").and_then(Object::as_name) != Some(b"CIDFontType2") {
+    if !matches!(
+        descendant.get(b"Subtype").and_then(Object::as_name),
+        Some(b"CIDFontType2" | b"CIDFontType0")
+    ) {
         return Ok(None);
     }
     let Some(descriptor) = descendant.get(b"FontDescriptor") else {
@@ -626,13 +748,41 @@ fn cid_true_type<S: Source>(
     let Some(descriptor) = resolve_dictionary(file, descriptor, budget)? else {
         return Ok(None);
     };
-    let Some((program, units_per_em)) = program(file, &descriptor, budget)? else {
+    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
         return Ok(None);
     };
-    let cid_to_gid = match descendant.get(b"CIDToGIDMap") {
-        None => None,
-        Some(Object::Name(name)) if name.as_slice() == b"Identity" => None,
-        Some(object) => {
+    let cid_to_gid = match (format, descendant.get(b"CIDToGIDMap")) {
+        // A CID-keyed CFF maps CIDs itself; otherwise CID = glyph id.
+        (Format::Cff, _) => {
+            let Ok(cff) = CffFontRef::new_cff(&program, 0, None) else {
+                return Ok(None);
+            };
+            if cff.is_cid() {
+                let Some(charset) = cff.charset() else {
+                    return Ok(None);
+                };
+                let mut map = Vec::new();
+                for (gid, cid) in charset.iter() {
+                    budget.charge_object()?;
+                    let Ok(gid) = u16::try_from(gid.to_u32()) else {
+                        continue;
+                    };
+                    let cid = usize::from(cid.to_u16());
+                    if map.len() <= cid {
+                        map.resize(cid + 1, 0);
+                    }
+                    if let Some(slot) = map.get_mut(cid) {
+                        *slot = gid;
+                    }
+                }
+                Some(map)
+            } else {
+                None
+            }
+        }
+        (Format::OpenType, None) => None,
+        (Format::OpenType, Some(Object::Name(name))) if name.as_slice() == b"Identity" => None,
+        (Format::OpenType, Some(object)) => {
             let Some(bytes) = stream_bytes(file, object, budget)? else {
                 return Ok(None);
             };
@@ -650,6 +800,7 @@ fn cid_true_type<S: Source>(
     let widths = cid_widths(file, &descendant, budget)?;
     Ok(Some(Font {
         program,
+        format,
         units_per_em,
         mapping: Mapping::Cid { cid_to_gid, widths },
     }))

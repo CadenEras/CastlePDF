@@ -268,6 +268,70 @@ function trueTypePage() {
   ], '1.4');
 }
 
+// CFF test fonts (SIL OFL 1.1, tests/fonts), built by
+// scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
+// an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
+const fontFile = name => readFileSync(path.join(root, 'tests', 'fonts', name));
+const sans = JSON.parse(fontFile('source-sans-subset.json'));
+const cjk = JSON.parse(fontFile('noto-cjk-subset.json'));
+
+// One page in CFF fonts: /Type1C with WinAnsi (F1) and with its built-in
+// encoding (F2), a CID-keyed /CIDFontType0C under Type 0 Identity-H whose
+// codes are CIDs (F3), and an OpenType file with CFF outlines (F4, /Type1 as
+// ISO 32000-2, 9.9 requires for CFF outlines).
+function cffPage() {
+  const first = 32;
+  const last = 122;
+  const widths = [];
+  for (let code = first; code <= last; code += 1) {
+    const glyph = sans.glyphs[String.fromCharCode(code)];
+    widths.push(glyph ? Math.round(glyph[1] * 1000 / sans.unitsPerEm) : 0);
+  }
+  const cidLine = 'CID 中文字体 2026';
+  const cids = [...cidLine].map(ch => cjk.glyphs[ch][1]);
+  const hex = cids.map(c => c.toString(16).padStart(4, '0')).join('');
+  const w = [...new Set(cids)].sort((a, b) => a - b).map(c => {
+    const ch = Object.keys(cjk.glyphs).find(k => cjk.glyphs[k][1] === c);
+    return `${c} [${Math.round(cjk.glyphs[ch][2] * 1000 / cjk.unitsPerEm)}]`;
+  }).join(' ');
+  const content = [
+    'BT /F1 22 Tf 10 125 Td (CastlePDF CFF Type1C) Tj ET',
+    'BT /F2 22 Tf 10 95 Td (Builtin encoding) Tj ET',
+    `BT /F3 22 Tf 10 60 Td <${hex}> Tj ET`,
+    'BT /F4 22 Tf 10 25 Td (OpenType CFF) Tj ET',
+  ].join('\n');
+  const simple = (descriptor, extra) =>
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLBB+SourceSans3-Regular /FirstChar ${first} `
+    + `/LastChar ${last} /Widths [${widths.join(' ')}]${extra} /FontDescriptor ${descriptor} 0 R >>`;
+  const descriptor = (name, flags, file, number) =>
+    `<< /Type /FontDescriptor /FontName /${name} /Flags ${flags} /FontBBox [-500 -300 1300 1000] `
+    + `/ItalicAngle 0 /Ascent 900 /Descent -250 /CapHeight 660 /StemV 80 /${file} ${number} 0 R >>`;
+  const program = (bytes, subtype) => stream(bytes.toString('latin1'), ` /Subtype /${subtype}`);
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 150] '
+      + '/Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 9 0 R /F4 13 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    simple(7, ' /Encoding /WinAnsiEncoding'),
+    simple(7, ''),
+    descriptor('CSTLBB+SourceSans3-Regular', 32, 'FontFile3', 8),
+    program(fontFile('source-sans-subset.cff'), 'Type1C'),
+    '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLCC+NotoSansCJKsc-Regular /Encoding /Identity-H '
+      + '/DescendantFonts [10 0 R] >>',
+    '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /CSTLCC+NotoSansCJKsc-Regular '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+      + `/FontDescriptor 11 0 R /DW 1000 /W [${w}] >>`,
+    descriptor('CSTLCC+NotoSansCJKsc-Regular', 4, 'FontFile3', 12),
+    program(fontFile('noto-cjk-subset.cff'), 'CIDFontType0C'),
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CSTLDD+SourceSans3-Regular /FirstChar ${first} `
+      + `/LastChar ${last} /Widths [${widths.join(' ')}] /Encoding /WinAnsiEncoding `
+      + '/FontDescriptor 14 0 R >>',
+    descriptor('CSTLDD+SourceSans3-Regular', 32, 'FontFile3', 15),
+    program(fontFile('source-sans-subset.otf'), 'OpenType'),
+  ], '1.6');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -345,6 +409,9 @@ export const fixtures = {
   // Embedded TrueType text: simple font (F1), spacing, TJ and stroked text,
   // and a Type 0 Identity-H font (F2); see trueTypePage.
   'truetype.pdf': trueTypePage(),
+  // Embedded CFF text: Type1C (WinAnsi and built-in encoding), CID-keyed
+  // CIDFontType0C, OpenType with CFF outlines; see cffPage.
+  'cff.pdf': cffPage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),
