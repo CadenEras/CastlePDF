@@ -147,7 +147,10 @@ fichiers non rendus, à garder local. Code 0 si aucun crash ni timeout, 1 sinon.
 Un fichier ouvert par réparation (ADR-0004) est compté à part (`opened by repair`, avec
 la catégorie de l'erreur stricte).
 `probe` écrit une ligne `open=… pages=… render=… skipped=…`, suivie de `repaired=<catégorie>`
-si la structure a été reconstruite (`repaired=on-lookup/…` si le fichier s'est ouvert
+si la structure a été reconstruite, et `fonts=<types>` : les types des polices que déclare
+la première page (`Type1`, `Type1C`, `TrueType`, `OpenType`, `CidType0C`, `CidTrueType`,
+`Standard14`, `NotEmbedded`, `CidNotEmbedded`, `Type3`, `Invalid`), comptés par `survey`
+(`repaired=on-lookup/…` si le fichier s'est ouvert
 strictement et que seuls des objets hors de leur offset ont été retrouvés par balayage) ; code 0 même si le document est invalide. Mesure sur un corpus externe : voir `docs/QUALITY.md`.
 
 Benchmarks, autres tests différentiels et vérifications de conformité seront ajoutés avec

@@ -9,6 +9,10 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : `page_font_kinds` classe les polices déclarées par une page (programme
+  inclus Type 1, CFF, TrueType, OpenType, CID ; police standard ; non incluse ; Type 3)
+  sans lire aucun programme de police. `probe` l'écrit (`fonts=`) et `survey` compte les
+  premières pages par type de police (ADR-0005, étape 5.1).
 - Application desktop : **« Document réparé »**. Le protocole du worker passe en v3
   (`PROTOCOL_VERSION` 3) : `DocumentOpened` et chaque `Tile` disent si la structure du
   document a été reconstruite (aucune, réparée, réparée avec des éléments peut-être

@@ -6,6 +6,10 @@
 //! - `open=ok pages=<n> render=<category>` or `render=no-pages`
 //! - `open=<category>`
 //!
+//! When the first page exists, `fonts=<kinds>` (or `fonts=none`) lists the
+//! kinds of the fonts its resources declare (ADR-0005, step 5.1), classified
+//! with a budget of their own; `fonts=<category>` if that fails.
+//!
 //! A file whose structure was repaired (ADR-0004) ends its line with
 //! `repaired=<category>`, the category of the strict reading error, prefixed
 //! with `on-lookup/` when the file opened strictly and only objects off their
@@ -22,7 +26,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use pdf_document::Document;
-use pdf_render::{RenderOptions, render_page};
+use pdf_render::{RenderOptions, page_font_kinds, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, RepairTrailer, ResourceLimits};
 
 /// Probes `path` and writes the outcome line to `out`.
@@ -65,6 +69,17 @@ pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
             }
             Err(e) => write!(out, " render={}", render_category(&e))?,
         },
+    }
+    if let Some(page) = document.page(0) {
+        let mut budget = Budget::new(limits, CancellationToken::new());
+        match page_font_kinds(document.file(), page, &mut budget) {
+            Ok(kinds) if kinds.is_empty() => write!(out, " fonts=none")?,
+            Ok(kinds) => {
+                let kinds: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+                write!(out, " fonts={}", kinds.join(","))?;
+            }
+            Err(e) => write!(out, " fonts={}", render_category(&e))?,
+        }
     }
     // Checked last: an object found by a scan during rendering also counts.
     if let Some(repair) = document.file().repair() {

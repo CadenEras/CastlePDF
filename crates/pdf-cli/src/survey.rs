@@ -82,6 +82,8 @@ enum Status {
         skipped: Vec<String>,
         /// Category of the strict error, for a file opened by repair.
         repaired: Option<String>,
+        /// Font kinds declared by the first page (empty if none or unknown).
+        fonts: Vec<String>,
     },
     /// Killed after the timeout.
     Timeout,
@@ -241,6 +243,7 @@ fn finished(child: &mut Child, status: ExitStatus) -> Status {
 fn parse_line(line: &str) -> Option<Status> {
     let line = line.strip_suffix('\n')?;
     let (mut open, mut render, mut skipped, mut repaired) = (None, None, Vec::new(), None);
+    let mut fonts = Vec::new();
     for token in line.split(' ') {
         let (key, value) = token.split_once('=')?;
         match key {
@@ -250,6 +253,8 @@ fn parse_line(line: &str) -> Option<Status> {
             "skipped" if value != "none" => skipped = value.split(',').map(str::to_owned).collect(),
             "skipped" => {}
             "repaired" => repaired = Some(value.to_owned()),
+            "fonts" if value != "none" => fonts = value.split(',').map(str::to_owned).collect(),
+            "fonts" => {}
             _ => return None,
         }
     }
@@ -262,6 +267,7 @@ fn parse_line(line: &str) -> Option<Status> {
         render,
         skipped,
         repaired,
+        fonts,
     })
 }
 
@@ -269,6 +275,7 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     let total = outcomes.len();
     let (mut opened, mut rendered, mut timeouts) = (0, 0, 0);
     let mut repairs = BTreeMap::new();
+    let mut font_kinds = BTreeMap::new();
     let mut open_failures = BTreeMap::new();
     let mut render_failures = BTreeMap::new();
     let mut skipped = BTreeMap::new();
@@ -280,12 +287,16 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                 render,
                 skipped: capabilities,
                 repaired,
+                fonts,
             } => match render.as_deref() {
                 None => *open_failures.entry(open.clone()).or_insert(0) += 1,
                 Some(render) => {
                     opened += 1;
                     if let Some(cause) = repaired {
                         *repairs.entry(cause.clone()).or_insert(0) += 1;
+                    }
+                    for kind in fonts {
+                        *font_kinds.entry(kind.clone()).or_insert(0) += 1;
                     }
                     if render == "ok" {
                         rendered += 1;
@@ -338,7 +349,8 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     section(out, "open failures", &open_failures)?;
     section(out, "repaired, by strict error", &repairs)?;
     section(out, "first page failures", &render_failures)?;
-    section(out, "not rendered on rendered first pages", &skipped)
+    section(out, "not rendered on rendered first pages", &skipped)?;
+    section(out, "first pages declaring a font kind", &font_kinds)
 }
 
 /// Writes the counts of `title`, the most frequent first.
@@ -404,6 +416,7 @@ mod tests {
             render: render.map(str::to_owned),
             skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
             repaired: None,
+            fonts: Vec::new(),
         }
     }
 
@@ -470,6 +483,7 @@ mod tests {
                     render: Some("ok".to_owned()),
                     skipped: Vec::new(),
                     repaired: Some("truncated".to_owned()),
+                    fonts: vec!["Type1".to_owned(), "Standard14".to_owned()],
                 },
                 1,
             ),
@@ -488,6 +502,7 @@ mod tests {
             "crashes: 1\n",
             "median 10 ms, p95 500 ms, max 500 ms\n",
             "repaired, by strict error:\n       1  truncated\n",
+            "first pages declaring a font kind:\n       1  Standard14\n       1  Type1\n",
             "crashes:\n       1  panic\n",
             "open failures:\n       1  malformed/InvalidHeader\n",
             "first page failures:\n       1  content/UnknownOperator\n",

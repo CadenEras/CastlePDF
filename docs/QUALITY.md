@@ -68,6 +68,24 @@ dans un fichier qui s'ouvre strictement) ; les autres réparent l'index à l'ouv
 Refus restants : chiffrement (42 + 52), arbre des pages abîmé (`InvalidNode`,
 `MissingKid` : 2 + 180, hors ADR-0004), `startxref` absent sans catalogue retrouvable
 (65 UNSAFE, surtout des fichiers coupés avant leurs objets), en-tête invalide (10 + 55).
+Types de police déclarés par les premières pages (2026-11-10, même protocole, ADR-0005
+étape 5.1 ; une page compte une fois par type) :
+
+| Type | SafeDocs (1 940 ouverts) | UNSAFE (2 282 ouverts) |
+| --- | --- | --- |
+| TrueType inclus (simple / CID) | 848 / 846 | 648 / 892 |
+| Non incluse (simple / CID) | 441 / 25 | 502 / 7 |
+| 14 polices standard | 284 | 551 |
+| CFF inclus (`Type1C` / `CidType0C`) | 256 / 48 | 248 / 47 |
+| Type 1 inclus (`FontFile`) | 29 | 30 |
+| Type 3 | 17 | 7 |
+| OpenType inclus | 1 | 0 |
+| Dictionnaire invalide | 1 | 26 |
+
+Les polices TrueType et CFF incluses, lues par `skrifa`, et les polices de remplacement
+couvrent l'essentiel. Le Type 1 inclus, que `skrifa` ne lit pas, touche environ 1,5 % des
+premières pages ouvertes : il reste remplacé (ADR-0005).
+
 Le fuzzing de la cible `repair` (600 s, environ 2,5 millions d'exécutions, WSL) n'a trouvé
 aucun crash. Sur les fixtures abîmées, qpdf 10.6 reconstruit la même liste d'objets quand
 il trouve un trailer. Sans trailer, il refuse le fichier là où CastlePDF prend le dernier
