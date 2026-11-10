@@ -10,3 +10,6 @@ Cargo.lock text eol=lf
 *.tsx text eol=lf
 *.pdf binary
 *.png binary
+*.sh text eol=lf
+*.ttf binary
+fuzz/seeds/** binary
