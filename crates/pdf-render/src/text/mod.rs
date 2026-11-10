@@ -21,7 +21,12 @@ pub(crate) enum Selected {
     None,
     /// A font this renderer cannot draw yet: its text is skipped.
     Unsupported,
-    Font(Arc<font::Font>),
+    /// A loaded font and its number in the rendering (key of the glyph
+    /// cache: an address could be reused by another font once one is freed).
+    Font {
+        number: usize,
+        font: Arc<font::Font>,
+    },
 }
 
 /// Text state parameters (9.3), part of the graphics state.

@@ -91,7 +91,8 @@ protocole) :
 - premières pages rendues où du texte manque encore : 1 660 → 990 (SafeDocs), 1 991 → 1 238
   (UNSAFE) ;
 - taux d'ouverture et de rendu inchangés, aucun crash ni timeout ;
-- temps médian par fichier : 5 → 13 ms (SafeDocs), les polices étant relues à chaque rendu.
+- temps médian par fichier : de 5 ms à 8 ou 13 ms selon l'exécution (SafeDocs), car les
+  polices sont relues à chaque rendu.
 
 Le texte restant vient des polices standard, non incluses, CFF, Type 1 et Type 3 (étapes
 5.2b à 5.5). La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée

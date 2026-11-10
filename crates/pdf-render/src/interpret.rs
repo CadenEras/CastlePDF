@@ -17,6 +17,8 @@ use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
 /// Most glyph outline segments kept in the cache of one rendering (about
 /// 56 bytes each); outlines beyond are drawn but not kept.
 const MAX_CACHED_SEGMENTS: usize = 1_000_000;
+/// Cancellation is checked every this many codes shown.
+const CANCEL_CHECK_CODES: u64 = 4096;
 
 /// Largest device coordinate accepted, padding of strokes included: far
 /// beyond any canvas (65 535 pixels), yet small enough for the rasteriser's
@@ -157,8 +159,13 @@ pub(crate) struct Interpreter<'a, S> {
     line_matrix: Matrix,
     /// Fonts by resource name, loaded once.
     fonts: BTreeMap<Vec<u8>, Selected>,
-    /// Glyph outlines in font units, by font (its address) and glyph id.
-    glyphs: BTreeMap<(usize, u16), Arc<Vec<Segment>>>,
+    /// The same fonts by object, so that two names of one font share it.
+    font_objects: BTreeMap<ObjectId, Selected>,
+    /// Fonts loaded, numbered in load order: the number keys the glyph cache.
+    loaded_fonts: usize,
+    /// Glyph outlines in font units, by font number and glyph id; `None` for
+    /// a glyph the program cannot draw.
+    glyphs: BTreeMap<(usize, u16), Option<Arc<Vec<Segment>>>>,
     cached_segments: usize,
 }
 
@@ -211,6 +218,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             text_matrix: Matrix::IDENTITY,
             line_matrix: Matrix::IDENTITY,
             fonts: BTreeMap::new(),
+            font_objects: BTreeMap::new(),
+            loaded_fonts: 0,
             glyphs: BTreeMap::new(),
             cached_segments: 0,
         }
@@ -659,6 +668,15 @@ impl<'a, S: Source> Interpreter<'a, S> {
             return Ok(selected.clone());
         }
         let entry = self.category(b"Font", at, budget)?.get(name).cloned();
+        let id = match &entry {
+            Some(Object::Reference(id)) => Some(*id),
+            _ => None,
+        };
+        if let Some(selected) = id.and_then(|id| self.font_objects.get(&id)) {
+            let selected = selected.clone();
+            self.fonts.insert(name.to_vec(), selected.clone());
+            return Ok(selected);
+        }
         let loaded = match entry {
             Some(object) => match text::resolve_dictionary(self.file, &object, budget)? {
                 Some(dictionary) => font::load(self.file, &dictionary, budget)?,
@@ -666,8 +684,20 @@ impl<'a, S: Source> Interpreter<'a, S> {
             },
             None => None,
         };
-        let selected = loaded.map_or(Selected::Unsupported, |font| Selected::Font(Arc::new(font)));
+        let selected = match loaded {
+            Some(font) => {
+                self.loaded_fonts += 1;
+                Selected::Font {
+                    number: self.loaded_fonts,
+                    font: Arc::new(font),
+                }
+            }
+            None => Selected::Unsupported,
+        };
         self.fonts.insert(name.to_vec(), selected.clone());
+        if let Some(id) = id {
+            self.font_objects.insert(id, selected.clone());
+        }
         Ok(selected)
     }
 
@@ -676,8 +706,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// glyphs of one operator are painted as one path, in the text
     /// rendering mode: filled (nonzero), stroked, both, or neither.
     fn show(&mut self, items: &[Object], at: u64, budget: &mut Budget) -> Result<(), Error> {
-        let font = match &self.state.text.font {
-            Selected::Font(font) => Arc::clone(font),
+        let (font_number, font) = match &self.state.text.font {
+            Selected::Font { number, font } => (*number, Arc::clone(font)),
             Selected::None | Selected::Unsupported => {
                 self.skipped.insert(Unsupported::Text);
                 return Ok(());
@@ -696,6 +726,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             text.rise,
         );
         let mut path = Path::default();
+        let mut shown: u64 = 0;
         for item in items {
             let string = match item {
                 Object::String(string) => string,
@@ -707,9 +738,35 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 }
             };
             for code in font.codes(string) {
+                shown += 1;
+                if shown.is_multiple_of(CANCEL_CHECK_CODES) {
+                    budget.check_cancelled()?;
+                }
+                if draws && code.missing {
+                    self.skipped.insert(Unsupported::Text);
+                }
                 if draws && let Some(glyph) = code.glyph {
-                    match self.outline(&font, glyph, budget)? {
+                    match self.outline(font_number, &font, glyph, budget)? {
                         Some(outline) => {
+                            // Bounded before allocating. Each segment of a
+                            // glyph counts as an operation, as a path segment
+                            // drawn by an operator would, and at least one
+                            // unit of path work (`Path::work`), charged
+                            // when painted.
+                            self.operations += outline.len() as u64;
+                            if self.operations > self.limits.max_operations {
+                                return Err(Error::LimitExceeded {
+                                    kind: RenderLimitKind::Operations,
+                                    limit: self.limits.max_operations,
+                                });
+                            }
+                            let segments = path.segments().len() + outline.len();
+                            if self.work + segments as f64 > self.limits.max_path_work as f64 {
+                                return Err(Error::LimitExceeded {
+                                    kind: RenderLimitKind::PathWork,
+                                    limit: self.limits.max_path_work,
+                                });
+                            }
                             let matrix = glyph_space.then(&self.text_matrix);
                             append(&mut path, &outline, &matrix);
                         }
@@ -751,19 +808,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// error. `None` for a glyph the program cannot draw.
     fn outline(
         &mut self,
-        font: &Arc<font::Font>,
+        number: usize,
+        font: &font::Font,
         glyph: u16,
         budget: &mut Budget,
     ) -> Result<Option<Arc<Vec<Segment>>>, Error> {
-        let key = (Arc::as_ptr(font) as usize, glyph);
+        let key = (number, glyph);
         if let Some(outline) = self.glyphs.get(&key) {
-            return Ok(Some(Arc::clone(outline)));
+            return Ok(outline.clone());
         }
         budget.charge_object()?;
         let max = usize::try_from(self.limits.max_glyph_segments).unwrap_or(usize::MAX);
         let outline = match font.outline(glyph, max) {
             Ok(Some(outline)) => Arc::new(outline),
-            Ok(None) => return Ok(None),
+            Ok(None) => {
+                self.glyphs.insert(key, None);
+                return Ok(None);
+            }
             Err(()) => {
                 return Err(Error::LimitExceeded {
                     kind: RenderLimitKind::GlyphSegments,
@@ -773,7 +834,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         };
         if self.cached_segments + outline.len() <= MAX_CACHED_SEGMENTS {
             self.cached_segments += outline.len();
-            self.glyphs.insert(key, Arc::clone(&outline));
+            self.glyphs.insert(key, Some(Arc::clone(&outline)));
         }
         Ok(Some(outline))
     }

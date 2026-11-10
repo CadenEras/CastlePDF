@@ -22,7 +22,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   Les glyphes sont dessinés sans hinting par le pipeline vectoriel. Toute autre police
   reste signalée `Text` (polices standard, non incluses, CFF, Type 1, Type 3). Une police
   absente des ressources ou illisible saute son texte sans faire échouer la page. Nouvelle
-  limite `max_glyph_segments` ; cache des contours borné par rendu. Fixture
+  limite `max_glyph_segments`. Chaque segment de glyphe compte comme une opération et est
+  borné avant allocation. Cache des contours borné par rendu. Les noms de glyphe hors de
+  l'Adobe Glyph List sont cherchés dans la table `post` ; un nom absent est signalé. Fixture
   `truetype.pdf` (sous-ensemble OFL d'Arimo, `tests/fonts`), comparée à `pdftoppm` avec
   une tolérance propre au texte. Nouvelle cible de fuzzing `font`.
 - `pdf-render` : `page_font_kinds` classe les polices déclarées par une page (programme

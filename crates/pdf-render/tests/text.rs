@@ -266,3 +266,66 @@ fn a_glyph_without_points_does_not_panic() {
     options.scale = 2.0;
     assert!(render_with(bytes, &options).is_ok());
 }
+
+#[test]
+fn glyphs_of_one_operator_are_bounded_before_allocation() {
+    // Path work counts at least one unit per segment: one operator showing
+    // many glyphs is refused as soon as its outlines would exceed it.
+    let renders = |count: usize, limit: u64| {
+        let content = format!("BT /F1 10 Tf 0 50 Td ({}) Tj ET", "A".repeat(count));
+        let mut options = RenderOptions::default();
+        options.limits.max_path_work = limit;
+        render_with(with_font(&content, WINANSI, &arimo()), &options)
+    };
+    let (mut low, mut high) = (1_u64, 1_000_000_u64);
+    assert!(renders(50, high).is_ok());
+    while low < high {
+        let middle = (low + high) / 2;
+        if renders(50, middle).is_ok() {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    assert_eq!(
+        renders(50, low - 1).err(),
+        Some(Error::LimitExceeded {
+            kind: RenderLimitKind::PathWork,
+            limit: low - 1
+        })
+    );
+    // A million glyphs (25 million segments) with the default limits: every
+    // glyph segment counts as an operation, so the 10 million operations
+    // stop it before its path reaches about 560 MB.
+    let started = std::time::Instant::now();
+    assert_eq!(
+        renders(1_000_000, 50_000_000).err(),
+        Some(Error::LimitExceeded {
+            kind: RenderLimitKind::Operations,
+            limit: 10_000_000
+        })
+    );
+    assert!(started.elapsed().as_secs() < 60);
+}
+
+#[test]
+fn a_glyph_name_the_font_lacks_is_reported() {
+    let rendering = render(with_font(
+        "BT /F1 40 Tf 20 30 Td (AB) Tj ET",
+        " /Encoding << /Differences [66 /nosuchglyph] >>",
+        &arimo(),
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::Text]
+    );
+    // The A is still drawn.
+    assert!(dark(&rendering, 100, (20, 30, 50, 60)) > 50);
+    // `.notdef` is not a lost glyph.
+    let rendering = render(with_font(
+        "BT /F1 40 Tf 20 30 Td (AB) Tj ET",
+        " /Encoding << /Differences [66 /.notdef] >>",
+        &arimo(),
+    ));
+    assert!(rendering.skipped.is_empty());
+}

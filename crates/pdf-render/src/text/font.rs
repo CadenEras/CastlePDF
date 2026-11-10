@@ -18,7 +18,7 @@ use skrifa::metrics::GlyphMetrics;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
-use skrifa::{FontRef, GlyphId, MetadataProvider};
+use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
 use super::encodings::{GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, WIN_ANSI};
 use super::{resolve, resolve_dictionary, stream_bytes};
@@ -29,6 +29,8 @@ use crate::geometry::{Point, Segment};
 const MAX_W_ENTRIES: usize = 65_536;
 /// Most entries read from a `/Differences` array.
 const MAX_DIFFERENCES: usize = 4096;
+/// CIDs are two bytes (`Identity-H`): entries of `/CIDToGIDMap` beyond are unused.
+const MAX_CIDS: usize = 65_536;
 
 /// A font ready to show text.
 #[derive(Debug)]
@@ -44,6 +46,9 @@ enum Mapping {
     /// space) of each code.
     Simple {
         glyphs: Box<[Option<u16>; 256]>,
+        /// Codes whose glyph name names no glyph of the program: their text
+        /// is not drawn and is reported.
+        missing: Box<[bool; 256]>,
         widths: Box<[f64; 256]>,
     },
     /// Two bytes per code (`Identity-H`): the code is the CID.
@@ -84,6 +89,8 @@ impl CidWidths {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Code {
     pub glyph: Option<u16>,
+    /// The code names a glyph the program does not have.
+    pub missing: bool,
     /// Horizontal displacement in glyph space (thousandths of text space).
     pub width: f64,
     /// A single-byte code 32: word spacing applies (9.3.3).
@@ -99,8 +106,13 @@ impl Font {
     /// (big-endian) for `Identity-H`; a trailing odd byte is ignored.
     pub fn codes<'s>(&'s self, string: &'s [u8]) -> Box<dyn Iterator<Item = Code> + 's> {
         match &self.mapping {
-            Mapping::Simple { glyphs, widths } => Box::new(string.iter().map(|byte| Code {
+            Mapping::Simple {
+                glyphs,
+                missing,
+                widths,
+            } => Box::new(string.iter().map(|byte| Code {
                 glyph: glyphs.get(usize::from(*byte)).copied().flatten(),
+                missing: missing.get(usize::from(*byte)).copied().unwrap_or(false),
                 width: widths.get(usize::from(*byte)).copied().unwrap_or(0.0),
                 is_space: *byte == b' ',
             })),
@@ -113,6 +125,7 @@ impl Font {
                     };
                     Code {
                         glyph: glyph.filter(|gid| *gid != 0 || cid == 0),
+                        missing: false,
                         width: widths.width(u32::from(cid)),
                         is_space: false,
                     }
@@ -139,6 +152,7 @@ impl Font {
         if pen.overflow {
             return Err(());
         }
+        pen.segments.shrink_to_fit();
         Ok(Some(pen.segments))
     }
 }
@@ -285,7 +299,7 @@ fn simple_true_type<S: Source>(
     let Ok(font_ref) = FontRef::new(&program) else {
         return Ok(None);
     };
-    let glyphs = simple_glyphs(&font_ref, &names, encoding.is_some(), symbolic);
+    let (glyphs, missing) = simple_glyphs(&font_ref, &names, encoding.is_some(), symbolic);
     let widths = simple_widths(
         file,
         font,
@@ -298,12 +312,18 @@ fn simple_true_type<S: Source>(
     Ok(Some(Font {
         program,
         units_per_em,
-        mapping: Mapping::Simple { glyphs, widths },
+        mapping: Mapping::Simple {
+            glyphs,
+            missing,
+            widths,
+        },
     }))
 }
 
 /// Glyph name of each code: `/BaseEncoding` (or the default: Standard for a
 /// non-symbolic font, none for a symbolic one) with `/Differences` applied.
+/// Codes WinAnsi or MacRoman leave undefined take their Standard name
+/// (ISO 32000-2, 9.6.5.4).
 fn encoding_names<S: Source>(
     file: &PdfFile<S>,
     encoding: Option<&Object>,
@@ -336,11 +356,17 @@ fn encoding_names<S: Source>(
         }
         _ => (default, None),
     };
+    let fill = table.is_some_and(|t| std::ptr::eq(t, &WIN_ANSI) || std::ptr::eq(t, &MAC_ROMAN));
     let mut names: Vec<Option<Vec<u8>>> = (0..256)
         .map(|code: usize| {
             table
                 .and_then(|table| table.get(code))
                 .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    fill.then(|| STANDARD.get(code))
+                        .flatten()
+                        .filter(|name| !name.is_empty())
+                })
                 .map(|name| name.as_bytes().to_vec())
         })
         .collect();
@@ -353,7 +379,7 @@ fn encoding_names<S: Source>(
                     if let Some(slot) = code.and_then(|c| names.get_mut(c)) {
                         *slot = Some(name.clone());
                     }
-                    code = code.map(|c| c + 1);
+                    code = code.map(|c| c.saturating_add(1));
                 }
                 _ => {}
             }
@@ -393,12 +419,15 @@ pub(crate) fn unicode(name: &[u8]) -> Option<u32> {
 /// `cmap` at code, 0xF000 + code, 0xF100 + code or 0xF200 + code, then the
 /// (1,0) Macintosh `cmap` (through MacRoman when the name is known). Without
 /// any of those `cmap`s, the code is the glyph id.
+/// Returns the glyphs and the codes whose name finds no glyph. A name that
+/// is not in the Adobe Glyph List as written (`a.sc`, `g12`) is first
+/// looked up among the program's own glyph names (`post` table).
 fn simple_glyphs(
     font: &FontRef<'_>,
     names: &[Option<Vec<u8>>],
     has_encoding: bool,
     symbolic: bool,
-) -> Box<[Option<u16>; 256]> {
+) -> (Box<[Option<u16>; 256]>, Box<[bool; 256]>) {
     let mut unicode_map = None;
     let mut symbol_map = None;
     let mut mac_map = None;
@@ -428,11 +457,45 @@ fn simple_glyphs(
             .filter(|gid| *gid != 0)
     };
     let none = unicode_map.is_none() && symbol_map.is_none() && mac_map.is_none();
+    // The program's own glyph names, read once if a name needs them.
+    let mut post: Option<BTreeMap<String, u16>> = None;
+    let mut post_glyph = |name: &[u8]| -> Option<u16> {
+        let names = post.get_or_insert_with(|| {
+            GlyphNames::new(font)
+                .iter()
+                .filter(|(_, name)| !name.is_synthesized())
+                .filter_map(|(gid, name)| {
+                    u16::try_from(gid.to_u32())
+                        .ok()
+                        .map(|gid| (name.as_str().to_owned(), gid))
+                })
+                .collect()
+        });
+        std::str::from_utf8(name)
+            .ok()
+            .and_then(|name| names.get(name))
+            .copied()
+            .filter(|gid| *gid != 0)
+    };
     let mut glyphs = Box::new([None; 256]);
-    for (code, slot) in (0_u32..).zip(glyphs.iter_mut()) {
+    let mut missing = Box::new([false; 256]);
+    for ((code, slot), lost) in (0_u32..).zip(glyphs.iter_mut()).zip(missing.iter_mut()) {
         let name = names.get(code as usize).and_then(Option::as_deref);
         let mut glyph = None;
-        if (!symbolic || has_encoding)
+        let listed = name.is_some_and(|name| {
+            std::str::from_utf8(name).is_ok_and(|name| {
+                GLYPH_LIST
+                    .binary_search_by(|(entry, _)| (*entry).cmp(name))
+                    .is_ok()
+            })
+        });
+        if let Some(name) = name
+            && !listed
+        {
+            glyph = post_glyph(name);
+        }
+        if glyph.is_none()
+            && (!symbolic || has_encoding)
             && let Some(point) = name.and_then(unicode)
         {
             glyph = map(&unicode_map, point);
@@ -442,22 +505,32 @@ fn simple_glyphs(
                 .into_iter()
                 .find_map(|offset| map(&symbol_map, offset + code));
         }
+        // The code itself is looked up only when it has no name: a name the
+        // program lacks is reported, not replaced by another glyph.
         if glyph.is_none() {
-            let mac_code = name
-                .and_then(|name| MAC_ROMAN.iter().position(|n| n.as_bytes() == name))
-                .and_then(|c| u32::try_from(c).ok())
-                .unwrap_or(code);
-            glyph = map(&mac_map, mac_code);
+            let mac_code = match name {
+                Some(name) => MAC_ROMAN
+                    .iter()
+                    .position(|n| n.as_bytes() == name)
+                    .and_then(|c| u32::try_from(c).ok()),
+                None => Some(code),
+            };
+            glyph = mac_code.and_then(|c| map(&mac_map, c));
         }
-        if glyph.is_none() {
+        if glyph.is_none() && name.is_none() {
             glyph = map(&unicode_map, code);
         }
         if glyph.is_none() && none {
             glyph = u16::try_from(code).ok().filter(|c| *c != 0);
         }
+        if glyph.is_none() && name.is_some() {
+            glyph = name.and_then(&mut post_glyph);
+        }
         *slot = glyph;
+        // `.notdef` and unnamed codes legitimately draw nothing.
+        *lost = glyph.is_none() && name.is_some_and(|name| name != b".notdef");
     }
-    glyphs
+    (glyphs, missing)
 }
 
 /// `/FirstChar` and `/Widths`, `/MissingWidth` outside them; without
@@ -492,7 +565,9 @@ fn simple_widths<S: Source>(
                     Object::Reference(_) => resolve(file, item, budget)?.as_ref().and_then(number),
                     other => number(other),
                 };
-                if let (Some(width), Some(slot)) = (value, widths.get_mut(first + offset)) {
+                if let (Some(width), Some(slot)) =
+                    (value, widths.get_mut(first.saturating_add(offset)))
+                {
                     *slot = width;
                 }
             }
@@ -566,6 +641,7 @@ fn cid_true_type<S: Source>(
                     .as_chunks::<2>()
                     .0
                     .iter()
+                    .take(MAX_CIDS)
                     .map(|pair| u16::from_be_bytes(*pair))
                     .collect(),
             )
@@ -602,7 +678,8 @@ fn cid_widths<S: Source>(
             };
             match items.next() {
                 Some(Object::Array(widths)) => {
-                    let widths: Vec<f64> = widths.iter().filter_map(number).collect();
+                    // A non-number ends the run: later widths would be shifted.
+                    let widths: Vec<f64> = widths.iter().map_while(number).collect();
                     let Some(count) = u32::try_from(widths.len()).ok().filter(|c| *c > 0) else {
                         continue;
                     };

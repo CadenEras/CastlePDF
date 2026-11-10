@@ -41,7 +41,7 @@ de cette liste sans preuve.
 | Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
 | Navigation page par page, pas de défilement continu | « UI réactive » et virtualisation des pages | Défilement virtualisé, tuiles invisibles annulées |
 | Chaque tuile réinterprète tout le contenu de la page | Coût multiplié par le nombre de tuiles sur une page lourde | Mesure sur pages lourdes, puis cache de la liste d'affichage si nécessaire |
-| Polices relues à chaque rendu, donc à chaque tuile (pas encore de cache par document) | Le texte fait passer le temps médian par fichier de `survey` de 5 à 13 ms (SafeDocs, 2026-11-10) | Cache borné par document dans le worker (ADR-0005), mesuré par tuile |
+| Polices relues à chaque rendu, donc à chaque tuile (pas encore de cache par document) | Le texte fait passer le temps médian par fichier de `survey` de 5 ms à 8 ou 13 ms (SafeDocs, 2026-11-10) | Cache borné par document dans le worker (ADR-0005), mesuré par tuile |
 | Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
 | Pas de jobs CI ARM64 ni de build macOS x86_64 | Annoncés par ADR-0003 | Jobs ajoutés ou report motivé |
 
