@@ -6,6 +6,7 @@
 )]
 pub(crate) mod encodings;
 pub(crate) mod font;
+pub(crate) mod standard;
 
 use std::sync::Arc;
 

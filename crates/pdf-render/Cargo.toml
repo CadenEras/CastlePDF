@@ -15,5 +15,11 @@ pdf-syntax.workspace = true
 vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline"] }
 skrifa = { version = "=0.49.0", default-features = false, features = ["std"] }
 
+[features]
+default = ["standard-fonts"]
+# Embeds the replacement fonts (crates/pdf-render/fonts, about 280 KB, SIL
+# OFL 1.1) for fonts a PDF names but does not embed (ADR-0005).
+standard-fonts = []
+
 [lints]
 workspace = true

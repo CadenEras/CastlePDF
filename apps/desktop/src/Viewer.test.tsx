@@ -135,6 +135,16 @@ describe("Viewer", () => {
     );
   });
 
+  it("says when fonts are replaced, apart from what is missing", async () => {
+    ipc.renderTile.mockImplementation((request) => Promise.resolve(tileFor(request, 1 << 12)));
+    render(<Viewer info={INFO} />);
+    await settle();
+    expect(screen.getByRole("note", { name: "Polices remplacées" }).textContent).toContain(
+      "police approchante",
+    );
+    expect(screen.queryByRole("note", { name: "Rendu partiel" })).toBeNull();
+  });
+
   it("says when the document was repaired", async () => {
     render(<Viewer info={{ ...INFO, repair: "repaired" }} />);
     // Known from the opening: shown before any tile arrives.

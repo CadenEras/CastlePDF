@@ -35,7 +35,7 @@ fn probe_prints_one_outcome_line() {
     let (_, out, _) = castle(&["probe".as_ref(), minimal.as_os_str()]);
     assert_eq!(
         out,
-        "open=ok pages=1 render=ok skipped=Text fonts=Standard14\n"
+        "open=ok pages=1 render=ok skipped=FontSubstituted fonts=Standard14\n"
     );
     // A document error is an outcome, not a failure of the probe.
     let manifest = corpus().join("manifest.json");

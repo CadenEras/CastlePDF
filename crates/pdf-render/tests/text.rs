@@ -167,10 +167,101 @@ fn the_truetype_fixture_draws_every_line() {
     assert_eq!(dark(&rendering, 150, (260, 0, 300, 150)), 0);
 }
 
+#[cfg(feature = "standard-fonts")]
 #[test]
-fn standard_fonts_are_still_reported() {
+fn standard_fonts_are_replaced_and_reported() {
+    // minimal.pdf: Helvetica 24 at (72, 770), not embedded.
     let rendering =
         render(std::fs::read(repo("tests/corpus/public/minimal.pdf")).expect("fixture"));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::FontSubstituted]
+    );
+    assert!(dark(&rendering, 842, (72, 770, 300, 790)) > 100);
+}
+
+/// A one-page file whose /F1 is `font`, a font without program.
+fn with_named_font(content: &str, font: &str) -> Vec<u8> {
+    let bodies: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_owned(),
+        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        font.to_owned(),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
+/// Ink of "MMMM" at 40 points from (10, 30).
+fn ink_of(font: &str) -> (Vec<Unsupported>, usize) {
+    let rendering = render(with_named_font("BT /F1 40 Tf 10 30 Td (MMMM) Tj ET", font));
+    (
+        rendering.skipped.iter().copied().collect(),
+        dark(&rendering, 100, (0, 0, 200, 100)),
+    )
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn each_standard_family_and_style_has_its_widths() {
+    // The replacements keep the widths of the fonts they replace: four M
+    // at 40 points span 4 x 0.833 x 40 = 133 points in Helvetica, 4 x 0.889
+    // x 40 = 142 in Times, 4 x 0.6 x 40 = 96 in Courier.
+    for (name, right) in [
+        ("Helvetica", 143.0),
+        ("Helvetica-BoldOblique", 143.0),
+        ("Times-Roman", 152.0),
+        ("Times-BoldItalic", 152.0),
+        ("Courier", 106.0),
+        ("Courier-Oblique", 106.0),
+    ] {
+        let rendering = render(with_named_font(
+            "BT /F1 40 Tf 10 30 Td (MMMM) Tj ET",
+            &format!("<< /Type /Font /Subtype /Type1 /BaseFont /{name} >>"),
+        ));
+        assert_eq!(
+            rendering.skipped.iter().copied().collect::<Vec<_>>(),
+            [Unsupported::FontSubstituted],
+            "{name}"
+        );
+        // Ink stops near the end of the fourth M, not beyond.
+        let right = right as u32;
+        assert!(
+            dark(&rendering, 100, (right - 12, 30, right - 2, 60)) > 0,
+            "{name}"
+        );
+        assert_eq!(dark(&rendering, 100, (right + 3, 0, 200, 100)), 0, "{name}");
+    }
+}
+
+#[test]
+fn symbolic_fonts_are_not_replaced_yet() {
+    for font in [
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>",
+        "<< /Type /Font /Subtype /TrueType /BaseFont /Wingdings /FontDescriptor << /Flags 4 >> >>",
+    ] {
+        assert_eq!(ink_of(font), (vec![Unsupported::Text], 0), "{font}");
+    }
+    // A name absent from the resources is not a font to replace.
+    let rendering = render(with_named_font(
+        "BT /F9 40 Tf 10 30 Td (A) Tj ET",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ));
     assert_eq!(
         rendering.skipped.iter().copied().collect::<Vec<_>>(),
         [Unsupported::Text]
@@ -215,20 +306,31 @@ fn invisible_and_clipping_modes_draw_nothing() {
     }
 }
 
+#[cfg(feature = "standard-fonts")]
 #[test]
-fn unreadable_fonts_are_skipped_not_fatal() {
-    // A damaged program, an unknown resource name, and a Type 1 font.
-    for (content, program) in [
-        ("BT /F1 40 Tf 20 30 Td (A) Tj ET", b"not a font".to_vec()),
-        ("BT /F9 40 Tf 20 30 Td (A) Tj ET", arimo()),
-    ] {
-        let rendering = render(with_font(content, WINANSI, &program));
-        assert_eq!(
-            rendering.skipped.iter().copied().collect::<Vec<_>>(),
-            [Unsupported::Text]
-        );
-        assert_eq!(dark(&rendering, 100, (0, 0, 200, 100)), 0);
-    }
+fn unreadable_fonts_are_replaced_or_skipped_not_fatal() {
+    // A damaged program: replaced (the font is not symbolic).
+    let rendering = render(with_font(
+        "BT /F1 40 Tf 20 30 Td (A) Tj ET",
+        WINANSI,
+        b"not a font",
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::FontSubstituted]
+    );
+    assert!(dark(&rendering, 100, (20, 30, 60, 60)) > 50);
+    // An unknown resource name: skipped.
+    let rendering = render(with_font(
+        "BT /F9 40 Tf 20 30 Td (A) Tj ET",
+        WINANSI,
+        &arimo(),
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::Text]
+    );
+    assert_eq!(dark(&rendering, 100, (0, 0, 200, 100)), 0);
 }
 
 #[test]
@@ -410,8 +512,9 @@ fn cff_glyphs_are_found_by_name() {
     assert!(dark(&rendering, 100, (20, 30, 40, 60)) > 50);
 }
 
+#[cfg(feature = "standard-fonts")]
 #[test]
-fn a_damaged_cff_program_is_skipped() {
+fn a_damaged_cff_program_is_replaced() {
     let mut program = source_sans_cff();
     program.truncate(40);
     let rendering = render(with_cff(
@@ -421,14 +524,15 @@ fn a_damaged_cff_program_is_skipped() {
     ));
     assert_eq!(
         rendering.skipped.iter().copied().collect::<Vec<_>>(),
-        [Unsupported::Text]
+        [Unsupported::FontSubstituted]
     );
-    assert_eq!(dark(&rendering, 100, (0, 0, 200, 100)), 0);
+    assert!(dark(&rendering, 100, (20, 30, 70, 60)) > 50);
 }
 
+#[cfg(feature = "standard-fonts")]
 #[test]
-fn a_type1_program_is_still_reported() {
-    // /FontFile (Type 1) is not read (ADR-0005): its text is skipped.
+fn a_type1_program_is_replaced() {
+    // /FontFile (Type 1) is not read (ADR-0005): a replacement draws it.
     let rendering = render(with_program(
         "BT /F1 40 Tf 20 30 Td (A) Tj ET",
         "Type1",
@@ -440,6 +544,19 @@ fn a_type1_program_is_still_reported() {
     ));
     assert_eq!(
         rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::FontSubstituted]
+    );
+    assert!(dark(&rendering, 100, (20, 30, 60, 60)) > 50);
+}
+
+#[cfg(not(feature = "standard-fonts"))]
+#[test]
+fn without_replacement_fonts_the_text_is_skipped() {
+    let rendering =
+        render(std::fs::read(repo("tests/corpus/public/minimal.pdf")).expect("fixture"));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
         [Unsupported::Text]
     );
+    assert_eq!(dark(&rendering, 842, (0, 0, 595, 842)), 0);
 }

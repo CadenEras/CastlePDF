@@ -12,5 +12,6 @@ pub mod server;
 
 /// Incremented on any incompatible change of the framing or messages.
 /// Version 2: documents, page sizes and tiles. Version 3: whether the
-/// document structure was repaired (`Repair`, ADR-0004).
-pub const PROTOCOL_VERSION: u16 = 3;
+/// document structure was repaired (`Repair`, ADR-0004). Version 4: the
+/// `Skipped::FONT_SUBSTITUTED` bit (ADR-0005).
+pub const PROTOCOL_VERSION: u16 = 4;

@@ -150,6 +150,7 @@ fn name(capability: Unsupported) -> &'static str {
         Unsupported::AlphaIsShape => "alpha is shape",
         Unsupported::TransferFunction => "transfer functions",
         Unsupported::OptionalContent => "optional content",
+        Unsupported::FontSubstituted => "original fonts (substituted)",
         _ => "other",
     }
 }

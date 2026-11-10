@@ -6,6 +6,7 @@ import {
   isStale,
   pageSize,
   renderTile,
+  FONT_SUBSTITUTED,
   skippedLabels,
   worseRepair,
   type DocumentInfo,
@@ -215,6 +216,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   }, [document, page, width, view]);
 
   const missing = state.kind === "ready" ? skippedLabels(state.skipped) : [];
+  const substituted = state.kind === "ready" && (state.skipped & FONT_SUBSTITUTED) !== 0;
   // Shown as soon as the document is known to be repaired, or when a tile
   // reveals it (an object found by a scan while rendering).
   const repair = worseRepair(info.repair, state.kind === "error" ? "none" : state.repair);
@@ -252,6 +254,12 @@ export function Viewer({ info }: { info: DocumentInfo }) {
       {repair !== "none" && (
         <p className="repaired" role="note" aria-label="Document réparé">
           {REPAIR_NOTES[repair]}
+        </p>
+      )}
+      {substituted && (
+        <p className="partial" role="note" aria-label="Polices remplacées">
+          Polices remplacées : des polices ne sont pas incluses dans le document. Le texte est
+          affiché avec une police approchante, aux mêmes largeurs.
         </p>
       )}
       {missing.length > 0 && (

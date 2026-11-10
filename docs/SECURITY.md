@@ -43,6 +43,12 @@ texte (signalé `Text`). Une dépendance peut toutefois paniquer : la cible de f
 `font` en a trouvé une dans `read-fonts` 0.41.0, corrigée en 0.42.0. Le worker isolé reste
 la protection contre ce qui n'a pas encore été trouvé.
 
+Polices de remplacement (ADR-0005) : 12 polices OFL incluses dans le binaire. Elles ne
+viennent ni du système ni du réseau, ce qui garde un rendu déterministe. Leur inventaire
+(sources épinglées, sha256, licences) est dans `crates/pdf-render/fonts/README.md`, car
+`cargo-deny` ne voit pas ces fichiers. Un texte dessiné avec elles est signalé, jamais
+présenté comme exact.
+
 Réparation de la structure (ADR-0004) : un seul balayage linéaire, jamais de retour en
 arrière ; chaque en-tête d'objet est facturé à `max_objects_visited` ; les dictionnaires
 lus pendant le balayage sont bornés aux octets qui précèdent le mot-clé suivant, et seuls

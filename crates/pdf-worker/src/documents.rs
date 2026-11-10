@@ -148,6 +148,7 @@ fn skipped_bit(capability: Unsupported) -> u16 {
         Unsupported::AlphaIsShape => Skipped::ALPHA_IS_SHAPE,
         Unsupported::TransferFunction => Skipped::TRANSFER_FUNCTION,
         Unsupported::OptionalContent => Skipped::OPTIONAL_CONTENT,
+        Unsupported::FontSubstituted => Skipped::FONT_SUBSTITUTED,
         _ => Skipped::OTHER,
     }
 }
@@ -305,6 +306,7 @@ mod tests {
         else {
             panic!("tile expected");
         };
-        assert_eq!(skipped, Skipped(Skipped::TEXT));
+        // Helvetica is not embedded: drawn with a replacement font.
+        assert_eq!(skipped, Skipped(Skipped::FONT_SUBSTITUTED));
     }
 }

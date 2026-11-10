@@ -716,6 +716,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let text = self.state.text.clone();
         let mode = text.render_mode;
         let draws = !matches!(mode, 3 | 7);
+        if draws && font.substituted() {
+            self.skipped.insert(Unsupported::FontSubstituted);
+        }
         let scale = text.size / font.units_per_em();
         let glyph_space = Matrix::new(
             scale * text.horizontal_scale,
