@@ -3,9 +3,9 @@
 //!
 //! Supported: graphics state (`q Q cm w J j M d ri i gs`), paths, painting,
 //! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`),
-//! constant alpha, and text in embedded TrueType, OpenType and CFF fonts
-//! (ADR-0005). Text in
-//! other fonts, images, XObjects, shadings, patterns, other
+//! constant alpha, text in embedded TrueType, OpenType and CFF fonts or their
+//! replacements, and image XObjects (ADR-0005). Text in symbolic or Type 3
+//! fonts, inline images, form XObjects, shadings, patterns, other
 //! colour spaces, blend modes, soft masks, transfer functions and optional
 //! content are not rendered yet: when a page uses them, the rendering is
 //! partial and `Rendering::skipped` lists them, so that the caller can say
@@ -35,6 +35,7 @@ mod content;
 mod error;
 mod fonts;
 mod geometry;
+mod image;
 mod interpret;
 mod raster;
 mod text;
@@ -88,6 +89,10 @@ pub struct RenderLimits {
     pub max_clips: u32,
     /// Segments of one glyph outline.
     pub max_glyph_segments: u64,
+    /// Pixels of one image (width × height), checked before decoding: about
+    /// 8 bytes each while it is converted and drawn. A larger image is not
+    /// decoded but reported (`Unsupported::Image`).
+    pub max_image_pixels: u64,
 }
 
 impl Default for RenderLimits {
@@ -100,6 +105,7 @@ impl Default for RenderLimits {
             max_path_work: 50_000_000,
             max_clips: 1024,
             max_glyph_segments: 100_000,
+            max_image_pixels: 32 * 1024 * 1024,
         }
     }
 }

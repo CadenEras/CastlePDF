@@ -10,13 +10,17 @@ use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, PdfFile, S
 use crate::content::{ContentReader, Operation};
 use crate::error::{ContentErrorKind, Error, RenderLimitKind};
 use crate::geometry::{Matrix, Path, Point, Segment};
-use crate::raster::{Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
+use crate::image;
+use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
 use crate::text::{self, Selected, TextState, font};
 use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
 
 /// Most glyph outline segments kept in the cache of one rendering (about
 /// 56 bytes each); outlines beyond are drawn but not kept.
 const MAX_CACHED_SEGMENTS: usize = 1_000_000;
+/// Bytes of decoded images kept by one rendering; images beyond are decoded
+/// again when drawn again.
+const MAX_CACHED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 /// Cancellation is checked every this many codes shown.
 const CANCEL_CHECK_CODES: u64 = 4096;
 
@@ -167,6 +171,10 @@ pub(crate) struct Interpreter<'a, S> {
     /// a glyph the program cannot draw.
     glyphs: BTreeMap<(usize, u16), Option<Arc<Vec<Segment>>>>,
     cached_segments: usize,
+    /// Images decoded in this rendering, by object and stencil colour; an
+    /// image that cannot be drawn keeps the capability it lacks.
+    images: BTreeMap<(ObjectId, [u8; 3]), Result<Arc<vello_cpu::Pixmap>, Unsupported>>,
+    cached_image_bytes: usize,
 }
 
 impl<'a, S: Source> Interpreter<'a, S> {
@@ -222,6 +230,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             loaded_fonts: 0,
             glyphs: BTreeMap::new(),
             cached_segments: 0,
+            images: BTreeMap::new(),
+            cached_image_bytes: 0,
         }
     }
 
@@ -595,8 +605,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 let [Object::Name(name)] = ops else {
                     return Err(bad());
                 };
-                self.require_resource(b"XObject", name, at, budget)?;
-                self.skipped.insert(Unsupported::XObject);
+                let object = self.resource(b"XObject", name, at, budget)?;
+                self.x_object(&object, at, budget)?;
             }
             b"sh" => {
                 let [Object::Name(name)] = ops else {
@@ -646,6 +656,106 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             _ => return Err(self.error(at, ContentErrorKind::UnknownOperator)),
         }
+        Ok(())
+    }
+
+    /// `Do` (8.8): draws an image XObject; a form XObject is not drawn yet
+    /// (`XObject`). An image is decoded once per rendering.
+    fn x_object(&mut self, object: &Object, at: u64, budget: &mut Budget) -> Result<(), Error> {
+        // An XObject that is not a readable stream is skipped and reported,
+        // as before images were drawn; limits and cancellation still stop.
+        let stream = match object {
+            Object::Reference(id) => match self.file.resolve(*id, budget) {
+                Ok(IndirectValue::Stream(stream)) => Some(stream),
+                Ok(IndirectValue::Object(_))
+                | Err(pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. }) => {
+                    None
+                }
+                Err(other) => return Err(Error::Syntax(other)),
+            },
+            _ => None,
+        };
+        let Some(stream) = stream else {
+            self.skipped.insert(Unsupported::XObject);
+            return Ok(());
+        };
+        let Object::Reference(id) = object else {
+            return Ok(());
+        };
+        if stream.dictionary.get(b"Subtype").and_then(Object::as_name) != Some(b"Image") {
+            self.skipped.insert(Unsupported::XObject);
+            return Ok(());
+        }
+        // A stencil mask takes the fill colour: cached per colour.
+        let mask = stream.dictionary.get(b"ImageMask") == Some(&Object::Boolean(true));
+        let fill = if mask {
+            match self.state.fill.rgba() {
+                Ok(color) => {
+                    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    [byte(color.r), byte(color.g), byte(color.b)]
+                }
+                Err(capability) => {
+                    self.skipped.insert(capability);
+                    return Ok(());
+                }
+            }
+        } else {
+            [0; 3]
+        };
+        let key = (*id, fill);
+        let image = match self.images.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                let space = match stream.dictionary.get(b"ColorSpace") {
+                    Some(Object::Name(name)) if !is_device_name(name) => {
+                        Some(self.resource(b"ColorSpace", name, at, budget)?)
+                    }
+                    other => other.cloned(),
+                };
+                let decoded = image::decode(
+                    self.file,
+                    &stream,
+                    space.as_ref(),
+                    fill,
+                    &self.limits,
+                    budget,
+                )?;
+                let image = decoded.map(|decoded| {
+                    raster::pixmap(
+                        decoded.rgba,
+                        decoded.width,
+                        decoded.height,
+                        decoded.transparent,
+                    )
+                });
+                let bytes = image
+                    .as_ref()
+                    .map_or(0, |p| usize::from(p.width()) * usize::from(p.height()) * 4);
+                if self.cached_image_bytes + bytes <= MAX_CACHED_IMAGE_BYTES {
+                    self.cached_image_bytes += bytes;
+                    self.images.insert(key, image.clone());
+                }
+                image
+            }
+        };
+        let image = match image {
+            Ok(image) => image,
+            Err(capability) => {
+                self.skipped.insert(capability);
+                return Ok(());
+            }
+        };
+        let matrix = self.state.ctm.then(&self.base);
+        let mut unit = Path::default();
+        unit.rectangle(0.0, 0.0, 1.0, 1.0);
+        if !matrix.is_finite() || !unit.is_within(&matrix, 0.0, MAX_DEVICE_COORDINATE) {
+            return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
+        }
+        let (width, height) = self.canvas_size;
+        self.charge_work(unit.work(&matrix, 0.0, width, height))?;
+        let interpolate = stream.dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
+        self.canvas
+            .draw_image(&image, &matrix, self.state.fill.alpha, interpolate);
         Ok(())
     }
 
@@ -1250,6 +1360,14 @@ fn category(operator: &[u8]) -> Category {
         b"d0" | b"d1" => Category::Type3,
         _ => Category::Unknown,
     }
+}
+
+/// A device colour space name, used as is by an image (not a resource).
+fn is_device_name(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK"
+    )
 }
 
 fn device_space(name: &[u8]) -> Option<ColorSpace> {

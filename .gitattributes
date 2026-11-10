@@ -16,3 +16,4 @@ fuzz/seeds/** binary
 *.bin binary
 *.cff binary
 *.otf binary
+*.jpg binary

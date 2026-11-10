@@ -107,7 +107,22 @@ Après les polices de remplacement (étape 5.3a, même protocole) :
 - temps médian par fichier : 9 à 12 ms (SafeDocs).
 
 Le texte restant vient de Symbol, ZapfDingbats, polices symboliques, CID non incluses et
-Type 3. La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
+Type 3.
+
+Après les XObjects image (étape 5.4a, même protocole) :
+- premières pages où un XObject n'est pas rendu : 1 347 → 267 (SafeDocs), 1 416 → 248
+  (UNSAFE). Le reste correspond surtout aux XObjects de formulaire, pas encore rendus ;
+- images non dessinées et signalées :
+  - filtre non pris en charge ou image trop grande (`Image`) : 123 et 169 pages ;
+  - masque non applicable (`SoftMask`) : 82 et 41 ;
+  - espace de couleur Lab, Separation ou DeviceN (`ColorSpace`) : 373 et 399, tracés compris ;
+- premières pages rendues : 1 913 → 1 911 et 2 206 → 2 205. Les 3 pages perdues dépassent le
+  budget de données décodées d'un rendu (256 Mio, `limit/DecodedBytes`) avec leurs images ;
+- aucun crash ni timeout ;
+- temps par fichier : médiane 12 → 21 ms, p95 43 → 211 ms (SafeDocs), car le décodage des
+  images est refait à chaque rendu ;
+- fuzzing `image` : 428 313 puis 96 969 exécutions (15 et 5 min), aucun crash ;
+- `images.pdf` et page 1 de `jpeg.pdf` identiques à `pdftoppm` (0,000 %). La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
 `truetype.pdf` à 216 dpi, et 0,28 % à 72 dpi, dû au calage des fûts sur la grille de pixels
