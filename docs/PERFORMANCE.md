@@ -24,6 +24,7 @@ Les benchmarks CPU partagés de CI ne doivent pas servir de seul arbitre de late
 | Première page texte 10 pages | médiane < 1 s, build release chaud | Calibrer P0/P2 selon machine |
 | Réponse UI à annulation | < 100 ms avant retour visuel | L'arrêt réel du worker est mesuré séparément |
 | Cache de tuiles décodées | 128 MiB maximum initial | Budget explicite, inclure buffers en vol hors cache |
+| Cache de rendu par document (worker) | 64 MiB par document (`RenderCache::DEFAULT_BYTES`), 4 documents au plus | Polices, contours, images décodées, formulaires, contenu des pages ; vidé au début d'un rendu s'il est plein aux trois quarts |
 | Document très long | pas de rendu anticipé de toutes les pages | Tester résidence par fenêtre visible |
 | Régression temps/mémoire | > 10 % déclenche investigation | Confirmer bruit et même environnement |
 | Fermeture après 20 cycles | pas de croissance persistante expliquée seulement par les cycles | Distinguer cache borné et fuite |

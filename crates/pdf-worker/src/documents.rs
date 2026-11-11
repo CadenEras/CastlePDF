@@ -1,15 +1,19 @@
 //! Documents held by the worker and the jobs that use them: open a file,
 //! size a page, render a tile. Each job runs under its own `Budget`; the
 //! documents themselves are immutable once opened and shared with the job
-//! thread.
+//! thread. Each keeps the cache of its renders (`RenderCache`), which its
+//! tiles reuse.
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use pdf_document::Document;
-use pdf_render::{PixelRect, RenderOptions, Unsupported, page_size, render_area};
+use pdf_render::{
+    PixelRect, RenderCache, RenderOptions, Unsupported, page_size, render_area_cached,
+};
 use pdf_syntax::{Budget, MemorySource};
 
 use crate::protocol::{
@@ -19,7 +23,23 @@ use crate::protocol::{
 /// Documents open at once; each holds its whole file in memory (ADR-0002).
 pub const MAX_DOCUMENTS: usize = 4;
 
-pub type Shared = Arc<Document<MemorySource>>;
+/// An open document and the cache of its renders: fonts, images, forms
+/// and page content read once for all its tiles, at most
+/// `RenderCache::DEFAULT_BYTES` each, so `MAX_DOCUMENTS` times that in all.
+pub struct Open {
+    document: Document<MemorySource>,
+    cache: Mutex<RenderCache>,
+}
+
+impl Deref for Open {
+    type Target = Document<MemorySource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.document
+    }
+}
+
+pub type Shared = Arc<Open>;
 
 /// Open documents by id. Ids start at 1 and are never reused.
 #[derive(Default)]
@@ -69,7 +89,12 @@ pub fn open(path: &str, budget: &mut Budget) -> Result<Shared, ErrorCode> {
         .map_err(|e| ErrorCode::from(&e))?;
     budget.check_cancelled().map_err(|e| ErrorCode::from(&e))?;
     Document::open(source, budget)
-        .map(Arc::new)
+        .map(|document| {
+            Arc::new(Open {
+                document,
+                cache: Mutex::new(RenderCache::default()),
+            })
+        })
         .map_err(|e| document_code(&e))
 }
 
@@ -102,8 +127,14 @@ pub fn tile(
         width: u32::from(rect.width),
         height: u32::from(rect.height),
     };
-    let rendering =
-        render_area(document.file(), page, &options, area, budget).map_err(|e| render_code(&e))?;
+    // One job runs at a time: the lock is never contended. A job that
+    // panicked left complete entries only, so a poisoned cache is usable.
+    let mut cache = document
+        .cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let rendering = render_area_cached(document.file(), page, &options, area, &mut cache, budget)
+        .map_err(|e| render_code(&e))?;
     let skipped = rendering
         .skipped
         .iter()
@@ -198,6 +229,31 @@ mod tests {
     #[test]
     fn a_tile_is_one_rasterisation_cell() {
         assert_eq!(u32::from(MAX_TILE_SIDE), pdf_render::CELL_SIDE);
+    }
+
+    /// The tiles of a document share its render cache: the second tile of
+    /// a page reuses what the first one read, and gives the same pixels.
+    #[test]
+    fn tiles_reuse_the_document_cache() {
+        let document = open(&fixture("images.pdf"), &mut budget()).unwrap();
+        let rect = TileRect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 256,
+        };
+        let pixels_of = |budget: &mut Budget| match tile(&document, 0, 2.0, rect, 1, budget) {
+            Ok(Response::Tile { pixels, .. }) => pixels,
+            other => panic!("tile expected: {other:?}"),
+        };
+        let mut first = budget();
+        let a = pixels_of(&mut first);
+        let kept = document.cache.lock().unwrap().bytes();
+        assert!(kept > 0);
+        let mut second = budget();
+        let b = pixels_of(&mut second);
+        assert!(a == b);
+        assert!(second.decoded_bytes() < first.decoded_bytes());
     }
 
     #[test]

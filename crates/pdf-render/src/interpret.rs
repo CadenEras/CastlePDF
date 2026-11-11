@@ -15,20 +15,11 @@ use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle
 use crate::text::{self, Selected, TextState, font, type3};
 use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
 
-/// Most glyph outline segments kept in the cache of one rendering (about
-/// 56 bytes each); outlines beyond are drawn but not kept.
-const MAX_CACHED_SEGMENTS: usize = 1_000_000;
-/// Bytes of decoded images kept by one rendering; images beyond are decoded
-/// again when drawn again.
-const MAX_CACHED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 /// Most form XObjects drawn inside one another (8.10); a deeper form is
 /// skipped and reported (`XObject`).
 const MAX_FORM_DEPTH: usize = 16;
-/// Bytes of decoded form content kept by one rendering; forms beyond are
-/// read and decoded again when drawn again.
-const MAX_CACHED_FORM_BYTES: usize = 64 * 1024 * 1024;
-/// Scopes of forms with their own resources kept by one rendering, so that
-/// a form drawn again reuses what it read (fonts, colour spaces...).
+/// Scopes of forms with their own resources kept by the caches, so that a
+/// form drawn again reuses what it read (fonts, colour spaces...).
 const MAX_FORM_SCOPES: usize = 256;
 /// Cancellation is checked every this many codes shown.
 const CANCEL_CHECK_CODES: u64 = 4096;
@@ -170,6 +161,80 @@ struct Form {
     content: Arc<Vec<u8>>,
 }
 
+/// What the renders of one document reuse: everything read from objects,
+/// which do not change once the document is open (`RenderCache`). Entries
+/// are complete values, so a rendering stopped by an error or a limit
+/// leaves the caches usable. What is kept counts against `max_bytes`;
+/// what does not fit is used once and not kept.
+#[derive(Default)]
+pub(crate) struct Caches {
+    /// Fonts by object, so that two names (or two renders) of one font
+    /// share it.
+    font_objects: BTreeMap<ObjectId, Selected>,
+    /// Fonts loaded, numbered in load order: the number keys the glyph
+    /// cache and the Type 3 scopes.
+    loaded_fonts: usize,
+    /// Glyph outlines in font units, by font number and glyph id; `None` for
+    /// a glyph the program cannot draw.
+    glyphs: BTreeMap<(usize, u16), Option<Arc<Vec<Segment>>>>,
+    /// Images decoded, by object and stencil colour; an image that cannot
+    /// be drawn keeps the capability it lacks.
+    images: BTreeMap<(ObjectId, [u8; 3]), Result<Arc<vello_cpu::Pixmap>, Unsupported>>,
+    /// Forms read; `None` for one that cannot be drawn.
+    forms_read: BTreeMap<ObjectId, Option<Arc<Form>>>,
+    /// Scopes of the forms with their own resources, between two draws.
+    form_scopes: BTreeMap<ObjectId, Scope>,
+    /// Scopes of the Type 3 fonts with their own resources, by font number.
+    type3_scopes: BTreeMap<usize, Scope>,
+    /// Decoded Type 3 glyph procedures; `None` for one that cannot be read.
+    glyph_contents: BTreeMap<ObjectId, Option<Arc<Vec<u8>>>>,
+    /// Decoded page content, by page.
+    pub contents: BTreeMap<ObjectId, Arc<Vec<u8>>>,
+    /// Bytes kept, and the most.
+    bytes: usize,
+    pub max_bytes: usize,
+}
+
+impl Caches {
+    /// Empty caches that keep at most `max_bytes`.
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            ..Self::default()
+        }
+    }
+
+    /// Counts `bytes` more if they fit: then the value may be kept.
+    pub fn reserve(&mut self, bytes: usize) -> bool {
+        match self.bytes.checked_add(bytes) {
+            Some(total) if total <= self.max_bytes => {
+                self.bytes = total;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Empties the caches; font numbers keep increasing, so that no glyph
+    /// is ever looked up under the number of another font.
+    pub fn clear(&mut self) {
+        *self = Self {
+            loaded_fonts: self.loaded_fonts,
+            max_bytes: self.max_bytes,
+            ..Self::default()
+        };
+    }
+}
+
+/// Bytes counted for a cached glyph outline segment.
+const SEGMENT_BYTES: usize = std::mem::size_of::<Segment>();
+/// Bytes counted for a cached font besides its program, and for a scope.
+const ENTRY_BYTES: usize = 4096;
+
 /// Interprets the content of one page onto a canvas.
 pub(crate) struct Interpreter<'a, S> {
     file: &'a PdfFile<S>,
@@ -201,33 +266,13 @@ pub(crate) struct Interpreter<'a, S> {
     line_matrix: Matrix,
     /// Fonts by resource name, loaded once.
     fonts: BTreeMap<Vec<u8>, Selected>,
-    /// The same fonts by object, so that two names of one font share it.
-    font_objects: BTreeMap<ObjectId, Selected>,
-    /// Fonts loaded, numbered in load order: the number keys the glyph cache.
-    loaded_fonts: usize,
-    /// Glyph outlines in font units, by font number and glyph id; `None` for
-    /// a glyph the program cannot draw.
-    glyphs: BTreeMap<(usize, u16), Option<Arc<Vec<Segment>>>>,
-    cached_segments: usize,
-    /// Images decoded in this rendering, by object and stencil colour; an
-    /// image that cannot be drawn keeps the capability it lacks.
-    images: BTreeMap<(ObjectId, [u8; 3]), Result<Arc<vello_cpu::Pixmap>, Unsupported>>,
-    cached_image_bytes: usize,
+    /// What renders of the document reuse (`Caches`).
+    caches: Caches,
     /// Forms being drawn, outermost first: a form inside itself is skipped.
     forms: Vec<ObjectId>,
     /// Saved states below this depth belong to the page or an enclosing
     /// form: a `Q` cannot restore them.
     floor: usize,
-    /// Forms read in this rendering; `None` for one that cannot be drawn.
-    forms_read: BTreeMap<ObjectId, Option<Arc<Form>>>,
-    cached_form_bytes: usize,
-    /// Scopes of the forms with their own resources, between two draws.
-    form_scopes: BTreeMap<ObjectId, Scope>,
-    /// Scopes of the Type 3 fonts with their own resources, by font number.
-    type3_scopes: BTreeMap<usize, Scope>,
-    /// Decoded Type 3 glyph procedures, counted with the forms' content;
-    /// `None` for one that cannot be read.
-    glyph_contents: BTreeMap<ObjectId, Option<Arc<Vec<u8>>>>,
     /// The next operation is the first of a Type 3 glyph procedure: only
     /// there are `d0` and `d1` allowed (9.6.4).
     glyph_start: bool,
@@ -257,6 +302,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         limits: RenderLimits,
         canvas: Canvas,
         base: Matrix,
+        caches: Caches,
     ) -> Self {
         let window = canvas.window();
         Self {
@@ -298,19 +344,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             text_matrix: Matrix::IDENTITY,
             line_matrix: Matrix::IDENTITY,
             fonts: BTreeMap::new(),
-            font_objects: BTreeMap::new(),
-            loaded_fonts: 0,
-            glyphs: BTreeMap::new(),
-            cached_segments: 0,
-            images: BTreeMap::new(),
-            cached_image_bytes: 0,
+            caches,
             forms: Vec::new(),
             floor: 0,
-            forms_read: BTreeMap::new(),
-            cached_form_bytes: 0,
-            form_scopes: BTreeMap::new(),
-            type3_scopes: BTreeMap::new(),
-            glyph_contents: BTreeMap::new(),
             glyph_start: false,
             uncolored: false,
         }
@@ -319,12 +355,18 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// Runs every operation of `content`, then returns the canvas and the
     /// capabilities skipped. The content must end outside any text object,
     /// path, `q`, marked content or compatibility section (ISO 32000-2,
-    /// 7.8.2, 8.4.2, 14.6).
+    /// 7.8.2, 8.4.2, 14.6). The caches come back whatever the result.
     pub fn run(
         mut self,
         content: &[u8],
         budget: &mut Budget,
-    ) -> Result<(Canvas, BTreeSet<Unsupported>), Error> {
+    ) -> (Result<(Canvas, BTreeSet<Unsupported>), Error>, Caches) {
+        let result = self.run_page(content, budget);
+        let caches = std::mem::take(&mut self.caches);
+        (result.map(|()| (self.canvas, self.skipped)), caches)
+    }
+
+    fn run_page(&mut self, content: &[u8], budget: &mut Budget) -> Result<(), Error> {
         // The initial colour spaces are DeviceGray: apply `DefaultGray`.
         self.state.fill.space = self.device(ColorSpace::Gray, 0, budget)?;
         self.state.stroke.space = self.state.fill.space;
@@ -338,7 +380,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         {
             return Err(self.error(content.len() as u64, ContentErrorKind::Unterminated));
         }
-        Ok((self.canvas, self.skipped))
+        Ok(())
     }
 
     /// Executes every operation of `content`, counted against
@@ -798,7 +840,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// once per rendering.
     fn x_object(&mut self, object: &Object, at: u64, budget: &mut Budget) -> Result<(), Error> {
         if let Object::Reference(id) = object
-            && let Some(form) = self.forms_read.get(id).cloned()
+            && let Some(form) = self.caches.forms_read.get(id).cloned()
         {
             return self.draw_form(*id, form, budget);
         }
@@ -850,7 +892,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             Some(Object::Name(name)) if !is_device_name(name)
         );
         let cached = if cacheable {
-            self.images.get(&key).cloned()
+            self.caches.images.get(&key).cloned()
         } else {
             None
         };
@@ -879,9 +921,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 let bytes = image
                     .as_ref()
                     .map_or(0, |p| usize::from(p.width()) * usize::from(p.height()) * 4);
-                if cacheable && self.cached_image_bytes + bytes <= MAX_CACHED_IMAGE_BYTES {
-                    self.cached_image_bytes += bytes;
-                    self.images.insert(key, image.clone());
+                if cacheable && self.caches.reserve(bytes) {
+                    self.caches.images.insert(key, image.clone());
                 }
                 image
             }
@@ -899,7 +940,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
 
     /// Reads form `id` once: `None` if it cannot be drawn (no `/BBox`, an
     /// invalid `/Matrix`, content that cannot be decoded). Kept for the
-    /// rendering while its content fits `MAX_CACHED_FORM_BYTES`.
+    /// rendering, and the next ones, while it fits the caches.
     fn read_form(
         &mut self,
         id: ObjectId,
@@ -908,9 +949,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
     ) -> Result<Option<Arc<Form>>, Error> {
         let form = self.form_parts(stream, budget)?.map(Arc::new);
         let bytes = form.as_ref().map_or(0, |form| form.content.len());
-        if self.cached_form_bytes + bytes <= MAX_CACHED_FORM_BYTES {
-            self.cached_form_bytes += bytes;
-            self.forms_read.insert(id, form.clone());
+        if self.caches.reserve(bytes + ENTRY_BYTES) {
+            self.caches.forms_read.insert(id, form.clone());
         }
         Ok(form)
     }
@@ -1028,10 +1068,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
         }
 
         let scope = form.resources.as_ref().map(|resources| {
-            self.form_scopes.remove(&id).unwrap_or_else(|| Scope {
-                resources: Some(resources.clone()),
-                ..Scope::default()
-            })
+            self.caches
+                .form_scopes
+                .remove(&id)
+                .unwrap_or_else(|| Scope {
+                    resources: Some(resources.clone()),
+                    ..Scope::default()
+                })
         });
         let nested = Nested {
             ctm,
@@ -1041,9 +1084,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
         };
         let (result, scope) = self.run_nested(id, nested, &form.content, budget)?;
         if let Some(scope) = scope
-            && self.form_scopes.len() < MAX_FORM_SCOPES
+            && self.caches.form_scopes.len() < MAX_FORM_SCOPES
         {
-            self.form_scopes.insert(id, scope);
+            self.caches.form_scopes.insert(id, scope);
         }
         self.nested_result(result, Unsupported::XObject)
     }
@@ -1178,7 +1221,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             Some(Object::Reference(id)) => Some(*id),
             _ => None,
         };
-        if let Some(selected) = id.and_then(|id| self.font_objects.get(&id)) {
+        if let Some(selected) = id.and_then(|id| self.caches.font_objects.get(&id)) {
             let selected = selected.clone();
             self.fonts.insert(name.to_vec(), selected.clone());
             return Ok(selected);
@@ -1193,9 +1236,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             {
                 match type3::load(self.file, &dictionary, budget)? {
                     Some(font) => {
-                        self.loaded_fonts += 1;
+                        self.caches.loaded_fonts += 1;
                         Selected::Type3 {
-                            number: self.loaded_fonts,
+                            number: self.caches.loaded_fonts,
                             font: Arc::new(font),
                         }
                     }
@@ -1204,9 +1247,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             Some(dictionary) => match font::load(self.file, &dictionary, budget)? {
                 Some(font) => {
-                    self.loaded_fonts += 1;
+                    self.caches.loaded_fonts += 1;
                     Selected::Font {
-                        number: self.loaded_fonts,
+                        number: self.caches.loaded_fonts,
                         font: Arc::new(font),
                     }
                 }
@@ -1215,8 +1258,14 @@ impl<'a, S: Source> Interpreter<'a, S> {
             None => Selected::Unsupported,
         };
         self.fonts.insert(name.to_vec(), selected.clone());
-        if let Some(id) = id {
-            self.font_objects.insert(id, selected.clone());
+        let bytes = match &selected {
+            Selected::Font { font, .. } => font.program_len() + ENTRY_BYTES,
+            _ => ENTRY_BYTES,
+        };
+        if let Some(id) = id
+            && self.caches.reserve(bytes)
+        {
+            self.caches.font_objects.insert(id, selected.clone());
         }
         Ok(selected)
     }
@@ -1405,7 +1454,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.skipped.insert(Unsupported::Text);
             return Ok(());
         }
-        let content = match self.glyph_contents.get(&id) {
+        let content = match self.caches.glyph_contents.get(&id) {
             Some(Some(content)) => Arc::clone(content),
             Some(None) => {
                 self.skipped.insert(Unsupported::Text);
@@ -1432,23 +1481,27 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 };
                 let Some(decoded) = decoded else {
                     // Not read again at its next occurrence.
-                    self.glyph_contents.insert(id, None);
+                    self.caches.glyph_contents.insert(id, None);
                     self.skipped.insert(Unsupported::Text);
                     return Ok(());
                 };
                 let content = Arc::new(decoded);
-                if self.cached_form_bytes + content.len() <= MAX_CACHED_FORM_BYTES {
-                    self.cached_form_bytes += content.len();
-                    self.glyph_contents.insert(id, Some(Arc::clone(&content)));
+                if self.caches.reserve(content.len()) {
+                    self.caches
+                        .glyph_contents
+                        .insert(id, Some(Arc::clone(&content)));
                 }
                 content
             }
         };
         let scope = font.resources.as_ref().map(|resources| {
-            self.type3_scopes.remove(&number).unwrap_or_else(|| Scope {
-                resources: Some(resources.clone()),
-                ..Scope::default()
-            })
+            self.caches
+                .type3_scopes
+                .remove(&number)
+                .unwrap_or_else(|| Scope {
+                    resources: Some(resources.clone()),
+                    ..Scope::default()
+                })
         });
         let outer = (
             std::mem::replace(&mut self.glyph_start, true),
@@ -1464,9 +1517,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
         (self.glyph_start, self.uncolored) = outer;
         let (result, scope) = ran?;
         if let Some(scope) = scope
-            && self.type3_scopes.len() < MAX_FORM_SCOPES
+            && self.caches.type3_scopes.len() < MAX_FORM_SCOPES
         {
-            self.type3_scopes.insert(number, scope);
+            self.caches.type3_scopes.insert(number, scope);
         }
         self.nested_result(result, Unsupported::Text)
     }
@@ -1588,7 +1641,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         budget: &mut Budget,
     ) -> Result<Option<Arc<Vec<Segment>>>, Error> {
         let key = (number, glyph);
-        if let Some(outline) = self.glyphs.get(&key) {
+        if let Some(outline) = self.caches.glyphs.get(&key) {
             return Ok(outline.clone());
         }
         budget.charge_object()?;
@@ -1596,7 +1649,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let outline = match font.outline(glyph, max) {
             Ok(Some(outline)) => Arc::new(outline),
             Ok(None) => {
-                self.glyphs.insert(key, None);
+                self.caches.glyphs.insert(key, None);
                 return Ok(None);
             }
             Err(()) => {
@@ -1606,9 +1659,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 });
             }
         };
-        if self.cached_segments + outline.len() <= MAX_CACHED_SEGMENTS {
-            self.cached_segments += outline.len();
-            self.glyphs.insert(key, Some(Arc::clone(&outline)));
+        if self
+            .caches
+            .reserve(outline.len().saturating_mul(SEGMENT_BYTES))
+        {
+            self.caches.glyphs.insert(key, Some(Arc::clone(&outline)));
         }
         Ok(Some(outline))
     }

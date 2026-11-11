@@ -9,6 +9,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **cache de rendu par document** (`RenderCache`, `render_page_cached`,
+  `render_area_cached`). Les rendus d'un document réutilisent ce qu'ils ont lu : polices et
+  contours de glyphes, images décodées, formulaires et procédures Type 3, contenu décodé des
+  pages.
+  - Le cache est borné en octets (64 Mio par défaut).
+  - Il est vidé quand un rendu commence alors qu'il est plein aux trois quarts, ou quand
+    les limites de rendu changent.
+  - Il reste utilisable après une erreur ou une annulation.
+  - Le worker en garde un par document ouvert. Une première page en tuiles coûte 89 ms en
+    médiane au lieu de 291 ms, et 0,34 s au p95 au lieu de 7,9 s.
+  - Les résultats sont identiques au pixel près.
 - `pdf-render` : **polices Type 3** (ADR-0005, étape 5.5). Chaque glyphe est une procédure de
   contenu, exécutée comme un formulaire. Elle prend la matrice de la police et la matrice de rendu
   du texte, et les ressources de la police ou, à défaut, celles du contenu appelant.
