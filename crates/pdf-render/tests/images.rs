@@ -453,9 +453,9 @@ fn inline_jpeg_images_are_decoded() {
 #[test]
 fn inline_images_not_drawn_are_reported() {
     for (entries, data, expected) in [
-        // A filter of P3, a missing colour space, a missing size.
+        // A filter not decoded yet (CCITT), a missing colour space, a missing size.
         (
-            "/W 1 /H 1 /BPC 8 /CS /G /F /AHx",
+            "/W 1 /H 1 /BPC 8 /CS /G /F /CCF",
             &b"00>"[..],
             Unsupported::Image,
         ),
@@ -506,4 +506,26 @@ fn a_damaged_xobject_is_skipped_not_fatal() {
         .replace("/XObject << /I 5 0 R >>", "/XObject << /I 1 0 R >>");
     let page = render(text.into_bytes(), 0);
     assert_eq!(skipped(&page), [Unsupported::XObject]);
+}
+
+#[test]
+fn images_and_content_in_the_simple_filters_are_drawn() {
+    // ASCIIHex content; LZW, RunLength and ASCII85 + Flate images.
+    let page = render(fixture("filters.pdf"), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    // LZW: quarters red, green / blue, gray.
+    assert_eq!(at(&page, 25, 175), [255, 0, 0]);
+    assert_eq!(at(&page, 75, 175), [0, 255, 0]);
+    assert_eq!(at(&page, 25, 125), [0, 0, 255]);
+    assert_eq!(at(&page, 75, 125), [128, 128, 128]);
+    // RunLength: a gray ramp from black to white.
+    assert_eq!(at(&page, 110, 150), [0, 0, 0]);
+    assert_eq!(at(&page, 190, 150), [255, 255, 255]);
+    // ASCII85 then Flate: yellow, cyan / magenta, black.
+    assert_eq!(at(&page, 25, 75), [255, 255, 0]);
+    assert_eq!(at(&page, 75, 75), [0, 255, 255]);
+    assert_eq!(at(&page, 25, 25), [255, 0, 255]);
+    assert_eq!(at(&page, 75, 25), [0, 0, 0]);
+    // The ASCIIHex content's own path.
+    assert_eq!(at(&page, 150, 50), [0, 0, 255]);
 }

@@ -115,3 +115,18 @@ Une page entière est rasterisée cellule par cellule. Un tracé est aplati une 
 cellule qu'il touche, et l'estimation de travail (`max_path_work`) le compte. Une
 découpe qui ne touche pas une cellule la masque jusqu'à son retrait, au lieu d'y être
 poussée. Le coût est mesuré par `survey` (`docs/QUALITY.md`).
+
+## Amendement du 2026-11-11 : filtres simples avancés en P2
+
+ASCIIHexDecode, ASCII85Decode, LZWDecode (avec `/EarlyChange` et prédicteurs) et
+RunLengthDecode passent de P3 à P2.
+- **Pourquoi :** ils sont fréquents dans les images en ligne, et seul Flate était décodé.
+  Avant ce changement, 112 et 149 premières pages du corpus gardaient une image non dessinée
+  pour un filtre ou une taille.
+- **Coût :** ils sont petits, sans dépendance.
+- **Sûreté :** comme Flate, chaque octet décodé est imputé au budget avant d'être gardé.
+  RunLength (2 octets en donnent 128) et LZW sont donc bornés par `max_decoded_bytes`, et
+  non par leur entrée.
+- **Vérification :** l'oracle qpdf compare les flux décodés, `pdftoppm` compare le rendu de
+  `filters.pdf`, et la cible de fuzzing `flate` couvre les nouveaux filtres.
+- **Ce qui reste en P3 :** CCITTFax, JBIG2 et JPX, avec le texte, `ToUnicode` et la recherche.
