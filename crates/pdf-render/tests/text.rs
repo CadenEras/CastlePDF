@@ -248,15 +248,59 @@ fn each_standard_family_and_style_has_its_widths() {
     }
 }
 
+#[cfg(feature = "standard-fonts")]
 #[test]
-fn symbolic_fonts_are_not_replaced_yet() {
-    for font in [
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>",
-        "<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>",
-        "<< /Type /Font /Subtype /TrueType /BaseFont /Wingdings /FontDescriptor << /Flags 4 >> >>",
+fn symbol_and_zapf_dingbats_are_replaced_with_their_widths() {
+    // Symbol "abgd" is alpha beta gamma delta: 631 + 549 + 411 + 494
+    // thousandths (Adobe's metrics), 83.4 points at 40 from x = 10.
+    // ZapfDingbats "lmn" is a71 a72 a73: 791 + 873 + 761, 97 points.
+    for (font, text, right) in [
+        ("/BaseFont /Symbol", "abgd", 93),
+        ("/BaseFont /ABCDEF+SymbolMT", "abgd", 93),
+        ("/BaseFont /ZapfDingbats", "lmn", 107),
+        ("/BaseFont /Dingbats", "lmn", 107),
     ] {
-        assert_eq!(ink_of(font), (vec![Unsupported::Text], 0), "{font}");
+        let rendering = render(with_named_font(
+            &format!("BT /F1 40 Tf 10 30 Td ({text}) Tj ET"),
+            &format!("<< /Type /Font /Subtype /Type1 {font} >>"),
+        ));
+        assert_eq!(
+            rendering.skipped.iter().copied().collect::<Vec<_>>(),
+            [Unsupported::FontSubstituted],
+            "{font}"
+        );
+        assert!(
+            dark(&rendering, 100, (right - 12, 20, right - 2, 70)) > 0,
+            "{font}"
+        );
+        assert_eq!(dark(&rendering, 100, (right + 3, 0, 200, 100)), 0, "{font}");
     }
+    // The PDF's widths win: alpha at 2000 thousandths puts beta at x = 90.
+    let rendering = render(with_named_font(
+        "BT /F1 40 Tf 10 30 Td (ab) Tj ET",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol /FirstChar 97 /LastChar 98 /Widths [2000 549] >>",
+    ));
+    assert!(dark(&rendering, 100, (40, 20, 88, 70)) == 0);
+    assert!(dark(&rendering, 100, (90, 20, 112, 70)) > 0);
+    // Glyph names through /Differences, including a private-use bracket
+    // piece of Adobe's glyph list, drawn with its Unicode equivalent.
+    let rendering = render(with_named_font(
+        "BT /F1 40 Tf 10 30 Td (\\001\\002) Tj ET",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol /Encoding << /Differences [1 /bracketlefttp /Omega] >> >>",
+    ));
+    assert_eq!(
+        rendering.skipped.iter().copied().collect::<Vec<_>>(),
+        [Unsupported::FontSubstituted]
+    );
+    assert!(dark(&rendering, 100, (10, 0, 25, 100)) > 0);
+    assert!(dark(&rendering, 100, (26, 20, 60, 70)) > 0);
+}
+
+#[test]
+fn other_symbolic_fonts_are_not_replaced() {
+    let font =
+        "<< /Type /Font /Subtype /TrueType /BaseFont /Wingdings /FontDescriptor << /Flags 4 >> >>";
+    assert_eq!(ink_of(font), (vec![Unsupported::Text], 0), "{font}");
     // A name absent from the resources is not a font to replace.
     let rendering = render(with_named_font(
         "BT /F9 40 Tf 10 30 Td (A) Tj ET",

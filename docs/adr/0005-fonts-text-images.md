@@ -165,6 +165,21 @@ Contraintes :
   - **Polices symboliques** : Symbol, ZapfDingbats et les polices marquées symboliques ne
     sont pas encore remplacées. Leurs glyphes se répartissent sur plusieurs polices Noto,
     ce qui demande une chaîne de repli par glyphe (étape 5.3b). Leur texte reste `Text`.
+- **Amendement du 2026-11-11 (étape 5.3b) :**
+  - **Une police fusionnée plutôt qu'une chaîne de repli.** Les glyphes de Symbol et
+    ZapfDingbats sont pris, chacun dans la première police Noto qui les a, et fusionnés hors
+    ligne en une seule police, « CastlePDF Symbols » (55 Kio, `scripts/build-symbol-font.sh`,
+    reproductible). Le moteur garde un programme par police : aucune chaîne par glyphe à
+    l'exécution.
+  - **Sources.** Noto Sans Symbols et Symbols 2 ne suffisent pas : le Grec et les opérateurs
+    de Symbol viennent de Noto Sans Math, et quelques caractères (°, €, ƒ, µ, ©) de Noto Sans.
+    Les quatre sont sous OFL 1.1, sans nom réservé.
+  - **Zone privée.** Les 29 points de code qu'Adobe place en zone privée (pièces de crochets
+    et d'accolades, signes ©, ®, ™ avec et sans empattement) pointent vers le glyphe de leur
+    équivalent Unicode dans la `cmap` de la police fusionnée.
+  - **Largeurs.** Sans `/Widths`, les largeurs sont celles des métriques AFM d'Adobe
+    (`metrics.js` de pdf.js), par nom de glyphe : les glyphes Noto n'ont pas ces chasses.
+  - Les autres polices symboliques (Wingdings…) ne sont pas remplacées et restent `Text`.
 - **Acceptation (2026-11-10) :**
   - ADR-0002 est amendé sur la ligne « Réutiliser » : `skrifa` et `zune-jpeg` sont retenus,
     sans le code SIMD de `zune-jpeg` ;

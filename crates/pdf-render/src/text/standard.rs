@@ -2,13 +2,16 @@
 //! program is not read (Type 1) or damaged (ADR-0005, step 5.3): Arimo
 //! (Helvetica, Arial), Tinos (Times) and Cousine (Courier), SIL OFL 1.1,
 //! four styles each, reduced to the characters of the Standard, WinAnsi and
-//! MacRoman encodings (\`crates/pdf-render/fonts\`, built by
-//! \`scripts/build-standard-fonts.sh\`). Their widths match those of the
-//! fonts they replace; their glyphs only resemble them, so text drawn with
-//! them is reported as \`FontSubstituted\`.
+//! MacRoman encodings (`crates/pdf-render/fonts`, built by
+//! `scripts/build-standard-fonts.sh`). Their widths match those of the
+//! fonts they replace. Symbol and ZapfDingbats are replaced by CastlePDF
+//! Symbols, glyphs of four Noto fonts (SIL OFL 1.1) merged by
+//! `scripts/build-symbol-font.sh`; their widths come from Adobe's metrics.
+//! The glyphs only resemble the original ones, so text drawn with these
+//! fonts is reported as `FontSubstituted`.
 //!
-//! Without the \`standard-fonts\` feature no font is embedded and such text
-//! is not drawn (\`Text\`).
+//! Without the `standard-fonts` feature no font is embedded and such text
+//! is not drawn (`Text`).
 
 /// A replacement font family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +78,24 @@ pub(crate) fn program(family: Family, bold: bool, italic: bool) -> Option<&'stat
 
 #[cfg(not(feature = "standard-fonts"))]
 pub(crate) fn program(_: Family, _: bool, _: bool) -> Option<&'static [u8]> {
+    None
+}
+
+/// The program that replaces Symbol and ZapfDingbats, if the feature
+/// embeds it.
+#[cfg(feature = "standard-fonts")]
+pub(crate) fn symbols() -> Option<&'static [u8]> {
+    Some(
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fonts/CastleSymbols-Regular.ttf"
+        ))
+        .as_slice(),
+    )
+}
+
+#[cfg(not(feature = "standard-fonts"))]
+pub(crate) fn symbols() -> Option<&'static [u8]> {
     None
 }
 
