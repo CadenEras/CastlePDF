@@ -44,6 +44,7 @@ mod text;
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::Arc;
 
 use pdf_document::Page;
 use pdf_syntax::{Budget, IndirectValue, Object, PdfFile, Source};
@@ -271,10 +272,87 @@ pub fn render_page<S: Source>(
     options: &RenderOptions,
     budget: &mut Budget,
 ) -> Result<Rendering, Error> {
+    render_page_cached(file, page, options, &mut RenderCache::default(), budget)
+}
+
+/// `render_page`, reusing and filling `cache` (see `RenderCache`).
+pub fn render_page_cached<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    options: &RenderOptions,
+    cache: &mut RenderCache,
+    budget: &mut Budget,
+) -> Result<Rendering, Error> {
     let (width, height, base) = page_geometry(page, options)?;
     check_pixels(u64::from(width) * u64::from(height), options)?;
     let canvas = Canvas::new((width, height), 0, 0, width, height);
-    render(file, page, options, canvas, base, budget)
+    render(file, page, options, canvas, base, cache, budget)
+}
+
+/// What the renders of one document reuse from one another: fonts, glyph
+/// outlines, decoded images, forms, Type 3 glyph procedures and decoded
+/// page content, all read from objects that do not change once the
+/// document is open. Viewers render a page in many tiles, each of which
+/// would otherwise read and decode them again.
+///
+/// A cache serves one document only (its objects are keyed by number): give
+/// each open document its own. What it keeps counts against `max_bytes`
+/// (decoded pixels, content and programs; outlines by segment); what does
+/// not fit is used once and not kept. A render that starts with the cache
+/// more than three quarters full empties it first, so that it refills with
+/// what is viewed now; so do renders with other `RenderLimits`, under which
+/// what was kept (or refused) might differ. Results are the same with or
+/// without a cache, only faster.
+pub struct RenderCache {
+    caches: interpret::Caches,
+    limits: Option<RenderLimits>,
+}
+
+impl RenderCache {
+    /// The default bound of one document's cache.
+    pub const DEFAULT_BYTES: usize = 64 * 1024 * 1024;
+
+    /// An empty cache that keeps at most `max_bytes`; 0 keeps nothing.
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            caches: interpret::Caches::new(max_bytes),
+            limits: None,
+        }
+    }
+
+    /// Bytes kept now.
+    pub fn bytes(&self) -> usize {
+        self.caches.bytes()
+    }
+
+    /// Empties the cache: for instance, to free its memory.
+    pub fn clear(&mut self) {
+        self.caches.clear();
+    }
+
+    /// Readies the cache for a render under `limits`.
+    fn start(&mut self, limits: &RenderLimits) {
+        let full = self.caches.bytes() > self.caches.max_bytes / 4 * 3;
+        if full || self.limits.as_ref() != Some(limits) {
+            self.caches.clear();
+            self.limits = Some(*limits);
+        }
+    }
+}
+
+impl Default for RenderCache {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_BYTES)
+    }
+}
+
+impl fmt::Debug for RenderCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RenderCache")
+            .field("bytes", &self.caches.bytes())
+            .field("max_bytes", &self.caches.max_bytes)
+            .finish()
+    }
 }
 
 /// Size in device pixels of the whole page rendered at `options.scale`:
@@ -292,15 +370,34 @@ pub fn page_size(page: &Page, options: &RenderOptions) -> Result<(u32, u32), Err
 /// fixed to the top-left corner of the page, each from the page's
 /// coordinates: an area aligned on that grid (a viewer tile) costs no more
 /// than its size, any other is rendered on the cells it touches.
-/// `max_pixels` applies to the area, not to the page; the area must be
-/// non-empty and inside the page, otherwise `InvalidRequest`. The whole
-/// content is interpreted; the rasteriser work outside the cells is culled
-/// and not counted.
+/// `max_pixels` applies to the cells the area touches, not to the page; the
+/// area must be non-empty and inside the page, otherwise `InvalidRequest`.
+/// The whole content is interpreted; the rasteriser work outside the cells
+/// is culled and not counted.
 pub fn render_area<S: Source>(
     file: &PdfFile<S>,
     page: &Page,
     options: &RenderOptions,
     area: PixelRect,
+    budget: &mut Budget,
+) -> Result<Rendering, Error> {
+    render_area_cached(
+        file,
+        page,
+        options,
+        area,
+        &mut RenderCache::default(),
+        budget,
+    )
+}
+
+/// `render_area`, reusing and filling `cache` (see `RenderCache`).
+pub fn render_area_cached<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    options: &RenderOptions,
+    area: PixelRect,
+    cache: &mut RenderCache,
     budget: &mut Budget,
 ) -> Result<Rendering, Error> {
     let (page_width, page_height, base) = page_geometry(page, options)?;
@@ -320,7 +417,7 @@ pub fn render_area<S: Source>(
     let size = (page_width, page_height);
     check_pixels(cell_pixels(size, area.x, area.y, width, height), options)?;
     let canvas = Canvas::new(size, area.x, area.y, width, height);
-    render(file, page, options, canvas, base, budget)
+    render(file, page, options, canvas, base, cache, budget)
 }
 
 fn check_pixels(pixels: u64, options: &RenderOptions) -> Result<(), Error> {
@@ -339,16 +436,38 @@ fn render<S: Source>(
     options: &RenderOptions,
     canvas: Canvas,
     base: Matrix,
+    cache: &mut RenderCache,
     budget: &mut Budget,
 ) -> Result<Rendering, Error> {
+    cache.start(&options.limits);
     let (width, height) = canvas.size();
-    let content = page_content(file, page, budget)?;
+    let content = match cache.caches.contents.get(&page.id) {
+        Some(content) => Arc::clone(content),
+        None => {
+            let content = Arc::new(page_content(file, page, budget)?);
+            if cache.caches.reserve(content.len()) {
+                cache.caches.contents.insert(page.id, Arc::clone(&content));
+            }
+            content
+        }
+    };
     let resources = match page.resources.as_deref() {
         None => None,
         Some(object) => Some(resource_dictionary(file, object, page, budget)?),
     };
-    let interpreter = Interpreter::new(file, page.id, resources, options.limits, canvas, base);
-    let (canvas, skipped) = interpreter.run(&content, budget)?;
+    let caches = std::mem::take(&mut cache.caches);
+    let interpreter = Interpreter::new(
+        file,
+        page.id,
+        resources,
+        options.limits,
+        canvas,
+        base,
+        caches,
+    );
+    let (result, caches) = interpreter.run(&content, budget);
+    cache.caches = caches;
+    let (canvas, skipped) = result?;
     Ok(Rendering {
         bitmap: Bitmap {
             width: u32::from(width),

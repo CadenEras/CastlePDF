@@ -122,6 +122,11 @@ pub(crate) struct Code {
 }
 
 impl Font {
+    /// Bytes of the program, counted when the font is cached.
+    pub fn program_len(&self) -> usize {
+        self.program.len()
+    }
+
     pub fn units_per_em(&self) -> f64 {
         self.units_per_em
     }

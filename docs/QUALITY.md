@@ -174,6 +174,14 @@ Après les polices Type 3 (étape 5.5, même protocole) :
 - fuzzing `render`, avec une police Type 3 dont la procédure est l'entrée : 438 187 puis
   288 647 exécutions (10 min chacune, la seconde avec une procédure vide en plus), aucun crash.
 
+Cache de rendu par document (test ignoré `tile_cost`, 284 premières pages SafeDocs rendues
+en 12 803 tuiles de 256 px à l'échelle 2, comme le visualiseur, release, WSL) :
+- sans cache entre les tuiles (comportement précédent) : médiane 291 ms par page, p95 7,9 s,
+  total 588 s ;
+- avec un `RenderCache` par document : médiane 89 ms, p95 336 ms, total 51 s, soit 11 fois moins ;
+- résultats identiques au pixel près avec ou sans cache (test `cache`, fixtures de texte,
+  d'images, de formulaires et de Type 3, pages et zones dans plusieurs ordres).
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
