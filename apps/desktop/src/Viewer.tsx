@@ -21,6 +21,7 @@ import {
   type PageSize,
   type RepairState,
 } from "./ipc";
+import { describeTimings, record, summarize, type TileTiming } from "./timings";
 
 /** Tile requests in flight at once: keeps the shell queue busy, not full. */
 const CONCURRENCY = 4;
@@ -231,6 +232,9 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     repair: "none" as RepairState,
   });
   const mounted = useRef(new Map<number, Mounted>());
+  // Time per tile on the WebView side ("Mesures" panel).
+  const timings = useRef<TileTiming[]>([]);
+  const [measures, setMeasures] = useState(() => summarize([]));
 
   const fallback = points.find((size) => size !== null) ?? null;
   const cssHeights = useMemo(
@@ -401,6 +405,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
             return;
           }
           let tile;
+          const requested = performance.now();
           try {
             tile = await renderTile({
               document,
@@ -429,11 +434,16 @@ export function Viewer({ info }: { info: DocumentInfo }) {
             });
             return;
           }
+          const received = performance.now();
           context.putImageData(
             new ImageData(tile.pixels, tile.width, tile.height),
             item.rect.x,
             item.rect.y,
           );
+          record(timings.current, {
+            receive: received - requested,
+            draw: performance.now() - received,
+          });
           target.drawn.add(item.key);
           const { skipped, repair } = tile;
           setReported((current) => ({
@@ -445,6 +455,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
         }
       };
       await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+      setMeasures(summarize(timings.current));
     };
     draw().catch((error: unknown) => {
       if (!cancelled && !isStale(error)) {
@@ -592,6 +603,10 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           Rendu partiel : non affichés pour l'instant — {missing.join(", ")}.
         </p>
       )}
+      <details className="measures">
+        <summary>Mesures</summary>
+        <p>{describeTimings(measures)}</p>
+      </details>
       <div
         className="pages"
         ref={scroller}

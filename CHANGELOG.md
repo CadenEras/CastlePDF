@@ -9,6 +9,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- UI : panneau **« Mesures »**, replié sous la barre d'outils. Il donne, pour les 2 000
+  dernières tuiles, la médiane et le p95 du temps entre la requête et les données reçues, et
+  du dessin. Il sert à mesurer le transport d'ADR-0003 dans l'application réelle.
 - `pdf-syntax` : **filtres ASCIIHexDecode, ASCII85Decode, LZWDecode et RunLengthDecode**
   (ISO 32000-2, 7.4.2 à 7.4.5), avancés de P3 (amendement d'ADR-0003).
   - LZW lit les codes de 9 à 12 bits, avec `/EarlyChange` et les prédicteurs, et garde une
