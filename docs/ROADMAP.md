@@ -35,16 +35,37 @@ de cette liste sans preuve.
 
 | Limite | Pourquoi elle compte | Sortie attendue |
 | --- | --- | --- |
-| Temps côté WebView mesuré sous Windows seulement (panneau « Mesures », 2026-11-11) : dessin d'une tuile 0,1 ms en médiane, réception 5 ms en médiane et 9,9 ms au p95 en défilement | Le transport d'ADR-0003 est confirmé sous Windows, pas encore sur les autres OS | Même relevé sous macOS et Linux |
-| Mémoire mesurée à la main sous Windows seulement (Gestionnaire des tâches, 2026-11-11) : environ 82 Mo au repos et 173 Mo en défilement d'un long PDF, WebView comprise | Critère de sortie de P2 (« mémoire/worker contrôlés ») ; une mesure à la main n'est ni répétable ni comparable d'une version à l'autre | `scripts/measure-memory.mjs` étendu à l'ouverture et au défilement, médiane de plusieurs parcours, sur les trois OS |
-| Glisser-déposer non testé automatiquement | Seul chemin d'ouverture depuis l'UI | Test natif du shell ou procédure manuelle consignée par OS |
-| Affichage non vérifié sur macOS et Linux | La CI compile et teste, elle ne regarde pas l'écran | Capture vérifiée sur chaque OS |
-| Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
+| Temps côté WebView mesuré sous Windows seulement (panneau « Mesures », 2026-11-11, PDF de 11 pages avec texte, images et formulaires) : dessin d'une tuile 0,1 ms en médiane, réception 5 ms en médiane et 9,9 ms au p95 en défilement | Le transport d'ADR-0003 est confirmé sous Windows, pas encore sur les autres OS | Même relevé sous macOS et Linux |
+| Mémoire en défilement mesurée sous Windows seulement, à la main (environ 173 Mo, 2026-11-11). Au repos et avec un document ouvert, le workflow `memory` mesure les trois OS (voir `docs/QUALITY.md`) | Critère de sortie de P2 (« mémoire/worker contrôlés ») | Même relevé en défilement sous macOS et Linux |
+| Glisser-déposer vérifié sous Windows seulement (procédure de `docs/QUALITY.md`, 2026-11-11) ; le choix du fichier est testé en Rust | Seul chemin d'ouverture depuis l'UI | Même procédure sous macOS et Linux |
+
+Levées le 2026-11-11, preuves dans `docs/QUALITY.md` : jobs CI ARM64 et macOS Intel (#52) ;
+démarrage du worker en médiane de 20 exécutions (#53) ; affichage sous macOS et Linux, vu
+sur les captures du workflow `screenshot` (#54) ; mesures « page simple et Windows
+seulement », remplacées par le relevé sur corpus (`tile_cost`), le panneau « Mesures » et le
+workflow `memory` sur les trois OS ; ouverture depuis le Finder (#55), vue sur la capture
+macOS après `open -a`, le geste à la main restant au point 6 de la procédure.
+
+### Limites reportées en P3 (décision du 2026-11-11)
+
+Elles ne bloquent pas un lecteur utile : chacune donne un résultat explicite (image signalée
+`Image`, page refusée par `limit/DecodedBytes`) ou un coût mesuré acceptable, jamais un rendu
+faux présenté comme exact. Elles restent suivies ici jusqu'à leur tranche.
+
+| Limite | Pourquoi elle compte | Sortie attendue |
+| --- | --- | --- |
 | Chaque tuile réinterprète tout le contenu de la page (le cache par document évite seulement de relire et décoder) | Avec le cache, une première page en tuiles de 256 px à l'échelle 2 (environ 45 tuiles) prend 89 ms en médiane et 336 ms au p95 ; le maximum reste de 8 s (SafeDocs, 2026-11-11, test `tile_cost`) | Liste d'affichage par page si les pages lourdes le justifient, mesurée de même |
 | Une image en ligne est décodée à chaque dessin, même dans un rendu (pas d'identifiant d'objet pour la garder) | Coût sur les pages qui répètent une image en ligne | Images en ligne clées par contenu si la mesure le justifie |
 | Images en CCITTFax, JBIG2 ou JPX signalées (`Image`), pas dessinées | 113 et 140 premières pages du corpus gardent une image non dessinée, pour un de ces filtres ou une taille au-delà de `max_image_pixels` (2026-11-11) | Filtres de P3 (ADR-0003, amendé), avec leurs propres oracles et fuzzing |
 | Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 4 premières pages du corpus (`limit/DecodedBytes`), dont une par les images de ses formulaires (2026-11-10) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
-| Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
+
+Raisons du report, dans l'ordre du tableau :
+- réinterprétation par tuile : une optimisation, pas un manque ; 89 ms en médiane pour une
+  première page avec le cache, et une réception de 5 ms en médiane en défilement sous Windows ;
+- images en ligne redécodées : aucun coût mesuré ne le justifie encore ;
+- CCITTFax, JBIG2 et JPX : filtres de P3 par ADR-0003 ; chacun demande son oracle et son fuzzing ;
+- pages au-delà de 256 Mio d'images décodées : 4 premières pages du corpus, refusées
+  explicitement ; un décodage à la résolution affichée est une tranche à part entière.
 
 ## Première tranche concrète pour Claude
 
