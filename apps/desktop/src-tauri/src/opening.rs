@@ -4,6 +4,7 @@
 //! silently. Only local files: any other URL is ignored, never fetched.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 #[cfg(any(test, target_os = "macos"))]
 use tauri::Url;
@@ -23,6 +24,40 @@ pub fn single_file_url(urls: &[Url]) -> Option<PathBuf> {
     match urls {
         [url] if url.scheme() == "file" => url.to_file_path().ok(),
         _ => None,
+    }
+}
+
+/// Files the OS asks to open while the shell starts. On macOS the Finder's
+/// request arrives as `RunEvent::Opened` at launch, before `setup` has run
+/// (opening it then panicked: no state managed yet). It is kept and opened
+/// at `Ready`; the latest request wins, as for a later one.
+#[derive(Default)]
+pub struct Launch(Mutex<LaunchState>);
+
+#[derive(Default)]
+struct LaunchState {
+    ready: bool,
+    early: Option<PathBuf>,
+}
+
+impl Launch {
+    /// Marks the shell ready; returns the file asked for before, if any.
+    pub fn ready(&self) -> Option<PathBuf> {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.ready = true;
+        state.early.take()
+    }
+
+    /// The file to open now, or `None` when it is kept until `ready`.
+    #[cfg(any(test, target_os = "macos"))]
+    pub fn request(&self, path: PathBuf) -> Option<PathBuf> {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.ready {
+            Some(path)
+        } else {
+            state.early = Some(path);
+            None
+        }
     }
 }
 
@@ -62,6 +97,21 @@ mod tests {
         ] {
             assert_eq!(single_file_url(&[Url::parse(url).unwrap()]), None, "{url}");
         }
+    }
+
+    #[test]
+    fn a_request_before_ready_is_opened_at_ready() {
+        let launch = Launch::default();
+        assert_eq!(launch.request(local("a.pdf")), None);
+        assert_eq!(launch.request(local("b.pdf")), None);
+        assert_eq!(launch.ready(), Some(local("b.pdf")));
+        assert_eq!(launch.request(local("c.pdf")), Some(local("c.pdf")));
+        assert_eq!(launch.ready(), None);
+    }
+
+    #[test]
+    fn ready_without_request_opens_nothing() {
+        assert_eq!(Launch::default().ready(), None);
     }
 
     #[test]

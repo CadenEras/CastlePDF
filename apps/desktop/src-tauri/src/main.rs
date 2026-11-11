@@ -142,6 +142,9 @@ fn open_document(app: &AppHandle, path: PathBuf) {
 
 fn main() -> ExitCode {
     let app = tauri::Builder::default()
+        // Managed before `setup`: events can reach them before it runs.
+        .manage(LastDocument::default())
+        .manage(opening::Launch::default())
         .setup(|app| {
             let handle = app.handle().clone();
             let worker =
@@ -151,7 +154,6 @@ fn main() -> ExitCode {
                     }
                 });
             app.manage(worker);
-            app.manage(LastDocument::default());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -174,10 +176,14 @@ fn main() -> ExitCode {
     match app {
         Ok(app) => {
             app.run(|app, event| match event {
-                // A file given on the command line opens once the UI is up.
+                // A file from the Finder or the command line opens once the
+                // shell is set up.
                 RunEvent::Ready => {
-                    if let Some(path) = std::env::args_os().nth(1) {
-                        open_document(app, PathBuf::from(path));
+                    let early = app.state::<opening::Launch>().ready();
+                    if let Some(path) =
+                        early.or_else(|| std::env::args_os().nth(1).map(PathBuf::from))
+                    {
+                        open_document(app, path);
                     }
                 }
                 // Finder: "Open With", a double-click or a drop on the Dock
@@ -185,7 +191,9 @@ fn main() -> ExitCode {
                 // declares the PDF document type.
                 #[cfg(target_os = "macos")]
                 RunEvent::Opened { urls } => {
-                    if let Some(path) = opening::single_file_url(&urls) {
+                    if let Some(path) = opening::single_file_url(&urls)
+                        .and_then(|path| app.state::<opening::Launch>().request(path))
+                    {
                         open_document(app, path);
                     }
                 }
