@@ -9,6 +9,8 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `scripts/measure-memory.mjs` mesure aussi l'application avec un document ouvert (argument
+  facultatif). Le workflow `memory` mesure au repos puis avec `forms.pdf`.
 - CI : **ARM64 et macOS Intel**. Les tests Rust et le build natif tournent aussi sur
   `ubuntu-24.04-arm`, `windows-11-arm` et `macos-15-intel` (`macos-latest` étant ARM64). Ce sont
   des runners standard, gratuits pour un dépôt public. rustup est installé s'il manque.
@@ -275,6 +277,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Shell : sous Windows, le worker est lancé sans console (`CREATE_NO_WINDOW`). L'application,
+  programme GUI, lui faisait attribuer une console à chaque démarrage, soit environ 0,4 s de
+  plus et peut-être une fenêtre furtive. Démarrage médian : 435 → 29 ms.
 - Fixtures de test : le sous-ensemble de Source Sans 3 (étape 5.2b) portait encore le nom
   réservé « Source » de sa licence OFL ; il est renommé « CastleTest Sans ».
 - Une police TrueType malformée (glyphe sans point mais avec des données) faisait paniquer

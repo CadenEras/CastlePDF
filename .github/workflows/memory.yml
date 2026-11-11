@@ -1,5 +1,5 @@
 name: memory
-# Indicative idle memory floor on shared hosted runners. Not a reference
+# Indicative memory, idle and with a document open, on shared hosted runners. Not a reference
 # measurement (see docs/PERFORMANCE.md); run manually when needed.
 on:
   # Not a required check: the path filter only re-validates the harness itself.
@@ -72,11 +72,15 @@ jobs:
           RUNS: ${{ inputs.runs || '10' }}
           SETTLE: ${{ inputs.settle || '5' }}
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a node scripts/measure-memory.mjs "$RUNS" "$SETTLE" | tee report.md
-          else
-            node scripts/measure-memory.mjs "$RUNS" "$SETTLE" | tee report.md
-          fi
+          # Idle, then with a document of images and forms open.
+          measure() {
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              xvfb-run -a node scripts/measure-memory.mjs "$RUNS" "$SETTLE" "$@"
+            else
+              node scripts/measure-memory.mjs "$RUNS" "$SETTLE" "$@"
+            fi
+          }
+          { measure; echo; measure tests/corpus/public/forms.pdf; } | tee report.md
           {
             echo "## ${{ matrix.os }} (runner partagé, indicatif)"
             echo

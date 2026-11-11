@@ -218,6 +218,15 @@ Temps par tuile côté WebView (panneau « Mesures » de l'application, release,
   `putImageData`) est négligeable. Le transport d'ADR-0003 (`ipc::Response` vers
   `ArrayBuffer`) n'est pas un goulet d'étranglement sous Windows.
 
+Démarrage du worker (tests ignorés `measure_worker_start`, release, Windows, 20 démarrages
+de suite, 2026-11-11) :
+- vu du shell (programme GUI, comme l'application) : médiane 435 ms avant correctif. Windows
+  donnait une console au worker, programme console lancé par un programme sans console. Avec
+  `CREATE_NO_WINDOW` : médiane 29 ms, p95 37 ms, premier démarrage 116 ms ;
+- vu d'un programme console (`pdf-worker`, étape par étape) : lancement 9 ms, réponse à la
+  poignée de main 12 ms en médiane ;
+- les 491 ms mesurées à la tranche 4 étaient donc surtout cette console.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
