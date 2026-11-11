@@ -131,7 +131,7 @@ describe("Viewer", () => {
     render(<Viewer info={INFO} />);
     await settle();
     expect(screen.getByRole("note", { name: "Rendu partiel" }).textContent).toBe(
-      "Rendu partiel : non affichés pour l'instant — texte, images et formulaires (XObjects).",
+      "Rendu partiel : non affichés pour l'instant — texte, formulaires et autres XObjects.",
     );
   });
 

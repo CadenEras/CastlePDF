@@ -180,7 +180,7 @@ impl Path {
     }
 
     /// Estimated rasteriser work to paint this path through `matrix` on a
-    /// `width` x `height` canvas, each point widened by `pad` device pixels
+    /// canvas covering `window`, each point widened by `pad` device pixels
     /// (half a stroke width, 0 for a fill or a clip). An upper-bound style
     /// estimate, in units of about one line segment or one tile:
     /// - flattening: one per segment, plus for a curve the square root of
@@ -189,9 +189,16 @@ impl Path {
     /// - strips: each segment crosses about a quarter of its device extent
     ///   (clipped to the canvas) in 4-pixel tiles;
     /// - filling: the clipped bounding box area over 1024 pixels (one wide
-    ///   tile command per 256 x 4 pixels), plus its compositing.
-    pub fn work(&self, matrix: &Matrix, pad: f64, width: f64, height: f64) -> f64 {
-        let clip = |low: f64, high: f64, size: f64| (high.min(size) - low.max(0.0)).max(0.0);
+    ///   tile command per 256 x 4 pixels), plus its compositing;
+    /// - cells: each cell of the window that the bounding box touches
+    ///   flattens and clips the path again.
+    pub fn work(&self, matrix: &Matrix, pad: f64, window: &Window) -> f64 {
+        let clip =
+            |low: f64, high: f64, start: f64, end: f64| (high.min(end) - low.max(start)).max(0.0);
+        let width = |low: f64, high: f64| clip(low, high, window.x0, window.x1);
+        let height = |low: f64, high: f64| clip(low, high, window.y0, window.y1);
+        // Flattening, done again in every cell.
+        let mut segments = 0.0;
         let mut work = 0.0;
         let mut current = Point::new(0.0, 0.0);
         let mut bounds = Bounds::EMPTY;
@@ -199,7 +206,7 @@ impl Path {
             let (points, count): ([Point; 3], usize) = match *segment {
                 Segment::MoveTo(p) => {
                     current = matrix.apply(p);
-                    work += 1.0;
+                    segments += 1.0;
                     continue;
                 }
                 Segment::LineTo(p) => ([matrix.apply(p); 3], 1),
@@ -207,7 +214,7 @@ impl Path {
                     ([matrix.apply(a), matrix.apply(b), matrix.apply(c)], 3)
                 }
                 Segment::Close => {
-                    work += 1.0;
+                    segments += 1.0;
                     continue;
                 }
             };
@@ -221,20 +228,24 @@ impl Path {
                 previous = *point;
             }
             if count == 3 {
-                work += (length * 4.0).sqrt();
+                segments += (length * 4.0).sqrt();
             }
-            let extent = clip(segment_bounds.x0 - pad, segment_bounds.x1 + pad, width)
-                + clip(segment_bounds.y0 - pad, segment_bounds.y1 + pad, height);
-            work += 1.0 + extent / 4.0;
+            let extent = width(segment_bounds.x0 - pad, segment_bounds.x1 + pad)
+                + height(segment_bounds.y0 - pad, segment_bounds.y1 + pad);
+            segments += 1.0;
+            work += extent / 4.0;
             bounds.merge(&segment_bounds);
             current = previous;
         }
+        let mut cells = 1.0;
         if bounds.x0 <= bounds.x1 {
-            let area = clip(bounds.x0 - pad, bounds.x1 + pad, width)
-                * clip(bounds.y0 - pad, bounds.y1 + pad, height);
-            work += area / 1024.0;
+            let (x0, x1) = (bounds.x0 - pad, bounds.x1 + pad);
+            let (y0, y1) = (bounds.y0 - pad, bounds.y1 + pad);
+            work += width(x0, x1) * height(y0, y1) / 1024.0;
+            let count = |span: Option<(i64, i64)>| span.map_or(0.0, |(a, b)| (b - a + 1) as f64);
+            cells = (count(window.columns(x0, x1)) * count(window.rows(y0, y1))).max(1.0);
         }
-        work
+        work + segments * cells
     }
 
     /// Length of the control polygon in user space: an upper bound of the
@@ -264,6 +275,47 @@ impl Path {
             }
         }
         length
+    }
+}
+
+/// The device pixels a canvas covers, in the coordinates of the whole page
+/// rendering, cut into square cells of side `cell` from its top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Window {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub cell: f64,
+    /// How far each cell clips beyond its sides.
+    pub margin: f64,
+}
+
+impl Window {
+    /// The columns of cells (numbered from the page's left side) whose
+    /// clipping window, `[c × cell − margin, (c + 1) × cell + margin]`,
+    /// meets `low..=high`, within this window; `None` if there is none.
+    /// The rasteriser draws in exactly these cells, so that the work
+    /// estimate counts them.
+    pub fn columns(&self, low: f64, high: f64) -> Option<(i64, i64)> {
+        self.cells(low, high, self.x0, self.x1)
+    }
+
+    /// The rows of cells, as `columns`.
+    pub fn rows(&self, low: f64, high: f64) -> Option<(i64, i64)> {
+        self.cells(low, high, self.y0, self.y1)
+    }
+
+    fn cells(&self, low: f64, high: f64, start: f64, end: f64) -> Option<(i64, i64)> {
+        // Cell c meets the range when c × cell − margin ≤ high and
+        // low ≤ (c + 1) × cell + margin. Casts saturate.
+        let first = ((low - self.margin) / self.cell - 1.0)
+            .ceil()
+            .max((start / self.cell).floor());
+        let last = ((high + self.margin) / self.cell)
+            .floor()
+            .min((end / self.cell).ceil() - 1.0);
+        (first <= last).then_some((first as i64, last as i64))
     }
 }
 
@@ -334,8 +386,15 @@ mod tests {
 
     #[test]
     fn work_counts_curves_crossings_and_area() {
-        let canvas = (1000.0, 1000.0);
-        let work = |path: &Path, pad| path.work(&Matrix::IDENTITY, pad, canvas.0, canvas.1);
+        let canvas = Window {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 1000.0,
+            y1: 1000.0,
+            cell: 1000.0,
+            margin: 0.0,
+        };
+        let work = |path: &Path, pad| path.work(&Matrix::IDENTITY, pad, &canvas);
         let mut path = Path::default();
         // A line outside the canvas: one move, one segment, nothing covered.
         path.move_to(Point::new(-5000.0, -10.0));
@@ -360,6 +419,68 @@ mod tests {
             Point::new(0.0, 0.0),
         );
         assert!(work(&path, 0.0) > 1e6);
+        // Cut into 250-pixel cells, a path spanning all 16 flattens 16 times;
+        // the window's position counts, not its origin.
+        path.clear();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(1e12, 1e12));
+        let cells = Window {
+            cell: 250.0,
+            ..canvas
+        };
+        let whole = path.work(&Matrix::IDENTITY, 0.0, &canvas);
+        assert_eq!(
+            path.work(&Matrix::IDENTITY, 0.0, &cells),
+            whole + 2.0 * 15.0
+        );
+        let shifted = Window {
+            x0: 500.0,
+            y0: 500.0,
+            x1: 1500.0,
+            y1: 1500.0,
+            cell: 250.0,
+            margin: 0.0,
+        };
+        // From (500, 500): the line covers 4 x 4 cells of this window too.
+        assert_eq!(
+            path.work(&Matrix::IDENTITY, 0.0, &shifted),
+            1.0 + 1.0 + 2000.0 / 4.0 + 1e6 / 1024.0 + 2.0 * 15.0
+        );
+    }
+
+    #[test]
+    fn cells_count_their_margin_and_inclusive_sides() {
+        let window = Window {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 1000.0,
+            y1: 600.0,
+            cell: 256.0,
+            margin: 2.0,
+        };
+        // Inside cell 0, but within 2 pixels of cell 1.
+        assert_eq!(window.columns(100.0, 255.0), Some((0, 1)));
+        assert_eq!(window.columns(100.0, 253.0), Some((0, 0)));
+        // Just right of cell 0's side: still in its window.
+        assert_eq!(window.columns(256.0, 300.0), Some((0, 1)));
+        assert_eq!(window.columns(258.0, 300.0), Some((0, 1)));
+        assert_eq!(window.columns(258.5, 300.0), Some((1, 1)));
+        // Clamped to the window: 1000 pixels are cells 0 to 3.
+        assert_eq!(window.columns(-1e12, 1e12), Some((0, 3)));
+        assert_eq!(window.columns(2000.0, 3000.0), None);
+        assert_eq!(window.rows(590.0, 700.0), Some((2, 2)));
+        // A square at a corner of four cells counts them.
+        let mut path = Path::default();
+        path.rectangle(254.0, 254.0, 4.0, 4.0);
+        let single = Window {
+            cell: 1e6,
+            ..window
+        };
+        assert_eq!(
+            path.work(&Matrix::IDENTITY, 0.0, &window),
+            // Five segments (move, three lines, close), flattened in 3 more cells.
+            path.work(&Matrix::IDENTITY, 0.0, &single) + 3.0 * 5.0
+        );
     }
 
     #[test]

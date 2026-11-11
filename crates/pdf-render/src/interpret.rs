@@ -5,11 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, PdfFile, Source};
+use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, PdfFile, Source, Stream};
 
 use crate::content::{ContentReader, Operation};
 use crate::error::{ContentErrorKind, Error, RenderLimitKind};
-use crate::geometry::{Matrix, Path, Point, Segment};
+use crate::geometry::{Matrix, Path, Point, Segment, Window};
 use crate::image;
 use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
 use crate::text::{self, Selected, TextState, font};
@@ -21,6 +21,15 @@ const MAX_CACHED_SEGMENTS: usize = 1_000_000;
 /// Bytes of decoded images kept by one rendering; images beyond are decoded
 /// again when drawn again.
 const MAX_CACHED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+/// Most form XObjects drawn inside one another (8.10); a deeper form is
+/// skipped and reported (`XObject`).
+const MAX_FORM_DEPTH: usize = 16;
+/// Bytes of decoded form content kept by one rendering; forms beyond are
+/// read and decoded again when drawn again.
+const MAX_CACHED_FORM_BYTES: usize = 64 * 1024 * 1024;
+/// Scopes of forms with their own resources kept by one rendering, so that
+/// a form drawn again reuses what it read (fonts, colour spaces...).
+const MAX_FORM_SCOPES: usize = 256;
 /// Cancellation is checked every this many codes shown.
 const CANCEL_CHECK_CODES: u64 = 4096;
 
@@ -133,6 +142,34 @@ struct ExtGState {
     skipped: Vec<Unsupported>,
 }
 
+/// What names in a content stream refer to: a resource dictionary and what
+/// was read from it. A form XObject with its own `/Resources` gets a scope
+/// of its own (8.10.1); caches keyed by object (fonts, glyphs, images,
+/// forms) stay shared.
+#[derive(Default)]
+struct Scope {
+    resources: Option<Dictionary>,
+    categories: BTreeMap<&'static [u8], Dictionary>,
+    color_spaces: BTreeMap<Vec<u8>, ColorSpace>,
+    ext_g_states: BTreeMap<Vec<u8>, ExtGState>,
+    fonts: BTreeMap<Vec<u8>, Selected>,
+}
+
+/// A form XObject as read once (8.10.1): what drawing it needs.
+struct Form {
+    matrix: Matrix,
+    bbox: [f64; 4],
+    /// Its own resources; `None`: those of the enclosing content.
+    resources: Option<Dictionary>,
+    /// A transparency group (11.6.6): `Some(knockout)`.
+    group: Option<bool>,
+    /// `/Group` present but not a readable dictionary.
+    damaged_group: bool,
+    /// `/OC`: optional content, possibly hidden, is drawn.
+    optional: bool,
+    content: Arc<Vec<u8>>,
+}
+
 /// Interprets the content of one page onto a canvas.
 pub(crate) struct Interpreter<'a, S> {
     file: &'a PdfFile<S>,
@@ -140,7 +177,8 @@ pub(crate) struct Interpreter<'a, S> {
     resources: Option<Dictionary>,
     limits: RenderLimits,
     canvas: Canvas,
-    canvas_size: (f64, f64),
+    /// The pixels the canvas covers, in the page rendering, for work estimates.
+    window: Window,
     base: Matrix,
     state: GraphicsState,
     saved: Vec<GraphicsState>,
@@ -175,6 +213,16 @@ pub(crate) struct Interpreter<'a, S> {
     /// image that cannot be drawn keeps the capability it lacks.
     images: BTreeMap<(ObjectId, [u8; 3]), Result<Arc<vello_cpu::Pixmap>, Unsupported>>,
     cached_image_bytes: usize,
+    /// Forms being drawn, outermost first: a form inside itself is skipped.
+    forms: Vec<ObjectId>,
+    /// Saved states below this depth belong to the page or an enclosing
+    /// form: a `Q` cannot restore them.
+    floor: usize,
+    /// Forms read in this rendering; `None` for one that cannot be drawn.
+    forms_read: BTreeMap<ObjectId, Option<Arc<Form>>>,
+    cached_form_bytes: usize,
+    /// Scopes of the forms with their own resources, between two draws.
+    form_scopes: BTreeMap<ObjectId, Scope>,
 }
 
 impl<'a, S: Source> Interpreter<'a, S> {
@@ -186,14 +234,14 @@ impl<'a, S: Source> Interpreter<'a, S> {
         canvas: Canvas,
         base: Matrix,
     ) -> Self {
-        let canvas_size = canvas.size();
+        let window = canvas.window();
         Self {
             file,
             page,
             resources,
             limits,
             canvas,
-            canvas_size,
+            window,
             base,
             state: GraphicsState {
                 ctm: Matrix::IDENTITY,
@@ -232,6 +280,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
             cached_segments: 0,
             images: BTreeMap::new(),
             cached_image_bytes: 0,
+            forms: Vec::new(),
+            floor: 0,
+            forms_read: BTreeMap::new(),
+            cached_form_bytes: 0,
+            form_scopes: BTreeMap::new(),
         }
     }
 
@@ -247,17 +300,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         // The initial colour spaces are DeviceGray: apply `DefaultGray`.
         self.state.fill.space = self.device(ColorSpace::Gray, 0, budget)?;
         self.state.stroke.space = self.state.fill.space;
-        let mut reader = ContentReader::new(content, self.page);
-        while let Some(operation) = reader.next(budget)? {
-            self.operations += 1;
-            if self.operations > self.limits.max_operations {
-                return Err(Error::LimitExceeded {
-                    kind: RenderLimitKind::Operations,
-                    limit: self.limits.max_operations,
-                });
-            }
-            self.execute(&operation, budget)?;
-        }
+        self.run_content(content, budget)?;
         if self.in_text
             || !self.path.is_empty()
             || self.pending_clip.is_some()
@@ -270,8 +313,67 @@ impl<'a, S: Source> Interpreter<'a, S> {
         Ok((self.canvas, self.skipped))
     }
 
+    /// Executes every operation of `content`, counted against
+    /// `max_operations` with those of the page and of every form.
+    fn run_content(&mut self, content: &[u8], budget: &mut Budget) -> Result<(), Error> {
+        let mut reader = ContentReader::new(content, self.page);
+        while let Some(operation) = reader.next(budget)? {
+            self.operations += 1;
+            if self.operations > self.limits.max_operations {
+                return Err(Error::LimitExceeded {
+                    kind: RenderLimitKind::Operations,
+                    limit: self.limits.max_operations,
+                });
+            }
+            self.execute(&operation, budget)?;
+        }
+        Ok(())
+    }
+
     fn error(&self, offset: u64, kind: ContentErrorKind) -> Error {
         content_error(self.page, offset, kind)
+    }
+
+    /// `q`: saves the graphics state.
+    fn save(&mut self) -> Result<(), Error> {
+        let depth = u32::try_from(self.saved.len()).unwrap_or(u32::MAX);
+        if depth >= self.limits.max_state_depth {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::StateDepth,
+                limit: u64::from(self.limits.max_state_depth),
+            });
+        }
+        let mut saved = self.state.clone();
+        saved.clips = 0;
+        let current = std::mem::replace(&mut self.state, saved);
+        self.saved.push(current);
+        Ok(())
+    }
+
+    /// `Q`: restores the last saved state and removes the clips set
+    /// since; `false` if no state above `floor` is saved.
+    fn restore(&mut self) -> bool {
+        if self.saved.len() <= self.floor {
+            return false;
+        }
+        let Some(previous) = self.saved.pop() else {
+            return false;
+        };
+        for _ in 0..self.state.clips {
+            self.canvas.pop_clip();
+        }
+        self.active_clips -= self.state.clips;
+        self.state = previous;
+        true
+    }
+
+    /// Exchanges the current scope with `scope`.
+    fn swap_scope(&mut self, scope: &mut Scope) {
+        std::mem::swap(&mut self.resources, &mut scope.resources);
+        std::mem::swap(&mut self.categories, &mut scope.categories);
+        std::mem::swap(&mut self.color_spaces, &mut scope.color_spaces);
+        std::mem::swap(&mut self.ext_g_states, &mut scope.ext_g_states);
+        std::mem::swap(&mut self.fonts, &mut scope.fonts);
     }
 
     fn execute(&mut self, op: &Operation<'_>, budget: &mut Budget) -> Result<(), Error> {
@@ -307,28 +409,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
             // Special graphics state (8.4.2).
             b"q" => {
                 no_operands(ops).ok_or_else(bad)?;
-                let depth = u32::try_from(self.saved.len()).unwrap_or(u32::MAX);
-                if depth >= self.limits.max_state_depth {
-                    return Err(Error::LimitExceeded {
-                        kind: RenderLimitKind::StateDepth,
-                        limit: u64::from(self.limits.max_state_depth),
-                    });
-                }
-                let mut saved = self.state.clone();
-                saved.clips = 0;
-                let current = std::mem::replace(&mut self.state, saved);
-                self.saved.push(current);
+                self.save()?;
             }
             b"Q" => {
                 no_operands(ops).ok_or_else(bad)?;
-                let Some(previous) = self.saved.pop() else {
+                if !self.restore() {
                     return Err(self.error(at, ContentErrorKind::UnbalancedRestore));
-                };
-                for _ in 0..self.state.clips {
-                    self.canvas.pop_clip();
                 }
-                self.active_clips -= self.state.clips;
-                self.state = previous;
             }
             b"cm" => {
                 let [a, b, c, d, e, f] = numbers(ops).ok_or_else(bad)?;
@@ -661,9 +748,14 @@ impl<'a, S: Source> Interpreter<'a, S> {
         Ok(())
     }
 
-    /// `Do` (8.8): draws an image XObject; a form XObject is not drawn yet
-    /// (`XObject`). An image is decoded once per rendering.
+    /// `Do` (8.8): draws an image or a form XObject. An image is decoded
+    /// once per rendering.
     fn x_object(&mut self, object: &Object, at: u64, budget: &mut Budget) -> Result<(), Error> {
+        if let Object::Reference(id) = object
+            && let Some(form) = self.forms_read.get(id).cloned()
+        {
+            return self.draw_form(*id, form, budget);
+        }
         // An XObject that is not a readable stream is skipped and reported,
         // as before images were drawn; limits and cancellation still stop.
         let stream = match object {
@@ -684,16 +776,34 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let Object::Reference(id) = object else {
             return Ok(());
         };
-        if stream.dictionary.get(b"Subtype").and_then(Object::as_name) != Some(b"Image") {
-            self.skipped.insert(Unsupported::XObject);
-            return Ok(());
+        match stream.dictionary.get(b"Subtype").and_then(Object::as_name) {
+            Some(b"Image") => {}
+            Some(b"Form") => {
+                let form = self.read_form(*id, &stream, budget)?;
+                return self.draw_form(*id, form, budget);
+            }
+            _ => {
+                self.skipped.insert(Unsupported::XObject);
+                return Ok(());
+            }
         }
-        // A stencil mask takes the fill colour: cached per colour.
+        // A stencil mask takes the fill colour: cached per colour. An image
+        // whose colour space is a resource name depends on the scope it is
+        // drawn in: not cached.
         let Some(fill) = self.stencil_fill(&stream.dictionary) else {
             return Ok(());
         };
         let key = (*id, fill);
-        let image = match self.images.get(&key) {
+        let cacheable = !matches!(
+            stream.dictionary.get(b"ColorSpace"),
+            Some(Object::Name(name)) if !is_device_name(name)
+        );
+        let cached = if cacheable {
+            self.images.get(&key).cloned()
+        } else {
+            None
+        };
+        let image = match cached {
             Some(cached) => cached.clone(),
             None => {
                 let Some(space) = self.image_space(&stream.dictionary, at, budget)? else {
@@ -718,7 +828,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 let bytes = image
                     .as_ref()
                     .map_or(0, |p| usize::from(p.width()) * usize::from(p.height()) * 4);
-                if self.cached_image_bytes + bytes <= MAX_CACHED_IMAGE_BYTES {
+                if cacheable && self.cached_image_bytes + bytes <= MAX_CACHED_IMAGE_BYTES {
                     self.cached_image_bytes += bytes;
                     self.images.insert(key, image.clone());
                 }
@@ -734,6 +844,209 @@ impl<'a, S: Source> Interpreter<'a, S> {
         };
         let interpolate = stream.dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
         self.paint_image(&image, interpolate, at)
+    }
+
+    /// Reads form `id` once: `None` if it cannot be drawn (no `/BBox`, an
+    /// invalid `/Matrix`, content that cannot be decoded). Kept for the
+    /// rendering while its content fits `MAX_CACHED_FORM_BYTES`.
+    fn read_form(
+        &mut self,
+        id: ObjectId,
+        stream: &Stream,
+        budget: &mut Budget,
+    ) -> Result<Option<Arc<Form>>, Error> {
+        let form = self.form_parts(stream, budget)?.map(Arc::new);
+        let bytes = form.as_ref().map_or(0, |form| form.content.len());
+        if self.cached_form_bytes + bytes <= MAX_CACHED_FORM_BYTES {
+            self.cached_form_bytes += bytes;
+            self.forms_read.insert(id, form.clone());
+        }
+        Ok(form)
+    }
+
+    fn form_parts(&mut self, stream: &Stream, budget: &mut Budget) -> Result<Option<Form>, Error> {
+        let dictionary = &stream.dictionary;
+        let matrix = match dictionary.get(b"Matrix") {
+            None => Some(Matrix::IDENTITY),
+            Some(Object::Array(items)) => {
+                numbers::<6>(items).map(|[a, b, c, d, e, f]| Matrix::new(a, b, c, d, e, f))
+            }
+            Some(_) => None,
+        };
+        let bbox = match dictionary.get(b"BBox") {
+            Some(Object::Array(items)) => numbers::<4>(items),
+            _ => None,
+        };
+        let (Some(matrix), Some(bbox)) = (matrix.filter(Matrix::is_finite), bbox) else {
+            return Ok(None);
+        };
+        // A missing, null or unreadable /Resources: the enclosing ones.
+        let resources = match dictionary.get(b"Resources") {
+            None => None,
+            Some(object) => text::resolve_dictionary(self.file, object, budget)?,
+        };
+        let (group, damaged_group) = match dictionary.get(b"Group") {
+            None | Some(Object::Null) => (None, false),
+            Some(object) => match text::resolve_dictionary(self.file, object, budget)? {
+                Some(group)
+                    if group.get(b"S").and_then(Object::as_name) == Some(b"Transparency") =>
+                {
+                    (Some(group.get(b"K") == Some(&Object::Boolean(true))), false)
+                }
+                // Another group subtype: none is defined.
+                Some(_) => (None, false),
+                None => (None, true),
+            },
+        };
+        let content = match self.file.decoded_stream_data(stream, budget) {
+            Ok(content) => Arc::new(content),
+            Err(
+                pdf_syntax::Error::Unsupported(_)
+                | pdf_syntax::Error::Malformed { .. }
+                | pdf_syntax::Error::Truncated { .. },
+            ) => return Ok(None),
+            Err(other) => return Err(Error::Syntax(other)),
+        };
+        Ok(Some(Form {
+            matrix,
+            bbox,
+            resources,
+            group,
+            damaged_group,
+            optional: dictionary.get(b"OC").is_some(),
+            content,
+        }))
+    }
+
+    /// Draws a form XObject (8.10): its content with its `/Matrix`, clipped
+    /// to its `/BBox`, with its own resources if it has them (otherwise
+    /// those of the enclosing content, page or form), inside a saved
+    /// graphics state; marked content and compatibility sections must be
+    /// balanced within it. A transparency group (11.6.6) starts with alphas
+    /// of 1 and is composited as a whole with the fill alpha; a knockout
+    /// group is drawn as a non-knockout one and reported (`BlendMode`), as
+    /// is a damaged `/Group`.
+    ///
+    /// A form that cannot be drawn (`form` is `None`, nested too deep or
+    /// inside itself, out of range) is skipped, and one with invalid content
+    /// drawn up to its error; both are reported (`XObject`) and affect only
+    /// themselves. The clip and the group layer count against `max_clips`
+    /// and `max_path_work`; limits and cancellation stop the rendering.
+    fn draw_form(
+        &mut self,
+        id: ObjectId,
+        form: Option<Arc<Form>>,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        let Some(form) = form else {
+            self.skipped.insert(Unsupported::XObject);
+            return Ok(());
+        };
+        if self.forms.len() >= MAX_FORM_DEPTH || self.forms.contains(&id) {
+            self.skipped.insert(Unsupported::XObject);
+            return Ok(());
+        }
+        let ctm = form.matrix.then(&self.state.ctm);
+        let [x0, y0, x1, y1] = form.bbox;
+        let mut clip = Path::default();
+        clip.rectangle(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs());
+        let device = ctm.then(&self.base);
+        if !(device.is_finite() && clip.is_within(&device, 0.0, MAX_DEVICE_COORDINATE)) {
+            self.skipped.insert(Unsupported::XObject);
+            return Ok(());
+        }
+        if self.active_clips >= self.limits.max_clips {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::Clips,
+                limit: u64::from(self.limits.max_clips),
+            });
+        }
+        let work = clip.work(&device, 0.0, &self.window);
+        self.charge_work(work)?;
+        let alpha = self.state.fill.alpha;
+        let layer = form.group.is_some() && alpha < 1.0;
+        if layer {
+            // Compositing the layer covers the same area again.
+            self.charge_work(work)?;
+        }
+        if form.optional {
+            self.skipped.insert(Unsupported::OptionalContent);
+        }
+        if form.group == Some(true) || form.damaged_group {
+            self.skipped.insert(Unsupported::BlendMode);
+        }
+
+        // Enter: a saved state the content cannot restore, the form's
+        // coordinates, its bounding box as a clip, the group's layer.
+        self.save()?;
+        let outer_floor = std::mem::replace(&mut self.floor, self.saved.len());
+        self.state.ctm = ctm;
+        self.canvas.push_clip(&clip, &device, false);
+        self.state.clips += 1;
+        self.active_clips += 1;
+        if form.group.is_some() {
+            self.state.fill.alpha = 1.0;
+            self.state.stroke.alpha = 1.0;
+        }
+        if layer {
+            self.canvas.push_opacity(alpha);
+        }
+        let outer = (
+            std::mem::take(&mut self.path),
+            self.pending_clip.take(),
+            std::mem::take(&mut self.marked_content),
+            std::mem::take(&mut self.compatibility),
+        );
+        let mut scope = form.resources.as_ref().map(|resources| {
+            self.form_scopes.remove(&id).unwrap_or_else(|| Scope {
+                resources: Some(resources.clone()),
+                ..Scope::default()
+            })
+        });
+        if let Some(scope) = &mut scope {
+            self.swap_scope(scope);
+        }
+        self.forms.push(id);
+
+        let result = self.run_content(&form.content, budget);
+
+        // Leave, whatever the content left open: its states, text object,
+        // path, marked content; then the layer and the form's own state.
+        self.forms.pop();
+        if let Some(mut scope) = scope {
+            self.swap_scope(&mut scope);
+            if self.form_scopes.len() < MAX_FORM_SCOPES {
+                self.form_scopes.insert(id, scope);
+            }
+        }
+        while self.saved.len() > self.floor {
+            self.restore();
+        }
+        if layer {
+            self.canvas.pop_layer();
+        }
+        self.floor = outer_floor;
+        self.restore();
+        self.in_text = false;
+        (
+            self.path,
+            self.pending_clip,
+            self.marked_content,
+            self.compatibility,
+        ) = outer;
+        match result {
+            Ok(()) => Ok(()),
+            Err(
+                Error::Content { .. }
+                | Error::Syntax(
+                    pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. },
+                ),
+            ) => {
+                self.skipped.insert(Unsupported::XObject);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// `BI ... ID ... EI` (8.9.7): an inline image, decoded each time it is
@@ -833,8 +1146,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if !matrix.is_finite() || !unit.is_within(&matrix, 0.0, MAX_DEVICE_COORDINATE) {
             return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
         }
-        let (width, height) = self.canvas_size;
-        self.charge_work(unit.work(&matrix, 0.0, width, height))?;
+        self.charge_work(unit.work(&matrix, 0.0, &self.window))?;
         self.canvas
             .draw_image(image, &matrix, self.state.fill.alpha, interpolate);
         Ok(())
@@ -1054,7 +1366,6 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// Paints the current path, applies a pending clip, then ends the path.
     fn paint(&mut self, at: u64, fill: Option<bool>, stroke: bool) -> Result<(), Error> {
         let matrix = self.state.ctm.then(&self.base);
-        let (width, height) = self.canvas_size;
         if !self.path.is_empty() {
             let pad = if stroke {
                 self.stroke_pad(&matrix)
@@ -1065,7 +1376,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
             }
             if let Some(even_odd) = fill {
-                self.charge_work(self.path.work(&matrix, 0.0, width, height))?;
+                self.charge_work(self.path.work(&matrix, 0.0, &self.window))?;
                 match self.state.fill.rgba() {
                     Ok(color) => self.canvas.fill(&self.path, &matrix, even_odd, color),
                     Err(capability) => {
@@ -1098,7 +1409,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     limit: u64::from(self.limits.max_clips),
                 });
             }
-            self.charge_work(self.path.work(&matrix, 0.0, width, height))?;
+            self.charge_work(self.path.work(&matrix, 0.0, &self.window))?;
             self.canvas.push_clip(&self.path, &matrix, even_odd);
             self.state.clips += 1;
             self.active_clips += 1;
@@ -1131,14 +1442,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// (dashes are cut in user space, so they are counted there).
     fn stroke_work(&self, matrix: &Matrix, pad: f64) -> f64 {
         let style = &self.state.style;
-        let (width, height) = self.canvas_size;
         let period: f64 = style.dashes.iter().sum();
         let dashes = if period > 0.0 {
             self.path.polygon_length() / period * style.dashes.len() as f64
         } else {
             0.0
         };
-        3.0 * self.path.work(matrix, pad, width, height) + 4.0 * dashes
+        3.0 * self.path.work(matrix, pad, &self.window) + 4.0 * dashes
     }
 
     fn charge_work(&mut self, work: f64) -> Result<(), Error> {

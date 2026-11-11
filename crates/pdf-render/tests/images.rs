@@ -264,7 +264,8 @@ fn what_is_not_drawn_is_reported() {
         assert_eq!(skipped(&page), [expected], "{image}");
         assert_eq!(at(&page, 100, 100), [255, 255, 255], "{image}");
     }
-    // A form XObject is not drawn yet.
+    // A form XObject without its required /BBox is not drawn (forms:
+    // tests/forms.rs).
     let mut form = with_image("", "/BitsPerComponent 8 /Width 1 /Height 1", &[0], &[]);
     let text = String::from_utf8_lossy(&form).replace("/Subtype /Image", "/Subtype /Form");
     form = text.into_bytes();
@@ -324,10 +325,7 @@ fn image_tiles_assemble_into_the_page() {
                 .bitmap
                 .pixel(area.x + x, area.y + y)
                 .expect("page pixel");
-            assert!(
-                got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
-                "({x}, {y}) {got:?} != {want:?}"
-            );
+            assert_eq!(got, want, "({x}, {y}) {got:?} != {want:?}");
         }
     }
 }

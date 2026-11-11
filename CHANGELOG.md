@@ -9,6 +9,34 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **XObjects de formulaire** (ISO 32000-2, 8.10). `Do` dessine un
+  formulaire :
+  - avec sa `/Matrix`, découpé à sa `/BBox` ;
+  - avec ses propres ressources s'il en a, sinon celles du contenu qui l'appelle ;
+  - dans un état graphique sauvegardé que son contenu ne peut pas restaurer.
+
+  Un **groupe de transparence** commence avec des alphas à 1 et se compose en entier avec
+  l'alpha de remplissage, par une couche d'opacité de `vello_cpu`. Un groupe à
+  élimination (`/K true`) est dessiné comme un groupe ordinaire et signalé (`BlendMode`).
+
+  Un formulaire est lu une fois par rendu, et ses ressources sont relues une seule fois
+  d'un appel à l'autre. La découpe et la couche comptent dans `max_clips` et
+  `max_path_work`, et les opérations dans `max_operations`.
+
+  Un formulaire endommagé, invalide, imbriqué à plus de 16 niveaux ou appelé par
+  lui-même est sauté, ou dessiné jusqu'à son erreur. Il est signalé (`XObject`) et
+  n'affecte que lui.
+
+  Une image dont l'espace de couleur nomme une ressource n'est plus gardée en cache entre
+  deux formulaires. Fixture `forms.pdf`, identique à `pdftoppm`.
+- `pdf-render` : **tuiles identiques à la page**. Le canevas est découpé en cellules
+  de 256 px (`CELL_SIDE`), sur une grille fixée au coin de la page, chacune rasterisée
+  avec sa propre origine à partir des coordonnées de la page.
+  - `render_area` donne maintenant exactement les pixels de `render_page`. Avant, une
+    tuile pouvait s'écarter de 1 niveau par dessin, cumulé là où des bords se
+    superposent (amendement d'ADR-0003).
+  - `max_pixels` porte sur les cellules touchées par une zone.
+  - `max_path_work` compte l'aplatissement une fois par cellule touchée.
 - `pdf-render` : **images en ligne** (ADR-0005, étape 5.4b). `BI … ID … EI` est dessiné
   comme une image XObject, avec les mêmes espaces de couleur, profondeurs, masques de
   pochoir, filtres et limites. Les abréviations d'ISO 32000-2 (8.9.7) sont développées :

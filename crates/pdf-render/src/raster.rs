@@ -1,9 +1,11 @@
 //! The only module that touches `vello_cpu` (ADR-0003): replacing the
 //! rasteriser, for example by `tiny-skia`, means rewriting this file.
 //!
-//! The adapter only uses fills, strokes and the clip stack. It never pushes
-//! a layer: `vello_cpu` asserts that every layer is popped before rendering,
-//! whereas pending clip paths are allowed.
+//! The adapter uses fills, strokes, the clip stack and opacity layers (one
+//! per transparency group). `vello_cpu` asserts that every layer is popped
+//! before rendering, whereas pending clip paths are allowed: the
+//! interpreter pops the layer of a form whatever its content does, before
+//! the form's own state is restored. Clips and layers are separate stacks.
 //!
 //! Every path reaches `vello_cpu` already in device space, flattened and
 //! clipped to the canvas (plus `MARGIN`), in double precision. `vello_cpu`
@@ -23,7 +25,7 @@ use vello_cpu::kurbo::{
 use vello_cpu::peniko::{Extend, Fill, ImageAlphaType, ImageQuality, ImageSampler};
 use vello_cpu::{Image, ImageSource, PixelMetadata, Pixmap, RenderContext, Resources};
 
-use crate::geometry::{Matrix, Path, Segment};
+use crate::geometry::{Matrix, Path, Segment, Window};
 
 /// Colour with straight alpha, components in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,53 +75,73 @@ const TOLERANCE: f64 = 0.25;
 /// any pixel of the canvas, yet stay clear of its border.
 const MARGIN: f64 = 2.0;
 
-pub(crate) struct Canvas {
+/// Side of the square cells a canvas is cut into, on a grid fixed to the
+/// top-left corner of the page rendering: the side of the viewer's tiles,
+/// so that a tile is one cell.
+pub(crate) const CELL: u32 = 256;
+
+/// One cell: its own `vello_cpu` context, whose origin is the cell's
+/// top-left corner.
+struct Cell {
     context: RenderContext,
+    /// Top-left corner in pixels of the whole page rendering.
+    x: u32,
+    y: u32,
     width: u16,
     height: u16,
 }
 
-impl Canvas {
-    /// A canvas filled with opaque white, the paper colour.
-    pub fn new(width: u16, height: u16) -> Self {
-        let mut context = RenderContext::new(width, height);
-        context.set_paint(AlphaColor::<Srgb>::WHITE);
-        context.fill_rect(&Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+/// A rectangle of cells, by column and row numbers (inclusive); empty when
+/// a first number exceeds the last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    columns: (i64, i64),
+    rows: (i64, i64),
+}
+
+impl Span {
+    const EMPTY: Self = Self {
+        columns: (0, -1),
+        rows: (0, -1),
+    };
+
+    fn meet(self, other: Self) -> Self {
         Self {
-            context,
-            width,
-            height,
+            columns: (
+                self.columns.0.max(other.columns.0),
+                self.columns.1.min(other.columns.1),
+            ),
+            rows: (self.rows.0.max(other.rows.0), self.rows.1.min(other.rows.1)),
         }
     }
+}
 
-    /// Width and height in pixels.
-    pub fn size(&self) -> (f64, f64) {
-        (f64::from(self.width), f64::from(self.height))
+impl Cell {
+    /// The cell's clipping window, in pixels of the page rendering.
+    fn window(&self) -> Rect {
+        let (x, y) = (f64::from(self.x), f64::from(self.y));
+        Rect::new(
+            x - MARGIN,
+            y - MARGIN,
+            x + f64::from(self.width) + MARGIN,
+            y + f64::from(self.height) + MARGIN,
+        )
     }
 
-    pub fn fill(&mut self, path: &Path, matrix: &Matrix, even_odd: bool, color: Rgba) {
-        let device = self.device_polygons(bez_path(path), affine(matrix));
-        self.context.set_transform(Affine::IDENTITY);
-        self.context.set_fill_rule(fill_rule(even_odd));
-        self.context.set_paint(paint(color));
-        self.context.fill_path(&device);
-    }
-
-    /// `path` through `transform`, flattened and clipped to the canvas
-    /// window: closed polygons in device space.
-    fn device_polygons(&self, path: BezPath, transform: Affine) -> BezPath {
-        let window = Rect::new(
-            -MARGIN,
-            -MARGIN,
-            f64::from(self.width) + MARGIN,
-            f64::from(self.height) + MARGIN,
-        );
+    /// `path` through `transform` (to pixels of the page rendering),
+    /// flattened, clipped to the cell's window, then moved to the cell's
+    /// origin: closed polygons in the cell's device space. Done in double
+    /// precision from the page's coordinates, the same way whatever area
+    /// is rendered.
+    fn polygons(&self, path: &BezPath, transform: Affine) -> BezPath {
+        let window = self.window();
+        let (dx, dy) = (f64::from(self.x), f64::from(self.y));
         let mut out = BezPath::new();
         let mut polygon: Vec<KPoint> = Vec::new();
         let flush = |polygon: &mut Vec<KPoint>, out: &mut BezPath| {
             let clipped = clip_polygon(polygon, window);
             polygon.clear();
-            let mut points = clipped.into_iter();
+            let mut points = clipped.into_iter().map(|p| KPoint::new(p.x - dx, p.y - dy));
             if let Some(first) = points.next() {
                 out.move_to(first);
                 for point in points {
@@ -128,7 +150,7 @@ impl Canvas {
                 out.close_path();
             }
         };
-        kurbo::flatten(path.into_iter().map(|el| transform * el), TOLERANCE, |el| {
+        kurbo::flatten(path.iter().map(|el| transform * el), TOLERANCE, |el| {
             match el {
                 PathEl::MoveTo(point) => {
                     flush(&mut polygon, &mut out);
@@ -143,6 +165,175 @@ impl Canvas {
         flush(&mut polygon, &mut out);
         out
     }
+}
+
+/// The canvas of an area of the page rendering: the cells it touches, each
+/// rasterised on its own (see the module documentation).
+pub(crate) struct Canvas {
+    /// Row by row.
+    cells: Vec<Cell>,
+    /// All the cells.
+    all: Span,
+    /// The cells each clip pushed was pushed on: those the clip path may
+    /// touch among those visible then. The others are clipped out, so the
+    /// visible cells are those of the last clip. A clip, a layer or a
+    /// drawing only goes to the visible cells it may touch.
+    clips: Vec<Span>,
+    /// The cells each layer pushed was pushed on.
+    layers: Vec<Span>,
+    /// The area, in pixels of the page rendering.
+    x: u32,
+    y: u32,
+    width: u16,
+    height: u16,
+    window: Window,
+}
+
+/// Pixels of the cells a canvas for that area has, all rasterised
+/// whatever the area: those of whole cells of the grid, cut at the page's
+/// sides. Computed before any allocation.
+pub(crate) fn cell_pixels(page: (u16, u16), x: u32, y: u32, width: u16, height: u16) -> u64 {
+    let side = |start: u32, length: u16, end: u16| {
+        let first = start / CELL * CELL;
+        let last = ((start + u32::from(length).max(1) - 1) / CELL + 1) * CELL;
+        u64::from(last.min(u32::from(end)).saturating_sub(first))
+    };
+    side(x, width, page.0) * side(y, height, page.1)
+}
+
+impl Canvas {
+    /// A canvas for the `width` x `height` area at (`x`, `y`) of a page
+    /// rendering of `page` pixels, filled with opaque white, the paper
+    /// colour. The area is non-empty and inside the page (checked by the
+    /// callers).
+    pub fn new(page: (u16, u16), x: u32, y: u32, width: u16, height: u16) -> Self {
+        let (page_width, page_height) = (u32::from(page.0), u32::from(page.1));
+        let (columns, rows) = (
+            x / CELL..=(x + u32::from(width).max(1) - 1) / CELL,
+            y / CELL..=(y + u32::from(height).max(1) - 1) / CELL,
+        );
+        let mut cells = Vec::new();
+        for row in rows.clone() {
+            for column in columns.clone() {
+                let (cx, cy) = (column * CELL, row * CELL);
+                // Within the page, so each side fits `u16` (at most CELL).
+                let side = |start: u32, end: u32| {
+                    u16::try_from(CELL.min(end.saturating_sub(start)).max(1)).unwrap_or(1)
+                };
+                let (cell_width, cell_height) = (side(cx, page_width), side(cy, page_height));
+                let mut context = RenderContext::new(cell_width, cell_height);
+                context.set_paint(AlphaColor::<Srgb>::WHITE);
+                context.fill_rect(&Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(cell_width),
+                    f64::from(cell_height),
+                ));
+                cells.push(Cell {
+                    context,
+                    x: cx,
+                    y: cy,
+                    width: cell_width,
+                    height: cell_height,
+                });
+            }
+        }
+        let cell = f64::from(CELL);
+        let window = Window {
+            x0: f64::from(*columns.start()) * cell,
+            y0: f64::from(*rows.start()) * cell,
+            x1: (f64::from(*columns.end() + 1) * cell).min(f64::from(page_width)),
+            y1: (f64::from(*rows.end() + 1) * cell).min(f64::from(page_height)),
+            cell,
+            margin: MARGIN,
+        };
+        let all = Span {
+            columns: (i64::from(*columns.start()), i64::from(*columns.end())),
+            rows: (i64::from(*rows.start()), i64::from(*rows.end())),
+        };
+        Self {
+            cells,
+            all,
+            clips: Vec::new(),
+            layers: Vec::new(),
+            x,
+            y,
+            width,
+            height,
+            window,
+        }
+    }
+
+    /// The pixels the cells cover, for work estimates.
+    pub fn window(&self) -> Window {
+        self.window
+    }
+
+    /// Width and height of the area, the size of the output.
+    pub fn size(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    /// The cells whose clipping window meets `bounds` (`Window::columns`).
+    fn touched(&self, bounds: Option<Rect>) -> Span {
+        let Some(bounds) = bounds else {
+            return Span::EMPTY;
+        };
+        match (
+            self.window.columns(bounds.x0, bounds.x1),
+            self.window.rows(bounds.y0, bounds.y1),
+        ) {
+            (Some(columns), Some(rows)) => Span { columns, rows },
+            _ => Span::EMPTY,
+        }
+    }
+
+    fn visible(&self) -> Span {
+        self.clips.last().copied().unwrap_or(self.all)
+    }
+
+    /// Calls `each` with every cell of `span` (within the canvas).
+    fn for_cells(&mut self, span: Span, mut each: impl FnMut(&mut Cell)) {
+        let span = span.meet(self.all);
+        let columns = self.all.columns.1 - self.all.columns.0 + 1;
+        for row in span.rows.0..=span.rows.1 {
+            for column in span.columns.0..=span.columns.1 {
+                let index = (row - self.all.rows.0) * columns + (column - self.all.columns.0);
+                if let Some(cell) = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| self.cells.get_mut(i))
+                {
+                    each(cell);
+                }
+            }
+        }
+    }
+
+    /// Calls `draw` with each visible cell that `path` through `transform`
+    /// may touch, and the path's polygons in that cell.
+    fn each_cell(
+        &mut self,
+        path: &BezPath,
+        transform: Affine,
+        mut draw: impl FnMut(&mut Cell, &BezPath),
+    ) {
+        let span = self
+            .touched(control_bounds(path, transform))
+            .meet(self.visible());
+        self.for_cells(span, |cell| {
+            let device = cell.polygons(path, transform);
+            draw(cell, &device);
+        });
+    }
+
+    pub fn fill(&mut self, path: &Path, matrix: &Matrix, even_odd: bool, color: Rgba) {
+        self.each_cell(&bez_path(path), affine(matrix), |cell, device| {
+            cell.context.set_transform(Affine::IDENTITY);
+            cell.context.set_fill_rule(fill_rule(even_odd));
+            cell.context.set_paint(paint(color));
+            cell.context.fill_path(device);
+        });
+    }
 
     /// Strokes `path` (ISO 32000-2, 8.5.3.2). Dashes are always cut in
     /// user space along the untransformed path, as PDF defines them. The
@@ -151,7 +342,7 @@ impl Canvas {
     /// so that the flattening tolerance is in device pixels; otherwise it is
     /// expanded in user space, where a non-uniform pen is correct.
     pub fn stroke(&mut self, path: &Path, matrix: &Matrix, style: &StrokeStyle, color: Rgba) {
-        self.context.set_paint(paint(color));
+        let color = paint(color);
         let mut user = bez_path(path);
         if !style.dashes.is_empty() {
             user = path_from(vello_cpu::kurbo::dash(
@@ -190,10 +381,12 @@ impl Canvas {
                 outline
             }
         };
-        let device = self.device_polygons(outline, Affine::IDENTITY);
-        self.context.set_transform(Affine::IDENTITY);
-        self.context.set_fill_rule(Fill::NonZero);
-        self.context.fill_path(&device);
+        self.each_cell(&outline, Affine::IDENTITY, |cell, device| {
+            cell.context.set_paint(color);
+            cell.context.set_transform(Affine::IDENTITY);
+            cell.context.set_fill_rule(Fill::NonZero);
+            cell.context.fill_path(device);
+        });
     }
 
     /// Draws `image` over the unit square of image space mapped by `matrix`
@@ -209,7 +402,6 @@ impl Canvas {
         interpolate: bool,
     ) {
         let unit = Rect::new(0.0, 0.0, 1.0, 1.0).to_path(0.1);
-        let device = self.device_polygons(unit, affine(matrix));
         let (width, height) = (f64::from(image.width()), f64::from(image.height()));
         // Image pixel (u, v) to unit square (u / w, 1 - v / h), then device.
         let pixels = Affine::new([1.0 / width, 0.0, 0.0, -1.0 / height, 0.0, 1.0]);
@@ -221,40 +413,97 @@ impl Canvas {
         } else {
             ImageQuality::Medium
         };
-        self.context.set_paint(Image {
-            image: ImageSource::Pixmap(Arc::clone(image)),
-            sampler: ImageSampler {
-                x_extend: Extend::Pad,
-                y_extend: Extend::Pad,
-                quality,
-                alpha,
-            },
+        let transform = affine(matrix);
+        self.each_cell(&unit, transform, |cell, device| {
+            cell.context.set_paint(Image {
+                image: ImageSource::Pixmap(Arc::clone(image)),
+                sampler: ImageSampler {
+                    x_extend: Extend::Pad,
+                    y_extend: Extend::Pad,
+                    quality,
+                    alpha,
+                },
+            });
+            let origin = Affine::translate((-f64::from(cell.x), -f64::from(cell.y)));
+            cell.context.set_transform(Affine::IDENTITY);
+            cell.context.set_fill_rule(Fill::NonZero);
+            cell.context
+                .set_paint_transform(origin * transform * pixels);
+            cell.context.fill_path(device);
+            cell.context.reset_paint_transform();
         });
-        self.context.set_transform(Affine::IDENTITY);
-        self.context.set_fill_rule(Fill::NonZero);
-        self.context.set_paint_transform(affine(matrix) * pixels);
-        self.context.fill_path(&device);
-        self.context.reset_paint_transform();
     }
 
+    /// Clips the visible cells the clip path may touch; the others are
+    /// clipped out until the clip is popped.
     pub fn push_clip(&mut self, path: &Path, matrix: &Matrix, even_odd: bool) {
-        let device = self.device_polygons(bez_path(path), affine(matrix));
-        self.context.set_transform(Affine::IDENTITY);
-        self.context.set_fill_rule(fill_rule(even_odd));
-        self.context.push_clip_path(&device);
+        let path = bez_path(path);
+        let transform = affine(matrix);
+        let span = self
+            .touched(control_bounds(&path, transform))
+            .meet(self.visible());
+        self.for_cells(span, |cell| {
+            let device = cell.polygons(&path, transform);
+            cell.context.set_transform(Affine::IDENTITY);
+            cell.context.set_fill_rule(fill_rule(even_odd));
+            cell.context.push_clip_path(&device);
+        });
+        self.clips.push(span);
     }
 
     pub fn pop_clip(&mut self) {
-        self.context.pop_clip();
+        if let Some(span) = self.clips.pop() {
+            self.for_cells(span, |cell| cell.context.pop_clip());
+        }
     }
 
-    /// Rasterises the scene: RGBA8 with straight alpha, rows top to bottom.
-    pub fn finish(mut self) -> Vec<u8> {
-        let mut pixmap = Pixmap::new(self.width, self.height);
+    /// Starts a layer composited with \`opacity\` when popped (a
+    /// transparency group painted with a constant alpha, ISO 32000-2,
+    /// 11.6.4.4). Clips pushed inside are popped before it.
+    pub fn push_opacity(&mut self, opacity: f32) {
+        let span = self.visible();
+        self.for_cells(span, |cell| cell.context.push_opacity_layer(opacity));
+        self.layers.push(span);
+    }
+
+    pub fn pop_layer(&mut self) {
+        if let Some(span) = self.layers.pop() {
+            self.for_cells(span, |cell| cell.context.pop_layer());
+        }
+    }
+
+    /// Rasterises each cell and copies its part of the area: RGBA8 with
+    /// straight alpha, rows top to bottom.
+    pub fn finish(self) -> Vec<u8> {
+        let (width, height) = (usize::from(self.width), usize::from(self.height));
+        let mut out = vec![0u8; width * height * 4];
         let mut resources = Resources::new();
-        self.context.flush();
-        self.context.render(&mut pixmap, &mut resources);
-        pixmap.take_rgba8(ImageAlphaType::Alpha)
+        for mut cell in self.cells {
+            let mut pixmap = Pixmap::new(cell.width, cell.height);
+            cell.context.flush();
+            cell.context.render(&mut pixmap, &mut resources);
+            let rgba = pixmap.take_rgba8(ImageAlphaType::Alpha);
+            // The overlap of the cell and the area, in page pixels.
+            let x0 = cell.x.max(self.x);
+            let x1 = (cell.x + u32::from(cell.width)).min(self.x + u32::from(self.width));
+            let y0 = cell.y.max(self.y);
+            let y1 = (cell.y + u32::from(cell.height)).min(self.y + u32::from(self.height));
+            if x0 >= x1 {
+                continue;
+            }
+            let bytes = (x1 - x0) as usize * 4;
+            for y in y0..y1 {
+                let from =
+                    ((y - cell.y) as usize * usize::from(cell.width) + (x0 - cell.x) as usize) * 4;
+                let to = ((y - self.y) as usize * width + (x0 - self.x) as usize) * 4;
+                if let (Some(source), Some(target)) =
+                    (rgba.get(from..from + bytes), out.get_mut(to..to + bytes))
+                {
+                    target.copy_from_slice(source);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -270,6 +519,35 @@ pub(crate) fn pixmap(rgba: Vec<u8>, width: u16, height: u16, transparent: bool) 
             alpha_type: ImageAlphaType::Alpha,
         },
     ))
+}
+
+/// Bounds of the control points of `path` through `transform`: they hold
+/// the path; `None` for an empty path or one not finite.
+fn control_bounds(path: &BezPath, transform: Affine) -> Option<Rect> {
+    let mut bounds: Option<Rect> = None;
+    for element in path.iter() {
+        let (points, count) = match transform * element {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => ([p, p, p], 1),
+            PathEl::QuadTo(a, b) => ([a, b, b], 2),
+            PathEl::CurveTo(a, b, c) => ([a, b, c], 3),
+            PathEl::ClosePath => continue,
+        };
+        for point in points.into_iter().take(count) {
+            if !(point.x.is_finite() && point.y.is_finite()) {
+                return None;
+            }
+            bounds = Some(match bounds {
+                None => Rect::from_points(point, point),
+                Some(b) => Rect::new(
+                    b.x0.min(point.x),
+                    b.y0.min(point.y),
+                    b.x1.max(point.x),
+                    b.y1.max(point.y),
+                ),
+            });
+        }
+    }
+    bounds
 }
 
 fn affine(matrix: &Matrix) -> Affine {

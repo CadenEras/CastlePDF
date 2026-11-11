@@ -165,6 +165,6 @@ describe("documents and tiles", () => {
 
   it("labels skipped capabilities", () => {
     expect(skippedLabels(0)).toEqual([]);
-    expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images en ligne", "autres éléments"]);
+    expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images", "autres éléments"]);
   });
 });

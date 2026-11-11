@@ -192,6 +192,14 @@ mod tests {
             .into_owned()
     }
 
+    /// A tile of the viewer's grid is one rasterisation cell: a larger tile
+    /// would not fit the frame, a smaller cell would make each tile render
+    /// several (ADR-0003 amendment).
+    #[test]
+    fn a_tile_is_one_rasterisation_cell() {
+        assert_eq!(u32::from(MAX_TILE_SIDE), pdf_render::CELL_SIDE);
+    }
+
     #[test]
     fn documents_are_bounded_and_ids_never_reused() {
         let document = open(&fixture("shapes.pdf"), &mut budget()).unwrap();

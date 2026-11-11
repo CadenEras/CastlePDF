@@ -4,15 +4,17 @@
 //! Supported: graphics state (`q Q cm w J j M d ri i gs`), paths, painting,
 //! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`),
 //! constant alpha, text in embedded TrueType, OpenType and CFF fonts or their
-//! replacements, and image XObjects (ADR-0005). Text in symbolic or Type 3
-//! fonts, inline images, form XObjects, shadings, patterns, other
-//! colour spaces, blend modes, soft masks, transfer functions and optional
-//! content are not rendered yet: when a page uses them, the rendering is
+//! replacements, images (XObjects and inline, ADR-0005), and form XObjects
+//! with transparency groups at a constant alpha. Text in symbolic or Type 3
+//! fonts, shadings, patterns, other colour spaces, blend modes, knockout
+//! groups, soft masks, transfer functions and optional content are not
+//! rendered yet: when a page uses them, the rendering is
 //! partial and `Rendering::skipped` lists them, so that the caller can say
 //! so. Content syntax errors are refused, not repaired (ADR-0002).
 //!
 //! `render_area` renders one rectangle of the page (a tile of a viewer)
-//! with the pixels of that rectangle of `render_page`, up to rounding.
+//! with exactly the pixels of that rectangle of `render_page`: both
+//! rasterise the same cells of `CELL_SIDE` pixels (ADR-0003 amendment).
 //!
 //! ```
 //! use pdf_document::Document;
@@ -62,7 +64,7 @@ pub use fonts::{FontKind, MAX_PAGE_FONTS, page_font_kinds};
 
 use geometry::Matrix;
 use interpret::Interpreter;
-use raster::Canvas;
+use raster::{Canvas, cell_pixels};
 
 /// Limits of one page rendering, on top of the document `Budget`.
 ///
@@ -70,7 +72,9 @@ use raster::Canvas;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RenderLimits {
-    /// Pixels of the output bitmap (4 bytes each).
+    /// Pixels rasterised (4 bytes each): those of the page for
+    /// `render_page`, those of the cells an area touches for `render_area`
+    /// (the area itself when it is aligned on the cell grid).
     pub max_pixels: u64,
     /// Operators interpreted, each segment of a glyph drawn counting as one
     /// (as the path operator that would draw it).
@@ -82,8 +86,10 @@ pub struct RenderLimits {
     /// canvas) and, for a curve, the square root of its device length over
     /// the flattening tolerance; per painted path or clip, its device area
     /// within the canvas over 1024; strokes three times their padded path,
-    /// plus four per dash. This bounds the rasteriser's time and memory,
-    /// which keeps every painted path until the page is complete.
+    /// plus four per dash. Flattening counts once per cell of `CELL_SIDE`
+    /// pixels the path may touch, each cell flattening it again. This
+    /// bounds the rasteriser's time and memory, which keeps every painted
+    /// path until the page is complete.
     pub max_path_work: u64,
     /// Clip paths active at once (each `W n` adds one until its `Q`).
     pub max_clips: u32,
@@ -139,9 +145,14 @@ pub enum Unsupported {
     /// Text rendering modes 4 to 7 (text added to the clip): what follows is
     /// painted without that clip, so the rendering may show too much.
     TextClip,
-    /// Inline images.
+    /// An image (XObject or inline) not drawn: a filter not decoded yet
+    /// (JPX, JBIG2, CCITT, LZW...), damaged data, or a size over
+    /// `max_image_pixels`.
     Image,
-    /// XObjects painted with `Do` (images and forms).
+    /// An XObject not drawn, or a form drawn only up to an error: not a
+    /// readable stream, an unknown subtype (PostScript), a form whose
+    /// dictionary or content is damaged, nested deeper than 16 forms or
+    /// inside itself.
     XObject,
     /// Shadings painted with `sh`.
     Shading,
@@ -151,7 +162,8 @@ pub enum Unsupported {
     /// device one replaced by a `DefaultGray`, `DefaultRGB` or `DefaultCMYK`
     /// resource.
     ColorSpace,
-    /// A blend mode other than `Normal`.
+    /// Compositing not reproduced: a blend mode other than `Normal`, or a
+    /// knockout transparency group (drawn as a non-knockout one).
     BlendMode,
     /// A soft mask in an `ExtGState`: content is painted unmasked, so the
     /// rendering may show too much.
@@ -227,6 +239,11 @@ pub struct PixelRect {
     pub height: u32,
 }
 
+/// Side in pixels of the square cells a page rendering is rasterised in, on
+/// a grid fixed to its top-left corner. A `render_area` aligned on this
+/// grid, a viewer's tile of this side, rasterises nothing else.
+pub const CELL_SIDE: u32 = raster::CELL;
+
 /// A rendered page and what it could not render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -254,7 +271,8 @@ pub fn render_page<S: Source>(
 ) -> Result<Rendering, Error> {
     let (width, height, base) = page_geometry(page, options)?;
     check_pixels(u64::from(width) * u64::from(height), options)?;
-    render(file, page, options, width, height, base, budget)
+    let canvas = Canvas::new((width, height), 0, 0, width, height);
+    render(file, page, options, canvas, base, budget)
 }
 
 /// Size in device pixels of the whole page rendered at `options.scale`:
@@ -267,12 +285,15 @@ pub fn page_size(page: &Page, options: &RenderOptions) -> Result<(u32, u32), Err
 
 /// Renders `area` of the page rendering at `options.scale` (see
 /// `page_size`): the bitmap is `area.width` by `area.height` and holds
-/// the pixels of that rectangle of `render_page`, each channel within 1 of
-/// them (the shifted coordinates round differently in the rasteriser's
-/// single-precision arithmetic), so tiles join without visible seams. `max_pixels` applies to the area, not to the page; the area
-/// must be non-empty and inside the page, otherwise `InvalidRequest`.
-/// The whole content is interpreted; the rasteriser work outside the area is
-/// culled and not counted.
+/// exactly the pixels of that rectangle of `render_page`, so tiles join
+/// without seams. Both rasterise the same cells of 256 pixels, on a grid
+/// fixed to the top-left corner of the page, each from the page's
+/// coordinates: an area aligned on that grid (a viewer tile) costs no more
+/// than its size, any other is rendered on the cells it touches.
+/// `max_pixels` applies to the area, not to the page; the area must be
+/// non-empty and inside the page, otherwise `InvalidRequest`. The whole
+/// content is interpreted; the rasteriser work outside the cells is culled
+/// and not counted.
 pub fn render_area<S: Source>(
     file: &PdfFile<S>,
     page: &Page,
@@ -294,16 +315,10 @@ pub fn render_area<S: Source>(
     let (Ok(width), Ok(height)) = (u16::try_from(area.width), u16::try_from(area.height)) else {
         return Err(Error::InvalidRequest);
     };
-    check_pixels(u64::from(area.width) * u64::from(area.height), options)?;
-    let base = Matrix::new(
-        base.a,
-        base.b,
-        base.c,
-        base.d,
-        base.e - f64::from(area.x),
-        base.f - f64::from(area.y),
-    );
-    render(file, page, options, width, height, base, budget)
+    let size = (page_width, page_height);
+    check_pixels(cell_pixels(size, area.x, area.y, width, height), options)?;
+    let canvas = Canvas::new(size, area.x, area.y, width, height);
+    render(file, page, options, canvas, base, budget)
 }
 
 fn check_pixels(pixels: u64, options: &RenderOptions) -> Result<(), Error> {
@@ -320,17 +335,16 @@ fn render<S: Source>(
     file: &PdfFile<S>,
     page: &Page,
     options: &RenderOptions,
-    width: u16,
-    height: u16,
+    canvas: Canvas,
     base: Matrix,
     budget: &mut Budget,
 ) -> Result<Rendering, Error> {
+    let (width, height) = canvas.size();
     let content = page_content(file, page, budget)?;
     let resources = match page.resources.as_deref() {
         None => None,
         Some(object) => Some(resource_dictionary(file, object, page, budget)?),
     };
-    let canvas = Canvas::new(width, height);
     let interpreter = Interpreter::new(file, page.id, resources, options.limits, canvas, base);
     let (canvas, skipped) = interpreter.run(&content, budget)?;
     Ok(Rendering {

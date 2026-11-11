@@ -137,6 +137,25 @@ Après les images en ligne (étape 5.4b, même protocole, deux exécutions) :
 - `inline-images.pdf` identique à `pdftoppm` (0,000 %) ; oracle qpdf : 12 fixtures,
   37 flux identiques.
 
+Après les XObjects de formulaire et les cellules de rasterisation (même protocole) :
+- premières pages où un XObject n'est pas rendu : 267 → 3 (SafeDocs), 248 → 13 (UNSAFE) ;
+- signalés en plus, parce que les formulaires sont maintenant dessinés : modes de fusion et
+  groupes à élimination (`BlendMode`) 38 → 75 et 17 → 32, masques adoucis 82 → 101 et
+  41 → 51, contenu optionnel 40 → 54 et 40 → 53 ;
+- premières pages rendues : SafeDocs inchangé (1 911), UNSAFE 2 205 → 2 204. La page
+  perdue dépasse le budget de données décodées (256 Mio, `limit/DecodedBytes`) avec les
+  images de ses formulaires ;
+- aucun crash ni timeout ;
+- temps par fichier (SafeDocs) : médiane 21 → 24 ms, p95 222 ms comme avant. Une page
+  entière est maintenant rasterisée en cellules de 256 px ; une tuile du visualiseur reste
+  une seule cellule ;
+- `forms.pdf` identique à `pdftoppm` (0,000 %) ; les autres cas de l'oracle sont
+  inchangés ;
+- tuiles et page identiques au pixel près (tests `area`, cible `render`). Avant les
+  cellules, la cible `render` trouvait en 5 min un écart de 2 niveaux : le même tracé
+  dessiné deux fois. Avec les cellules : 537 906 puis 511 971 exécutions (10 min chacune,
+  la seconde avec une zone placée selon l'entrée) sans écart.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
