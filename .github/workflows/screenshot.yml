@@ -83,11 +83,18 @@ jobs:
           app="$PWD/target/release/bundle/macos/CastlePDF.app"
           cp target/release/pdf-worker "$app/Contents/MacOS/"
           codesign --force --deep --sign - "$app"
-          open -a "$app" tests/corpus/public/forms.pdf
+          open --stdout "$RUNNER_TEMP/app.out" --stderr "$RUNNER_TEMP/app.err" \
+            -a "$app" tests/corpus/public/forms.pdf
           sleep 15
           screencapture -x screenshots/macOS-finder-forms.png
+          running=0
+          pgrep -x castle-pdf-desktop >/dev/null && running=1
           osascript -e 'quit app "CastlePDF"' || pkill -x castle-pdf-desktop || true
+          echo "--- app stdout"; cat "$RUNNER_TEMP/app.out" || true
+          echo "--- app stderr"; cat "$RUNNER_TEMP/app.err" || true
+          echo "--- crash reports"; ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i castle || true
           test -s screenshots/macOS-finder-forms.png
+          if [ "$running" != 1 ]; then echo "::error::the app was not running at capture time"; exit 1; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; update by reviewed PR
         if: always()
         with:
