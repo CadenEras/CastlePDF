@@ -1,0 +1,82 @@
+name: screenshot
+# Screenshots of the release app showing fixtures, on each OS, for a person
+# to review (display on macOS and Linux, which nobody may check by hand).
+# Not a pixel comparison; run manually when needed.
+on:
+  # Not a required check: the path filter only re-validates the harness itself.
+  pull_request:
+    paths:
+      - scripts/screenshot-app.mjs
+      - .github/workflows/screenshot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshot-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  NODE_VERSION: "24.16.0"
+
+jobs:
+  capture:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; update by reviewed PR
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0; update by reviewed PR
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install Tauri system dependencies, a virtual display and ImageMagick
+        if: runner.os == 'Linux'
+        # A stalled mirror must fail fast and be retried, not consume the job timeout.
+        timeout-minutes: 10
+        env:
+          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+        run: |
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev xvfb imagemagick
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3; update by reviewed PR
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build release app without bundling
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run tauri -- build --no-bundle -- --locked
+      - name: Capture
+        run: |
+          mkdir -p screenshots
+          for name in truetype forms; do
+            out="screenshots/${{ runner.os }}-$name.png"
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              xvfb-run -a -s "-screen 0 1280x1024x24" \
+                node scripts/screenshot-app.mjs "tests/corpus/public/$name.pdf" "$out"
+            else
+              node scripts/screenshot-app.mjs "tests/corpus/public/$name.pdf" "$out"
+            fi
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; update by reviewed PR
+        if: always()
+        with:
+          name: screenshots-${{ runner.os }}
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 14

@@ -9,6 +9,10 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- CI : workflow **`screenshot`**, lancé à la main. Il fait afficher `truetype.pdf` et `forms.pdf` à
+  l'application release sous Linux (affichage virtuel), Windows et macOS, et joint les captures
+  au run pour relecture. Il sert à vérifier l'affichage sur les OS que personne ne regarde à la
+  main (`scripts/screenshot-app.mjs`).
 - UI : panneau **« Mesures »**, replié sous la barre d'outils. Il donne, pour les 2 000
   dernières tuiles, la médiane et le p95 du temps entre la requête et les données reçues, et
   du dessin. Il sert à mesurer le transport d'ADR-0003 dans l'application réelle.
