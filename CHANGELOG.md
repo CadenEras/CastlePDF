@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **Symbol et ZapfDingbats** non inclus sont dessinés (ADR-0005, étape 5.3b)
+  avec « CastlePDF Symbols ». Cette police de 55 Kio réunit des glyphes de Noto Sans Math,
+  Noto Sans, Noto Sans Symbols et Symbols 2 (SIL OFL 1.1), choisis glyphe par glyphe et
+  fusionnés hors ligne par `scripts/build-symbol-font.sh` (construction reproductible).
+  - Les codes passent par l'encodage intégré, la liste de glyphes d'Adobe ou celle de
+    ZapfDingbats, puis Unicode. Les points de code de la zone privée d'Adobe (pièces de
+    crochets, ©, ®, ™) pointent vers leur équivalent.
+  - Sans `/Widths`, les largeurs sont celles des métriques d'Adobe.
+  - Le texte est signalé `FontSubstituted`. Les autres polices symboliques restent `Text`.
 - `pdf-render` : **XObjects de formulaire** (ISO 32000-2, 8.10). `Do` dessine un
   formulaire :
   - avec sa `/Matrix`, découpé à sa `/BBox` ;

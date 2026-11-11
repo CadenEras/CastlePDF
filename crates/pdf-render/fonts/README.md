@@ -8,7 +8,7 @@ l'inclure, ou dont le programme n'est pas lu (Type 1) ou est endommagé (ADR-000
 Toutes sont sous **SIL Open Font License 1.1** (fichiers `OFL-*.txt` ci-contre). Elles
 peuvent être redistribuées et modifiées, y compris réduites, avec leur licence, mais pas
 vendues seules. Les enregistrements `name` (droits d'auteur, licence) sont conservés.
-Les licences de ces trois familles, aux commits retenus, ne déclarent aucun nom réservé
+Les licences de ces familles, aux commits retenus, ne déclarent aucun nom réservé
 (« Reserved Font Name ») dans leur en-tête : les fichiers réduits peuvent garder leurs
 noms. À vérifier à chaque mise à jour des sources, car un nom réservé imposerait de
 renommer.
@@ -18,6 +18,7 @@ renommer.
 | `Arimo-{Regular,Bold,Italic,BoldItalic}.ttf` | Helvetica, Arial et polices sans empattement | `arimo` `4a6255f2`, `fonts/ttf/` | `OFL-Arimo.txt` |
 | `Tinos-{Regular,Bold,Italic,BoldItalic}.ttf` | Times et polices à empattement | `tinos` `3b4482a9`, `fonts/ttf/` | `OFL-Tinos.txt` |
 | `Cousine-{Regular,Bold,Italic,BoldItalic}.ttf` | Courier et polices à chasse fixe | `cousine` `0c999bee`, `fonts/ttf/` | `OFL-Cousine.txt` |
+| `CastleSymbols-Regular.ttf` | Symbol et ZapfDingbats | github.com/notofonts `notofonts.github.io` `4cf78353` : Noto Sans Math, Noto Sans, Noto Sans Symbols, Noto Sans Symbols 2 (`fonts/*/hinted/ttf/`) | `OFL-Noto.txt` (`notofonts/symbols` `c42cbaee`) |
 
 Les fichiers sont produits par `scripts/build-standard-fonts.sh`, avec fonttools 4.60.1 :
 - le script vérifie le sha256 de chacune des 12 polices sources ;
@@ -45,5 +46,29 @@ dc3dbb7fea83c4cd6d6badc9af4bebd1a5ef819fd741e92133da116a88e9964d  Cousine-Regula
 ac6b876618ccd11443ed3679d9a7f3f2f6cd321c4ad2d4bfc94c8ab2ec24d201  Cousine-BoldItalic.ttf
 ```
 
-Symbol et ZapfDingbats n'ont pas encore de remplacement (étape 5.3b) : leur texte reste
-signalé `Text`.
+## CastlePDF Symbols (étape 5.3b)
+
+`CastleSymbols-Regular.ttf` (55 Kio) remplace Symbol et ZapfDingbats. Il est produit par
+`scripts/build-symbol-font.sh` (fonttools 4.60.1), qui vérifie le sha256 de ses huit sources
+puis :
+- prend chaque glyphe des encodages intégrés de Symbol et de ZapfDingbats dans la première
+  police Noto qui a son point de code :
+  - pour Symbol : Math, Sans, Symbols puis Symbols 2. Ce sont 172 glyphes de Math (Grec et
+    opérateurs de style mathématique) et 15 de Sans (°, €, ©…) ;
+  - pour ZapfDingbats : Symbols 2, Symbols puis Math ;
+- réduit ces polices sans hinting ni tables de mise en page et les fusionne en une seule ;
+- fait pointer, dans la `cmap`, les 29 points de code de la zone privée d'Adobe (pièces de
+  crochets et d'accolades, ©, ®, ™ avec et sans empattement) vers le glyphe de leur
+  équivalent Unicode ;
+- renomme la police « CastlePDF Symbols ». Le nom n'est pas réservé, mais c'est une version
+  modifiée. L'enregistrement de copyright cite les trois dépôts Noto.
+
+La construction est reproductible : les dates de la police sont celles de Noto Sans Math.
+Les largeurs viennent du PDF ou, à défaut, des métriques AFM d'Adobe (`metrics.js` de
+pdf.js), pas de ces glyphes. Un test de `pdf-render` vérifie que chaque glyphe des deux
+encodages a sa largeur et un glyphe (`the_symbol_replacement_covers_both_encodings`).
+Les quatre licences OFL de Noto ne diffèrent que par l'URL de leur ligne de copyright.
+
+```
+1e49483b6f4e099040e4a8f4993db02b1001185a243a40cc53bea702bccda5cf  CastleSymbols-Regular.ttf
+```

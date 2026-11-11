@@ -27,7 +27,10 @@ use skrifa::raw::ps::cff::CffFontRef;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
-use super::encodings::{GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, WIN_ANSI};
+use super::encodings::{
+    GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, SYMBOL, SYMBOL_WIDTHS, WIN_ANSI, ZAPF_DINGBATS,
+    ZAPF_DINGBATS_LIST, ZAPF_DINGBATS_WIDTHS,
+};
 use super::{resolve, resolve_dictionary, standard, stream_bytes};
 use crate::Error;
 use crate::geometry::{Point, Segment};
@@ -415,8 +418,9 @@ fn simple<S: Source>(
 /// A simple font drawn with a replacement font (ADR-0005, step 5.3): its
 /// codes go through glyph names (the default base encoding is Standard) to
 /// Unicode and the replacement's `cmap`; its widths are the PDF's, or else
-/// those of the replacement, which match the font it replaces. A symbolic
-/// font (`Symbol`, `ZapfDingbats`, a dingbat font) is not replaced yet.
+/// those of the replacement, which match the font it replaces. `Symbol` and
+/// `ZapfDingbats` have a replacement of their own (`symbols`); another
+/// symbolic font (a dingbat font) is not replaced.
 fn substitute<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
@@ -436,8 +440,10 @@ fn substitute<S: Source>(
         .get(b"Flags")
         .and_then(Object::as_integer)
         .unwrap_or(0);
-    let symbolic_name = matches!(base, b"Symbol" | b"ZapfDingbats");
-    if symbolic_name || (flags & 4 != 0 && flags & 32 == 0) {
+    if let Some(set) = symbol_set(base) {
+        return symbols(file, font, descriptor, encoding, set, budget);
+    }
+    if flags & 4 != 0 && flags & 32 == 0 {
         return Ok(None);
     }
     let weight = descriptor.get(b"FontWeight").and_then(number);
@@ -478,6 +484,115 @@ fn substitute<S: Source>(
         },
         substituted: true,
     }))
+}
+
+/// The Core 14 symbolic fonts, which have their own built-in encoding and
+/// glyph set (ISO 32000-2, D.5 and D.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolSet {
+    Symbol,
+    Dingbats,
+}
+
+/// Which symbolic set a font named `base` (subset prefix removed) uses:
+/// `Symbol` and its variants (`SymbolMT`, `Symbol,Bold`), `ZapfDingbats`,
+/// `ZapfDingbatsITC` and `Dingbats`.
+fn symbol_set(base: &[u8]) -> Option<SymbolSet> {
+    if base.starts_with(b"Symbol") {
+        Some(SymbolSet::Symbol)
+    } else if base.starts_with(b"ZapfDingbats") || base == b"Dingbats" {
+        Some(SymbolSet::Dingbats)
+    } else {
+        None
+    }
+}
+
+/// `Symbol` or `ZapfDingbats` drawn with their replacement (ADR-0005, step
+/// 5.3b): glyphs of Noto fonts merged into one program. Codes go through
+/// glyph names (the default base encoding is the font's built-in one) to
+/// Unicode, through the ZapfDingbats glyph list for dingbat names, then the
+/// replacement's `cmap`. Widths are the PDF's, or else those of Adobe's
+/// Core 14 metrics, by glyph name.
+fn symbols<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    descriptor: &Dictionary,
+    encoding: Option<&Object>,
+    set: SymbolSet,
+    budget: &mut Budget,
+) -> Result<Option<Font>, Error> {
+    let Some(bytes) = standard::symbols() else {
+        return Ok(None);
+    };
+    let Ok(font_ref) = FontRef::new(bytes) else {
+        return Ok(None);
+    };
+    let units_per_em = match font_ref.head() {
+        Ok(head) => f64::from(head.units_per_em()),
+        Err(_) => return Ok(None),
+    };
+    let (builtin, afm) = match set {
+        SymbolSet::Symbol => (&SYMBOL, &SYMBOL_WIDTHS[..]),
+        SymbolSet::Dingbats => (&ZAPF_DINGBATS, &ZAPF_DINGBATS_WIDTHS[..]),
+    };
+    let names = encoding_names(file, encoding, Some(builtin), budget)?;
+    let charmap = font_ref.charmap();
+    let mut glyphs = Box::new([None; 256]);
+    let mut missing = Box::new([false; 256]);
+    for ((slot, lost), name) in glyphs.iter_mut().zip(missing.iter_mut()).zip(&names) {
+        let Some(name) = name.as_deref() else {
+            continue;
+        };
+        let code_point = match set {
+            SymbolSet::Dingbats => sorted_lookup(&ZAPF_DINGBATS_LIST, name),
+            SymbolSet::Symbol => None,
+        }
+        .or_else(|| unicode(name));
+        let glyph = code_point
+            .and_then(char::from_u32)
+            .and_then(|c| charmap.map(c))
+            .and_then(|gid| u16::try_from(gid.to_u32()).ok())
+            .filter(|gid| *gid != 0);
+        *slot = glyph;
+        *lost = glyph.is_none() && name != b".notdef";
+    }
+    let mut widths = simple_widths(
+        file,
+        font,
+        descriptor,
+        Some(&font_ref),
+        &glyphs,
+        units_per_em,
+        budget,
+    )?;
+    if font.get(b"Widths").is_none() {
+        for (width, name) in widths.iter_mut().zip(&names) {
+            if let Some(afm) = name.as_deref().and_then(|name| sorted_lookup(afm, name)) {
+                *width = f64::from(afm);
+            }
+        }
+    }
+    Ok(Some(Font {
+        program: Arc::from(bytes),
+        format: Format::OpenType,
+        units_per_em,
+        mapping: Mapping::Simple {
+            glyphs,
+            missing,
+            widths,
+        },
+        substituted: true,
+    }))
+}
+
+/// The value of `name` in a table sorted by name.
+fn sorted_lookup<T: Copy>(table: &[(&str, T)], name: &[u8]) -> Option<T> {
+    let name = std::str::from_utf8(name).ok()?;
+    table
+        .binary_search_by(|(entry, _)| (*entry).cmp(name))
+        .ok()
+        .and_then(|index| table.get(index))
+        .map(|(_, value)| *value)
 }
 
 /// Glyph of each code of a simple CFF font: the name the encoding gives,
@@ -951,6 +1066,56 @@ fn cid_widths<S: Source>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbolic_sets_are_recognised_by_name() {
+        assert_eq!(symbol_set(b"Symbol"), Some(SymbolSet::Symbol));
+        assert_eq!(symbol_set(b"SymbolMT"), Some(SymbolSet::Symbol));
+        assert_eq!(symbol_set(b"Symbol,Bold"), Some(SymbolSet::Symbol));
+        assert_eq!(symbol_set(b"ZapfDingbats"), Some(SymbolSet::Dingbats));
+        assert_eq!(symbol_set(b"ZapfDingbatsITC"), Some(SymbolSet::Dingbats));
+        assert_eq!(symbol_set(b"Dingbats"), Some(SymbolSet::Dingbats));
+        assert_eq!(symbol_set(b"Wingdings"), None);
+        assert_eq!(symbol_set(b"Helvetica"), None);
+    }
+
+    /// Every glyph of the built-in encodings of Symbol and ZapfDingbats has
+    /// Adobe's width and a glyph in the replacement font.
+    #[cfg(feature = "standard-fonts")]
+    #[test]
+    fn the_symbol_replacement_covers_both_encodings() {
+        let program = standard::symbols().expect("embedded");
+        let font = FontRef::new(program).expect("font");
+        let charmap = font.charmap();
+        for (set, encoding, widths) in [
+            (SymbolSet::Symbol, &SYMBOL, &SYMBOL_WIDTHS[..]),
+            (
+                SymbolSet::Dingbats,
+                &ZAPF_DINGBATS,
+                &ZAPF_DINGBATS_WIDTHS[..],
+            ),
+        ] {
+            let mut glyphs = 0;
+            for name in encoding.iter().filter(|name| !name.is_empty()) {
+                let bytes = name.as_bytes();
+                assert!(
+                    sorted_lookup(widths, bytes).is_some(),
+                    "{set:?} {name}: width"
+                );
+                let code = match set {
+                    SymbolSet::Dingbats => sorted_lookup(&ZAPF_DINGBATS_LIST, bytes),
+                    SymbolSet::Symbol => None,
+                }
+                .or_else(|| unicode(bytes))
+                .and_then(char::from_u32)
+                .expect("code point");
+                let glyph = charmap.map(code).expect("glyph");
+                assert_ne!(glyph.to_u32(), 0, "{set:?} {name}");
+                glyphs += 1;
+            }
+            assert!(glyphs > 180, "{set:?}: {glyphs}");
+        }
+    }
 
     #[test]
     fn glyph_names_give_code_points() {

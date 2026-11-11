@@ -22,7 +22,7 @@ Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objet
 **4 bis. reconstruction de la xref (ADR-0004)** (fait) ; 5. polices, texte et images
 (ADR-0005), par étapes : 5.1 décompte des types de police dans `survey` (fait) ; 5.2 polices
 incluses TrueType (5.2a, fait) et CFF (5.2b, fait) ; 5.3 polices non incluses (jeu OFL : 5.3a
-Helvetica, Times, Courier et polices nommées, fait ; 5.3b Symbol et ZapfDingbats) ; 5.4 images Flate et DCT (5.4a
+Helvetica, Times, Courier et polices nommées, fait ; 5.3b Symbol et ZapfDingbats, fait) ; 5.4 images Flate et DCT (5.4a
 XObjects image, fait ; 5.4b images en ligne, fait ; 5.4c XObjects de formulaire et groupes
 de transparence, fait) ;
 5.5 polices Type 3.

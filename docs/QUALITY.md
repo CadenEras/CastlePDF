@@ -156,6 +156,14 @@ Après les XObjects de formulaire et les cellules de rasterisation (même protoc
   dessiné deux fois. Avec les cellules : 537 906 puis 511 971 exécutions (10 min chacune,
   la seconde avec une zone placée selon l'entrée) sans écart.
 
+Après le remplacement de Symbol et ZapfDingbats (étape 5.3b, même protocole) :
+- premières pages au texte non dessiné (`Text`) : 82 → 77 (SafeDocs), 62 → 54 (UNSAFE).
+  Le reste vient surtout des polices Type 3 (étape 5.5), des polices CID non incluses et des
+  autres polices symboliques (Wingdings…) ;
+- premières pages rendues inchangées (1 911 et 2 204), aucun crash ni timeout ;
+- pas de comparaison à `pdftoppm` pour ces polices : il dessine Symbol et ZapfDingbats avec
+  les polices URW du système, d'autres glyphes.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
