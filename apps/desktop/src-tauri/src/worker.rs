@@ -3,6 +3,12 @@
 //! a time (the worker runs one job at a time), matches the responses, fills
 //! the tile cache and publishes job events. A command waits for its result
 //! only through a `Pending` with an explicit timeout, off the UI thread.
+//!
+//! A worker that dies (or breaks the protocol) is replaced, at most
+//! `MAX_RESTARTS` times per `RESTART_WINDOW`: the job it was running fails
+//! (it may be what killed it), the new worker reopens the current document
+//! if its file has not changed, and the queued jobs go on. Document ids
+//! given to the UI are the shell's, so they survive a restart.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -10,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use pdf_worker::client::{ClientError, WorkerProcess};
 use pdf_worker::protocol::{
@@ -41,6 +47,10 @@ const IDLE_POLL: Duration = Duration::from_millis(20);
 const BUSY_POLL: Duration = Duration::from_millis(2);
 /// Jobs queued before new ones are refused as `Busy`.
 const MAX_QUEUED: usize = 256;
+/// Workers started again after a loss within `RESTART_WINDOW`; beyond, the
+/// worker stays unavailable and every request fails explicitly.
+const MAX_RESTARTS: usize = 3;
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -153,10 +163,24 @@ impl<T> Pending<T> {
 type Reply<T> = Sender<Result<T, CommandError>>;
 
 /// The document shown by the UI; requests for another one are refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Current {
+    /// The id the UI knows: the shell's, kept across worker restarts.
     document: u32,
     pages: u32,
+    /// The id the running worker gave it.
+    worker_document: u32,
+    /// Where to reopen it from after a restart, and its size and
+    /// modification time when it was opened: a file changed since is not
+    /// reopened under the same id.
+    path: String,
+    stamp: Option<(u64, SystemTime)>,
+}
+
+/// Size and modification time of the file at `path`, if readable.
+fn stamp_of(path: &str) -> Option<(u64, SystemTime)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
 }
 
 enum Job {
@@ -181,6 +205,8 @@ enum Job {
         generation: u64,
         reply: Reply<Arc<Vec<u8>>>,
     },
+    /// Opens the current document again in a restarted worker.
+    Reopen { path: String },
 }
 
 enum Command {
@@ -193,6 +219,9 @@ enum Command {
         generation: u64,
     },
     Stop,
+    /// Kills the worker as a crash would (tests of the restart).
+    #[cfg(test)]
+    KillWorker,
 }
 
 struct Shared {
@@ -331,8 +360,8 @@ impl WorkerHandle {
     }
 
     fn check_page(&self, document: u32, page: u32) -> Result<(), CommandError> {
-        let current = *lock(&self.shared.current);
-        match current {
+        let current = lock(&self.shared.current);
+        match current.as_ref() {
             Some(current) if current.document == document => {
                 if page < current.pages {
                     Ok(())
@@ -426,6 +455,11 @@ impl WorkerHandle {
         }
     }
 
+    #[cfg(test)]
+    fn kill_worker(&self) {
+        let _ = lock(&self.commands).1.send(Command::KillWorker);
+    }
+
     /// Stops the worker; returns after at most the shutdown grace period
     /// plus one poll interval.
     pub fn stop(&self) {
@@ -490,6 +524,12 @@ fn tile_bytes(width: u16, height: u16, skipped: u16, repair: Repair, pixels: &[u
 
 struct Manager<'a> {
     worker: Option<WorkerProcess>,
+    /// The worker executable, to start it again after a loss.
+    program: Option<PathBuf>,
+    /// When the worker was started again, within `RESTART_WINDOW`.
+    restarts: VecDeque<Instant>,
+    /// Next document id given to the UI.
+    next_document: u32,
     shared: &'a Shared,
     publish: &'a dyn Fn(JobEvent),
     /// Last job id sent to the worker; strictly increasing.
@@ -505,6 +545,12 @@ impl Manager<'_> {
     fn command(&mut self, command: Command) -> bool {
         match command {
             Command::Stop => return false,
+            #[cfg(test)]
+            Command::KillWorker => {
+                if let Some(worker) = &mut self.worker {
+                    let _ = worker.kill();
+                }
+            }
             Command::Cancel { ui_id } => self.cancel(ui_id),
             Command::View { generation } => {
                 if generation > self.generation {
@@ -581,12 +627,31 @@ impl Manager<'_> {
             Job::Tile { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
+            Job::Reopen { .. } => {}
         }
+    }
+
+    /// The id the running worker gave to document `document` (the UI's).
+    fn worker_document(&self, document: u32) -> Option<u32> {
+        lock(&self.shared.current)
+            .as_ref()
+            .filter(|current| current.document == document)
+            .map(|current| current.worker_document)
     }
 
     /// Sends the next queued job if none is running.
     fn pump(&mut self) {
         while self.in_flight.is_none() {
+            // A worker that died while idle is replaced before a job is
+            // sent to it (and lost with it).
+            if self.queue.front().is_some()
+                && self
+                    .worker
+                    .as_mut()
+                    .is_some_and(|worker| !worker.is_running())
+            {
+                self.lose_worker();
+            }
             let Some(job) = self.queue.pop_front() else {
                 return;
             };
@@ -610,6 +675,19 @@ impl Manager<'_> {
                     continue;
                 }
             }
+            let target = match &job {
+                Job::Size { document, .. } => Some(*document),
+                Job::Tile { key, .. } => Some(key.document),
+                _ => None,
+            };
+            let worker_document = match target.map(|document| self.worker_document(document)) {
+                None => 0,
+                Some(Some(worker_document)) => worker_document,
+                Some(None) => {
+                    self.refuse(job, CommandError::InvalidArgument { field: "document" });
+                    continue;
+                }
+            };
             let Some(id) = self.last_id.checked_add(1) else {
                 self.refuse(job, CommandError::WorkerUnavailable);
                 continue;
@@ -628,23 +706,22 @@ impl Manager<'_> {
                     id,
                     path: path.clone(),
                 },
-                Job::Size {
-                    document,
-                    page,
-                    scale,
-                    ..
-                } => Request::PageSize {
+                Job::Size { page, scale, .. } => Request::PageSize {
                     id,
-                    document: *document,
+                    document: worker_document,
                     page: *page,
                     scale: *scale,
                 },
                 Job::Tile { key, .. } => Request::RenderTile {
                     id,
-                    document: key.document,
+                    document: worker_document,
                     page: key.page,
                     scale: key.scale(),
                     rect: key.rect(),
+                },
+                Job::Reopen { path } => Request::OpenDocument {
+                    id,
+                    path: path.clone(),
                 },
             };
             match worker.send(&request) {
@@ -696,23 +773,34 @@ impl Manager<'_> {
                 });
             }
             (
-                Job::Open { name, reply, .. },
+                Job::Open {
+                    path, name, reply, ..
+                },
                 Response::DocumentOpened {
-                    document,
+                    document: worker_document,
                     pages,
                     repair,
                     ..
                 },
             ) => {
+                let document = self.next_document;
+                self.next_document = document.saturating_add(1);
                 // The new document is current before anyone learns its id,
                 // so that a request sent right after the answer finds it.
                 // If nobody waits any more (the opening timed out and the
                 // UI was told it failed), the previous document is put back
                 // and the new one closed. The lock is held throughout: no
                 // request sees the new document unless it was announced.
+                let stamp = stamp_of(&path);
                 let closed = {
                     let mut current = lock(&self.shared.current);
-                    let previous = current.replace(Current { document, pages });
+                    let previous = current.replace(Current {
+                        document,
+                        pages,
+                        worker_document,
+                        path,
+                        stamp,
+                    });
                     let answered = reply
                         .send(Ok(DocumentInfo {
                             document,
@@ -722,18 +810,52 @@ impl Manager<'_> {
                         }))
                         .is_ok();
                     if answered {
-                        previous.map(|previous| previous.document)
+                        previous.map(|previous| (previous.document, previous.worker_document))
                     } else {
                         *current = previous;
-                        Some(document)
+                        Some((document, worker_document))
                     }
                 };
-                if let Some(closed) = closed {
+                if let Some((closed, worker_closed)) = closed {
                     lock(&self.shared.cache).remove_document(closed);
                     if let Some(worker) = &self.worker {
-                        let _ = worker.send(&Request::CloseDocument { document: closed });
+                        let _ = worker.send(&Request::CloseDocument {
+                            document: worker_closed,
+                        });
                     }
                 }
+            }
+            (
+                Job::Reopen { path },
+                Response::DocumentOpened {
+                    document: worker_document,
+                    pages,
+                    ..
+                },
+            ) => {
+                // The same file, the same pages: the UI's id now names the
+                // new worker's document. Otherwise it is gone.
+                let mut current = lock(&self.shared.current);
+                let same = current
+                    .as_ref()
+                    .is_some_and(|c| c.path == path && c.pages == pages);
+                if same && let Some(current) = current.as_mut() {
+                    current.worker_document = worker_document;
+                } else {
+                    *current = None;
+                    drop(current);
+                    lock(&self.shared.cache).clear();
+                    if let Some(worker) = &self.worker {
+                        let _ = worker.send(&Request::CloseDocument {
+                            document: worker_document,
+                        });
+                    }
+                }
+            }
+            (Job::Reopen { .. }, Response::JobFailed { code, .. }) => {
+                eprintln!("castle-pdf: document not reopened after a restart: {code:?}");
+                *lock(&self.shared.current) = None;
+                lock(&self.shared.cache).clear();
             }
             (Job::Size { reply, .. }, Response::PageSize { width, height, .. }) => {
                 let _ = reply.send(Ok(PageSize { width, height }));
@@ -786,8 +908,68 @@ impl Manager<'_> {
         }
     }
 
-    /// The worker is gone or broken: every job still waiting fails.
+    /// The worker is gone or broken. The job it was running fails: it may
+    /// be what killed it, so it is not sent again. A new worker is started
+    /// if `restart` allows it; otherwise every job still waiting fails.
     fn lose_worker(&mut self) {
+        self.worker = None;
+        if let Some((_, job)) = self.in_flight.take() {
+            self.refuse_lost(job);
+        }
+        if !self.restart() {
+            self.give_up();
+        }
+    }
+
+    /// Starts the worker again, at most `MAX_RESTARTS` times per
+    /// `RESTART_WINDOW`, and queues the reopening of the current document
+    /// before anything else; a document whose file changed since it was
+    /// opened is dropped instead. `false` if no worker could be started.
+    fn restart(&mut self) -> bool {
+        let now = Instant::now();
+        while self
+            .restarts
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > RESTART_WINDOW)
+        {
+            self.restarts.pop_front();
+        }
+        if self.restarts.len() >= MAX_RESTARTS {
+            eprintln!(
+                "castle-pdf: worker lost {MAX_RESTARTS} times within a minute, not restarted"
+            );
+            return false;
+        }
+        let Some(program) = &self.program else {
+            return false;
+        };
+        self.restarts.push_back(now);
+        match WorkerProcess::spawn(program, HANDSHAKE_TIMEOUT) {
+            Ok(worker) => {
+                eprintln!("castle-pdf: worker restarted");
+                self.worker = Some(worker);
+            }
+            Err(error) => {
+                eprintln!("castle-pdf: worker not restarted: {error}");
+                return false;
+            }
+        }
+        let reopen = lock(&self.shared.current)
+            .as_ref()
+            .map(|current| (current.path.clone(), current.stamp));
+        if let Some((path, stamp)) = reopen {
+            if stamp.is_some() && stamp_of(&path) == stamp {
+                self.queue.push_front(Job::Reopen { path });
+            } else {
+                *lock(&self.shared.current) = None;
+                lock(&self.shared.cache).clear();
+            }
+        }
+        true
+    }
+
+    /// No worker any more: no current document, every job fails.
+    fn give_up(&mut self) {
         self.worker = None;
         *lock(&self.shared.current) = None;
         lock(&self.shared.cache).clear();
@@ -838,6 +1020,9 @@ fn manage(
     };
     let mut manager = Manager {
         worker,
+        program: path.map(Path::to_path_buf),
+        restarts: VecDeque::new(),
+        next_document: 1,
         shared,
         publish,
         last_id: 0,
@@ -881,7 +1066,7 @@ fn manage(
     if let Some(worker) = manager.worker.take() {
         let _ = worker.shutdown(SHUTDOWN_GRACE);
     }
-    manager.lose_worker();
+    manager.give_up();
 }
 
 #[cfg(test)]
@@ -926,6 +1111,99 @@ mod tests {
             height: 128,
             generation,
         }
+    }
+
+    #[test]
+    fn a_dead_worker_is_restarted_and_the_document_reopened() {
+        let (handle, events) = start();
+        let info = handle.open(&fixture("shapes.pdf")).wait(TIMEOUT).unwrap();
+        let generation = handle.begin_view().unwrap();
+        let before = handle
+            .tile(tile_request(info.document, 0, generation))
+            .wait(TIMEOUT)
+            .unwrap();
+        handle.kill_worker();
+        // The same id still names the document, rendered by a new worker:
+        // a tile not in the shell's cache, then one that is.
+        let after = handle
+            .tile(tile_request(info.document, 128, generation))
+            .wait(TIMEOUT)
+            .unwrap();
+        assert_eq!(after.len(), TILE_HEADER + 128 * 128 * 4);
+        let again = handle
+            .tile(tile_request(info.document, 0, generation))
+            .wait(TIMEOUT)
+            .unwrap();
+        assert!(before == again);
+        // The job running when the worker died fails; it is not sent again.
+        let id = handle.run(5_000, 10).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        handle.kill_worker();
+        assert_eq!(
+            events.recv_timeout(TIMEOUT),
+            Ok(failed(id, "worker exited"))
+        );
+        let next = handle.run(1, 0).unwrap();
+        assert_eq!(
+            events.recv_timeout(TIMEOUT),
+            Ok(JobEvent {
+                job_id: next,
+                outcome: JobOutcome::Done { units: 1 }
+            })
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn restarts_are_bounded() {
+        let (handle, events) = start();
+        // Three restarts within the window, then the worker stays down.
+        for _ in 0..MAX_RESTARTS {
+            handle.kill_worker();
+            let id = handle.run(1, 0).unwrap();
+            assert_eq!(
+                events.recv_timeout(TIMEOUT),
+                Ok(JobEvent {
+                    job_id: id,
+                    outcome: JobOutcome::Done { units: 1 }
+                })
+            );
+        }
+        handle.kill_worker();
+        let id = handle.run(1, 0).unwrap();
+        let event = events.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(event.job_id, id);
+        assert!(
+            matches!(event.outcome, JobOutcome::Failed { .. }),
+            "{event:?}"
+        );
+        assert_eq!(
+            handle.open(&fixture("shapes.pdf")).wait(TIMEOUT),
+            Err(CommandError::WorkerUnavailable)
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_file_changed_since_it_was_opened_is_not_reopened() {
+        let dir = std::env::temp_dir().join(format!("castle-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("copy.pdf");
+        std::fs::copy(fixture("shapes.pdf"), &copy).unwrap();
+        let (handle, _events) = start();
+        let info = handle.open(&copy).wait(TIMEOUT).unwrap();
+        let generation = handle.begin_view().unwrap();
+        // Another file under the same name (another size).
+        std::fs::copy(fixture("minimal.pdf"), &copy).unwrap();
+        handle.kill_worker();
+        assert_eq!(
+            handle
+                .tile(tile_request(info.document, 0, generation))
+                .wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "document" })
+        );
+        handle.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

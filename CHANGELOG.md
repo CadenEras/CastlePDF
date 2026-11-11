@@ -9,6 +9,14 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Shell : **relance du worker**. Un worker qui meurt ou viole le protocole est relancé, au plus
+  3 fois par minute.
+  - La tâche qu'il exécutait échoue sans être renvoyée.
+  - Le document courant est rouvert sous le même identifiant pour l'UI, si son fichier n'a
+    pas changé.
+  - Les tâches en attente continuent avec le nouveau worker.
+  - Un worker mort au repos est remarqué avant qu'une tâche ne lui soit envoyée.
+  - Les identifiants de document donnés à l'UI sont ceux du shell, et non plus ceux du worker.
 - `pdf-render` : **cache de rendu par document** (`RenderCache`, `render_page_cached`,
   `render_area_cached`). Les rendus d'un document réutilisent ce qu'ils ont lu : polices et
   contours de glyphes, images décodées, formulaires et procédures Type 3, contenu décodé des

@@ -174,6 +174,22 @@ impl WorkerProcess {
         }
     }
 
+    /// Whether the worker process is still running: a client checks it
+    /// before sending a job, so that a worker that died while idle is
+    /// noticed before a job is lost with it.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Kills the worker at once, as a crash would: its pipes close and the
+    /// next `recv_timeout` reports it (`Closed`). For tests of what a
+    /// client does when its worker dies.
+    pub fn kill(&mut self) -> Result<(), ClientError> {
+        self.child.kill()?;
+        self.child.wait()?;
+        Ok(())
+    }
+
     /// Requests a clean stop and closes the request pipe, then kills the
     /// worker if it has not exited after `grace`. Never blocks on the pipe.
     pub fn shutdown(mut self, grace: Duration) -> Result<Stopped, ClientError> {
