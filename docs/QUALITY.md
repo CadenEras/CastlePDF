@@ -206,6 +206,18 @@ Après les filtres ASCIIHex, ASCII85, LZW et RunLength (même protocole) :
   `filters.pdf` identique à `pdftoppm` (0,000 %) ;
 - fuzzing `flate`, étendu aux nouveaux filtres : 2 401 353 exécutions en 10 min, aucun crash.
 
+Temps par tuile côté WebView (panneau « Mesures » de l'application, release, Windows,
+2026-11-11), sur un PDF de 11 pages et 804 Ko avec formulaires, images et texte :
+- première page dessinée (20 tuiles, à froid) : réception médiane 7,1 ms et p95 92,7 ms ;
+  dessin médian 0,1 ms et p95 0,2 ms. Le p95 vient des premières tuiles, qui lisent et
+  décodent polices et images avant que le cache ne serve les suivantes ;
+- après plusieurs défilements, dont des défilements rapides (1 368 tuiles) : réception
+  médiane 5,0 ms et p95 9,9 ms ; dessin médian 0,0 ms et p95 0,1 ms ;
+- la réception comprend le rendu par le worker, l'attente dans la file du shell (4 requêtes à
+  la fois) et le transport IPC des 256 Kio d'une tuile. Le dessin (`ImageData` puis
+  `putImageData`) est négligeable. Le transport d'ADR-0003 (`ipc::Response` vers
+  `ArrayBuffer`) n'est pas un goulet d'étranglement sous Windows.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour
