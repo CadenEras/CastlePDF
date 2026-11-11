@@ -260,7 +260,9 @@ relevés, en Mio :
 Affichage vérifié sur captures du workflow `screenshot` (2026-11-11, run 43076099447) :
 `truetype.pdf` et `forms.pdf` rendus correctement sous Linux (Xvfb) et macOS ARM64 (texte,
 espacement, échelle horizontale, formes pivotées, couleurs). Sous Windows, la console du
-worker recouvrait la fenêtre, avant `CREATE_NO_WINDOW` (#53).
+worker recouvrait la fenêtre ; elle a disparu après `CREATE_NO_WINDOW` (#53, run 43085372188
+sur `main`). Sous macOS, `forms.pdf` ouvert par `open -a` depuis le `.app`, comme par le
+Finder, est affiché (#55) ; le premier essai avait révélé une panique au lancement, corrigée.
 
 ## Contrôles manuels par OS
 

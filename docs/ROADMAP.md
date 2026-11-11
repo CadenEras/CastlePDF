@@ -38,13 +38,13 @@ de cette liste sans preuve.
 | Temps côté WebView mesuré sous Windows seulement (panneau « Mesures », 2026-11-11, PDF de 11 pages avec texte, images et formulaires) : dessin d'une tuile 0,1 ms en médiane, réception 5 ms en médiane et 9,9 ms au p95 en défilement | Le transport d'ADR-0003 est confirmé sous Windows, pas encore sur les autres OS | Même relevé sous macOS et Linux |
 | Mémoire en défilement mesurée sous Windows seulement, à la main (environ 173 Mo, 2026-11-11). Au repos et avec un document ouvert, le workflow `memory` mesure les trois OS (voir `docs/QUALITY.md`) | Critère de sortie de P2 (« mémoire/worker contrôlés ») | Même relevé en défilement sous macOS et Linux |
 | Glisser-déposer vérifié sous Windows seulement (procédure de `docs/QUALITY.md`, 2026-11-11) ; le choix du fichier est testé en Rust | Seul chemin d'ouverture depuis l'UI | Même procédure sous macOS et Linux |
-| Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
 
 Levées le 2026-11-11, preuves dans `docs/QUALITY.md` : jobs CI ARM64 et macOS Intel (#52) ;
 démarrage du worker en médiane de 20 exécutions (#53) ; affichage sous macOS et Linux, vu
 sur les captures du workflow `screenshot` (#54) ; mesures « page simple et Windows
 seulement », remplacées par le relevé sur corpus (`tile_cost`), le panneau « Mesures » et le
-workflow `memory` sur les trois OS.
+workflow `memory` sur les trois OS ; ouverture depuis le Finder (#55), vue sur la capture
+macOS après `open -a`, le geste à la main restant au point 6 de la procédure.
 
 ### Limites reportées en P3 (décision du 2026-11-11)
 
