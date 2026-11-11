@@ -358,3 +358,74 @@ fn protocol_error_is_the_last_frame_even_with_a_running_job() {
     assert_eq!(raw.frames.recv_timeout(TIMEOUT), Ok(None));
     assert_eq!(raw.exit_code(), Some(2));
 }
+
+fn percentiles(mut times: Vec<Duration>) -> String {
+    times.sort();
+    let at = |p: f64| {
+        let index = ((times.len() - 1) as f64 * p).round() as usize;
+        times.get(index).copied().unwrap_or_default()
+    };
+    format!(
+        "median {:?}, p95 {:?}, min {:?}, max {:?}",
+        at(0.5),
+        at(0.95),
+        at(0.0),
+        at(1.0)
+    )
+}
+
+/// Worker start-up, 20 times in a row ():
+/// through the client (launch and version handshake, as the shell does),
+/// then step by step with raw pipes: launch, Hello written, reply read. The
+/// first start (executable not yet in the file cache) is shown apart.
+#[test]
+#[ignore = "measurement"]
+fn measure_worker_start() {
+    const RUNS: usize = 20;
+    let mut client: Vec<Duration> = (0..RUNS)
+        .map(|_| {
+            let start = Instant::now();
+            let worker = spawn();
+            let elapsed = start.elapsed();
+            let _ = worker.shutdown(Duration::from_secs(2));
+            elapsed
+        })
+        .collect();
+    let first = client.remove(0);
+    println!(
+        "client start + handshake: first {first:?}; then {}",
+        percentiles(client)
+    );
+    let (mut launch, mut written, mut answered) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..RUNS {
+        let start = Instant::now();
+        let mut child = Command::new(worker_path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        launch.push(start.elapsed());
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let hello = Request::Hello {
+            version: PROTOCOL_VERSION,
+        }
+        .encode();
+        write_frame(&mut stdin, &hello, DEFAULT_MAX_FRAME_LEN).unwrap();
+        stdin.flush().unwrap();
+        written.push(start.elapsed());
+        let reply = read_frame(&mut stdout, DEFAULT_MAX_FRAME_LEN)
+            .unwrap()
+            .unwrap();
+        answered.push(start.elapsed());
+        assert!(matches!(
+            Response::decode(&reply),
+            Ok(Response::HelloAck { .. })
+        ));
+        drop(stdin);
+        let _ = child.wait();
+    }
+    println!("raw launch: {}", percentiles(launch));
+    println!("raw Hello written: {}", percentiles(written));
+    println!("raw reply read: {}", percentiles(answered));
+}

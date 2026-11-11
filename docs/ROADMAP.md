@@ -37,7 +37,6 @@ de cette liste sans preuve.
 | --- | --- | --- |
 | Temps côté WebView mesuré sous Windows seulement (panneau « Mesures », 2026-11-11) : dessin d'une tuile 0,1 ms en médiane, réception 5 ms en médiane et 9,9 ms au p95 en défilement | Le transport d'ADR-0003 est confirmé sous Windows, pas encore sur les autres OS | Même relevé sous macOS et Linux |
 | Mémoire mesurée à la main sous Windows seulement (Gestionnaire des tâches, 2026-11-11) : environ 82 Mo au repos et 173 Mo en défilement d'un long PDF, WebView comprise | Critère de sortie de P2 (« mémoire/worker contrôlés ») ; une mesure à la main n'est ni répétable ni comparable d'une version à l'autre | `scripts/measure-memory.mjs` étendu à l'ouverture et au défilement, médiane de plusieurs parcours, sur les trois OS |
-| Démarrage du worker mesuré une seule fois (491 ms) | Une mesure n'est pas une médiane | Démarrage à froid, plusieurs exécutions |
 | Glisser-déposer non testé automatiquement | Seul chemin d'ouverture depuis l'UI | Test natif du shell ou procédure manuelle consignée par OS |
 | Affichage non vérifié sur macOS et Linux | La CI compile et teste, elle ne regarde pas l'écran | Capture vérifiée sur chaque OS |
 | Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |

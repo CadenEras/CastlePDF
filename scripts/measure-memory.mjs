@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Measures the idle memory floor of the release desktop app: shell, worker
-// and WebView processes, over several successive starts.
-// Usage: node scripts/measure-memory.mjs [runs=10] [settleSeconds=5]
+// Measures the memory of the release desktop app: shell, worker and WebView
+// processes, over several successive starts, idle or with a document open.
+// Usage: node scripts/measure-memory.mjs [runs=10] [settleSeconds=5] [file.pdf]
+// With a file, the app opens it at start (as from the command line) and is
+// measured once its first page has had `settleSeconds` to render.
 // Requires `npm --prefix apps/desktop run tauri -- build --no-bundle -- --locked`
 // first (from bash: PowerShell drops the first `--`).
 // Prints a Markdown report; it does not judge results against a budget.
@@ -24,12 +26,17 @@ const exe = path.join(root, 'target', 'release',
   `castle-pdf-desktop${process.platform === 'win32' ? '.exe' : ''}`);
 const runs = Number.parseInt(process.argv[2] ?? '10', 10);
 const settleSeconds = Number.parseInt(process.argv[3] ?? '5', 10);
+const pdf = process.argv[4] ? path.resolve(process.argv[4]) : null;
 const MiB = 1024 * 1024;
 const WORKER = /^pdf-worker/;
 const MACOS_WEBKIT = /^com\.apple\.WebKit\./;
 
 if (!existsSync(exe)) {
   console.error(`missing ${exe}: build the release app first`);
+  process.exit(1);
+}
+if (pdf !== null && !existsSync(pdf)) {
+  console.error(`missing ${pdf}`);
   process.exit(1);
 }
 if (!(runs > 0 && settleSeconds > 0)) {
@@ -110,7 +117,7 @@ const samples = [];
 for (let i = 0; i < runs; i++) {
   const webkitBefore = new Set(processTable()
     .filter(p => MACOS_WEBKIT.test(p.name)).map(p => p.pid));
-  const child = spawn(exe, [], { stdio: 'ignore' });
+  const child = spawn(exe, pdf === null ? [] : [pdf], { stdio: 'ignore' });
   await sleep(settleSeconds * 1000);
   if (child.exitCode !== null) {
     console.error(`run ${i + 1}: app exited early with code ${child.exitCode}`);
@@ -166,6 +173,7 @@ const rows = [
 
 console.log(`Platform: ${os.type()} ${os.release()} ${os.arch()}, `
   + `${os.cpus()[0]?.model ?? 'CPU?'}, ${fmt(os.totalmem())} MiB RAM, Node ${process.version}`);
+console.log(`Document: ${pdf === null ? 'none (idle)' : path.basename(pdf)}`);
 console.log(`Runs: ${runs}, settle: ${settleSeconds} s after start, processes per run: `
   + `${median(samples.map(s => s.processes))}`);
 console.log('');

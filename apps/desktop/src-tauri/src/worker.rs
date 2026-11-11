@@ -1497,6 +1497,38 @@ mod tests {
         handle.stop();
     }
 
+    /// Worker start-up as the shell does it: launching the process and
+    /// completing the version handshake, 20 times in a row; the first start
+    /// is shown apart. In release, this test binary is a GUI program like
+    /// the shell (`windows_subsystem`), so a console allocated for the
+    /// worker would show here.
+    /// `cargo test -p castle-pdf-desktop --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement"]
+    fn measure_worker_start() {
+        const RUNS: usize = 20;
+        let path = test_worker_path();
+        let mut times: Vec<Duration> = (0..RUNS)
+            .map(|_| {
+                let start = Instant::now();
+                let worker = WorkerProcess::spawn(&path, HANDSHAKE_TIMEOUT).unwrap();
+                let elapsed = start.elapsed();
+                let _ = worker.shutdown(SHUTDOWN_GRACE);
+                elapsed
+            })
+            .collect();
+        let first = times.remove(0);
+        times.sort();
+        let at = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
+        println!(
+            "worker start ({RUNS} runs): first {first:?}; then median {:?}, p95 {:?}, min {:?}, max {:?}",
+            at(0.5),
+            at(0.95),
+            at(0.0),
+            at(1.0)
+        );
+    }
+
     /// Time from opening a file to the last tile of its first page, 1000
     /// pixels wide (16 tiles), through the shell queue and the worker already
     /// started, then

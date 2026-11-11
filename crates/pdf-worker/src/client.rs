@@ -111,11 +111,22 @@ pub struct WorkerProcess {
 impl WorkerProcess {
     /// Starts `program` and completes the version handshake within `timeout`.
     pub fn spawn(program: &Path, timeout: Duration) -> Result<Self, ClientError> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        // The worker is a console program. Launched from a program without a
+        // console (the release shell, a GUI application), Windows would give
+        // it a console of its own: about 0.4 s more at each start, and a
+        // window that may flash. Its stderr then goes where the shell's does.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command.spawn()?;
         let pipes = (child.stdin.take(), child.stdout.take());
         let (tx, rx) = sync_channel(RESPONSE_QUEUE);
         let mut worker = Self {
