@@ -11,9 +11,11 @@
 //! through `cmap` (9.6.5.4); simple CFF fonts through glyph names and the
 //! CFF charset, or the CFF's built-in encoding where the PDF gives no name
 //! (9.6.5.2); CID fonts through `/CIDToGIDMap` or the charset of a
-//! CID-keyed CFF. Any other font (Type 1 program, Type 3, not embedded), an
-//! encoding other than `Identity-H`, or a program that cannot be opened is
-//! `Unsupported`: its text is not drawn and the page reports `Text`.
+//! CID-keyed CFF. A simple font whose program is not read (none embedded, a
+//! Type 1 program, a damaged one) is replaced (`standard`); Type 3 fonts are
+//! read by `type3`. Any other font, an encoding other than `Identity-H`, or
+//! a CID font whose program cannot be opened is `Unsupported`: its text is
+//! not drawn and the page reports `Text`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -634,7 +636,7 @@ fn cff_glyphs(
 /// Glyph name of each code: `/BaseEncoding` (or `default`) with
 /// `/Differences` applied. Codes WinAnsi or MacRoman leave undefined take
 /// their Standard name (ISO 32000-2, 9.6.5.4).
-fn encoding_names<S: Source>(
+pub(crate) fn encoding_names<S: Source>(
     file: &PdfFile<S>,
     encoding: Option<&Object>,
     default: Option<&'static [&'static str; 256]>,
@@ -845,7 +847,7 @@ fn simple_glyphs(
 /// `/FirstChar` and `/Widths`, `/MissingWidth` outside them; without
 /// `/Widths`, the advance widths of an OpenType program (a CFF program
 /// keeps `/MissingWidth`).
-fn simple_widths<S: Source>(
+pub(crate) fn simple_widths<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
     descriptor: &Dictionary,

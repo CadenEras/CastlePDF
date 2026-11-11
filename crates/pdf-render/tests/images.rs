@@ -56,8 +56,8 @@ fn skipped(rendering: &Rendering) -> Vec<Unsupported> {
     rendering.skipped.iter().copied().collect()
 }
 
-/// A 200 x 200 page drawing image /I (\`image\`: dictionary entries and
-/// data) over (50, 50, 100, 100) after \`before\`; \`more\` objects from 6.
+/// A 200 x 200 page drawing image /I (`image`: dictionary entries and
+/// data) over (50, 50, 100, 100) after `before`; `more` objects from 6.
 fn with_image(before: &str, image: &str, data: &[u8], more: &[&str]) -> Vec<u8> {
     let content = format!("{before} q 100 0 0 100 50 50 cm /I Do Q");
     let mut bodies: Vec<Vec<u8>> = vec![
@@ -80,8 +80,8 @@ fn with_image(before: &str, image: &str, data: &[u8], more: &[&str]) -> Vec<u8> 
     assemble(&bodies)
 }
 
-/// A 200 x 200 page whose content is \`content\` (bytes: inline image data
-/// is binary), with \`resources\` (dictionary entries); \`more\` objects from 5.
+/// A 200 x 200 page whose content is `content` (bytes: inline image data
+/// is binary), with `resources` (dictionary entries); `more` objects from 5.
 fn with_content(content: &[u8], resources: &str, more: &[&str]) -> Vec<u8> {
     let mut bodies: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -98,7 +98,7 @@ fn with_content(content: &[u8], resources: &str, more: &[&str]) -> Vec<u8> {
     assemble(&bodies)
 }
 
-/// A PDF file of objects 1, 2, ... with \`bodies\`; object 1 is the catalog.
+/// A PDF file of objects 1, 2, ... with `bodies`; object 1 is the catalog.
 fn assemble(bodies: &[Vec<u8>]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
@@ -356,7 +356,7 @@ fn matte_colours_are_restored() {
     );
 }
 
-/// \`BI <entries> ID <data> EI\` drawn over (50, 50, 100, 100) after \`before\`.
+/// `BI <entries> ID <data> EI` drawn over (50, 50, 100, 100) after `before`.
 fn inline(before: &str, entries: &str, data: &[u8]) -> Vec<u8> {
     [
         format!("{before} q 100 0 0 100 50 50 cm BI {entries} ID ").as_bytes(),

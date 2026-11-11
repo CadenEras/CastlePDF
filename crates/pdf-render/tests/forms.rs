@@ -59,7 +59,7 @@ fn form(entries: &str, content: &str) -> String {
     stream(&format!("/Type /XObject /Subtype /Form {entries}"), content)
 }
 
-/// A 200 x 200 page with \`content\` and \`resources\`; \`more\` objects from 5.
+/// A 200 x 200 page with `content` and `resources`; `more` objects from 5.
 fn pdf(content: &str, resources: &str, more: &[String]) -> Vec<u8> {
     let mut bodies = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),

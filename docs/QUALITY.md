@@ -164,6 +164,16 @@ Après le remplacement de Symbol et ZapfDingbats (étape 5.3b, même protocole) 
 - pas de comparaison à `pdftoppm` pour ces polices : il dessine Symbol et ZapfDingbats avec
   les polices URW du système, d'autres glyphes.
 
+Après les polices Type 3 (étape 5.5, même protocole) :
+- premières pages au texte non dessiné (`Text`) : 77 → 61 (SafeDocs), 54 → 49 (UNSAFE). Le
+  reste vient surtout des polices CID non incluses et des polices symboliques autres que
+  Symbol et ZapfDingbats ;
+- premières pages rendues inchangées (1 911 et 2 204), aucun crash ni timeout, temps par
+  fichier inchangé (médiane 24 ms, p95 222 ms sur SafeDocs) ;
+- `type3.pdf` à 0,001 % de `pdftoppm` ;
+- fuzzing `render`, avec une police Type 3 dont la procédure est l'entrée : 438 187 puis
+  288 647 exécutions (10 min chacune, la seconde avec une procédure vide en plus), aucun crash.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour

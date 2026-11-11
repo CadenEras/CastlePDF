@@ -12,7 +12,7 @@ use crate::error::{ContentErrorKind, Error, RenderLimitKind};
 use crate::geometry::{Matrix, Path, Point, Segment, Window};
 use crate::image;
 use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
-use crate::text::{self, Selected, TextState, font};
+use crate::text::{self, Selected, TextState, font, type3};
 use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
 
 /// Most glyph outline segments kept in the cache of one rendering (about
@@ -223,6 +223,30 @@ pub(crate) struct Interpreter<'a, S> {
     cached_form_bytes: usize,
     /// Scopes of the forms with their own resources, between two draws.
     form_scopes: BTreeMap<ObjectId, Scope>,
+    /// Scopes of the Type 3 fonts with their own resources, by font number.
+    type3_scopes: BTreeMap<usize, Scope>,
+    /// Decoded Type 3 glyph procedures, counted with the forms' content;
+    /// `None` for one that cannot be read.
+    glyph_contents: BTreeMap<ObjectId, Option<Arc<Vec<u8>>>>,
+    /// The next operation is the first of a Type 3 glyph procedure: only
+    /// there are `d0` and `d1` allowed (9.6.4).
+    glyph_start: bool,
+    /// The glyph began with `d1`: it has no colour of its own, colour
+    /// operators are ignored (9.6.4).
+    uncolored: bool,
+}
+
+/// How nested content (a form, a Type 3 glyph) is entered.
+struct Nested {
+    /// Its current transformation matrix.
+    ctm: Matrix,
+    /// A clip (its bounding box) and its matrix to device space.
+    clip: Option<(Path, Matrix)>,
+    /// A transparency group: alphas start at 1; `Some(alpha)` composites
+    /// it as one layer at that opacity.
+    group: Option<Option<f32>>,
+    /// Its own resource scope.
+    scope: Option<Scope>,
 }
 
 impl<'a, S: Source> Interpreter<'a, S> {
@@ -285,6 +309,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
             forms_read: BTreeMap::new(),
             cached_form_bytes: 0,
             form_scopes: BTreeMap::new(),
+            type3_scopes: BTreeMap::new(),
+            glyph_contents: BTreeMap::new(),
+            glyph_start: false,
+            uncolored: false,
         }
     }
 
@@ -378,6 +406,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
 
     fn execute(&mut self, op: &Operation<'_>, budget: &mut Budget) -> Result<(), Error> {
         let at = op.offset;
+        let glyph_start = std::mem::take(&mut self.glyph_start);
         let ops = op.operands;
         let page = self.page;
         let bad = move || content_error(page, at, ContentErrorKind::InvalidOperands);
@@ -402,6 +431,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             Category::TextPosition | Category::TextShow if !self.in_text => {
                 return Err(misplaced());
             }
+            // An uncoloured glyph is painted in the colour of the text.
+            Category::Color if self.uncolored => return Ok(()),
             _ => {}
         }
 
@@ -685,8 +716,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 }
                 self.show(items, at, budget)?;
             }
-            // Type 3 glyph operators are only valid in a glyph description.
-            b"d0" | b"d1" => return Err(misplaced()),
+            // Type 3 glyph metrics (9.6.4): the width is the font's; `d1`
+            // makes the glyph uncoloured.
+            b"d0" | b"d1" => {
+                if !glyph_start {
+                    return Err(misplaced());
+                }
+                let valid = match op.operator {
+                    b"d0" => numbers::<2>(ops).is_some(),
+                    _ => numbers::<6>(ops).is_some(),
+                };
+                if !valid {
+                    return Err(bad());
+                }
+                if op.operator == b"d1" {
+                    self.uncolored = true;
+                }
+            }
             // XObjects, shadings and inline images (8.8, 8.7.4.2, 8.9.7).
             b"Do" => {
                 let [Object::Name(name)] = ops else {
@@ -790,6 +836,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
         // A stencil mask takes the fill colour: cached per colour. An image
         // whose colour space is a resource name depends on the scope it is
         // drawn in: not cached.
+        if self.uncolored && stream.dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
+            // An uncoloured glyph may only paint image masks (9.6.4).
+            self.skipped.insert(Unsupported::Image);
+            return Ok(());
+        }
         let Some(fill) = self.stencil_fill(&stream.dictionary) else {
             return Ok(());
         };
@@ -976,77 +1027,25 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.skipped.insert(Unsupported::BlendMode);
         }
 
-        // Enter: a saved state the content cannot restore, the form's
-        // coordinates, its bounding box as a clip, the group's layer.
-        self.save()?;
-        let outer_floor = std::mem::replace(&mut self.floor, self.saved.len());
-        self.state.ctm = ctm;
-        self.canvas.push_clip(&clip, &device, false);
-        self.state.clips += 1;
-        self.active_clips += 1;
-        if form.group.is_some() {
-            self.state.fill.alpha = 1.0;
-            self.state.stroke.alpha = 1.0;
-        }
-        if layer {
-            self.canvas.push_opacity(alpha);
-        }
-        let outer = (
-            std::mem::take(&mut self.path),
-            self.pending_clip.take(),
-            std::mem::take(&mut self.marked_content),
-            std::mem::take(&mut self.compatibility),
-        );
-        let mut scope = form.resources.as_ref().map(|resources| {
+        let scope = form.resources.as_ref().map(|resources| {
             self.form_scopes.remove(&id).unwrap_or_else(|| Scope {
                 resources: Some(resources.clone()),
                 ..Scope::default()
             })
         });
-        if let Some(scope) = &mut scope {
-            self.swap_scope(scope);
+        let nested = Nested {
+            ctm,
+            clip: Some((clip, device)),
+            group: form.group.map(|_| layer.then_some(alpha)),
+            scope,
+        };
+        let (result, scope) = self.run_nested(id, nested, &form.content, budget)?;
+        if let Some(scope) = scope
+            && self.form_scopes.len() < MAX_FORM_SCOPES
+        {
+            self.form_scopes.insert(id, scope);
         }
-        self.forms.push(id);
-
-        let result = self.run_content(&form.content, budget);
-
-        // Leave, whatever the content left open: its states, text object,
-        // path, marked content; then the layer and the form's own state.
-        self.forms.pop();
-        if let Some(mut scope) = scope {
-            self.swap_scope(&mut scope);
-            if self.form_scopes.len() < MAX_FORM_SCOPES {
-                self.form_scopes.insert(id, scope);
-            }
-        }
-        while self.saved.len() > self.floor {
-            self.restore();
-        }
-        if layer {
-            self.canvas.pop_layer();
-        }
-        self.floor = outer_floor;
-        self.restore();
-        self.in_text = false;
-        (
-            self.path,
-            self.pending_clip,
-            self.marked_content,
-            self.compatibility,
-        ) = outer;
-        match result {
-            Ok(()) => Ok(()),
-            Err(
-                Error::Content { .. }
-                | Error::Syntax(
-                    pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. },
-                ),
-            ) => {
-                self.skipped.insert(Unsupported::XObject);
-                Ok(())
-            }
-            Err(other) => Err(other),
-        }
+        self.nested_result(result, Unsupported::XObject)
     }
 
     /// `BI ... ID ... EI` (8.9.7): an inline image, decoded each time it is
@@ -1059,6 +1058,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
         budget: &mut Budget,
     ) -> Result<(), Error> {
         let dictionary = image::inline_dictionary(raw);
+        if self.uncolored && dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
+            self.skipped.insert(Unsupported::Image);
+            return Ok(());
+        }
         let Some(fill) = self.stencil_fill(&dictionary) else {
             return Ok(());
         };
@@ -1180,21 +1183,35 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.fonts.insert(name.to_vec(), selected.clone());
             return Ok(selected);
         }
-        let loaded = match entry {
-            Some(object) => match text::resolve_dictionary(self.file, &object, budget)? {
-                Some(dictionary) => font::load(self.file, &dictionary, budget)?,
-                None => None,
-            },
+        let dictionary = match entry {
+            Some(object) => text::resolve_dictionary(self.file, &object, budget)?,
             None => None,
         };
-        let selected = match loaded {
-            Some(font) => {
-                self.loaded_fonts += 1;
-                Selected::Font {
-                    number: self.loaded_fonts,
-                    font: Arc::new(font),
+        let selected = match dictionary {
+            Some(dictionary)
+                if dictionary.get(b"Subtype").and_then(Object::as_name) == Some(b"Type3") =>
+            {
+                match type3::load(self.file, &dictionary, budget)? {
+                    Some(font) => {
+                        self.loaded_fonts += 1;
+                        Selected::Type3 {
+                            number: self.loaded_fonts,
+                            font: Arc::new(font),
+                        }
+                    }
+                    None => Selected::Unsupported,
                 }
             }
+            Some(dictionary) => match font::load(self.file, &dictionary, budget)? {
+                Some(font) => {
+                    self.loaded_fonts += 1;
+                    Selected::Font {
+                        number: self.loaded_fonts,
+                        font: Arc::new(font),
+                    }
+                }
+                None => Selected::Unsupported,
+            },
             None => Selected::Unsupported,
         };
         self.fonts.insert(name.to_vec(), selected.clone());
@@ -1211,6 +1228,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
     fn show(&mut self, items: &[Object], at: u64, budget: &mut Budget) -> Result<(), Error> {
         let (font_number, font) = match &self.state.text.font {
             Selected::Font { number, font } => (*number, Arc::clone(font)),
+            Selected::Type3 { number, font } => {
+                let (number, font) = (*number, Arc::clone(font));
+                return self.show_type3(items, number, &font, at, budget);
+            }
             Selected::None | Selected::Unsupported => {
                 self.skipped.insert(Unsupported::Text);
                 return Ok(());
@@ -1298,6 +1319,253 @@ impl<'a, S: Source> Interpreter<'a, S> {
         }
         self.path = path;
         self.paint(at, fill.then_some(false), stroke)
+    }
+
+    /// Shows the strings of `items` in a Type 3 font (9.6.4): each code's
+    /// glyph procedure runs with the font matrix, the text rendering matrix
+    /// and the font's resources, like a form; the text then advances by the
+    /// code's width through the font matrix. Invisible modes (3, 7) only
+    /// advance; other modes paint as the procedure does.
+    fn show_type3(
+        &mut self,
+        items: &[Object],
+        font_number: usize,
+        font: &type3::Type3,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        let text = self.state.text.clone();
+        let draws = !matches!(text.render_mode, 3 | 7);
+        let size = Matrix::new(
+            text.size * text.horizontal_scale,
+            0.0,
+            0.0,
+            text.size,
+            0.0,
+            text.rise,
+        );
+        let mut shown: u64 = 0;
+        for item in items {
+            let string = match item {
+                Object::String(string) => string,
+                other => {
+                    let adjust = number(other).unwrap_or(0.0);
+                    let tx = -adjust / 1000.0 * text.size * text.horizontal_scale;
+                    self.advance(tx, at)?;
+                    continue;
+                }
+            };
+            for &code in string {
+                shown += 1;
+                if shown.is_multiple_of(CANCEL_CHECK_CODES) {
+                    budget.check_cancelled()?;
+                }
+                let index = usize::from(code);
+                if draws && font.missing.get(index).copied().unwrap_or(false) {
+                    self.skipped.insert(Unsupported::Text);
+                }
+                if draws && let Some(Some(id)) = font.procs.get(index).copied() {
+                    let ctm = font
+                        .matrix
+                        .then(&size)
+                        .then(&self.text_matrix)
+                        .then(&self.state.ctm);
+                    self.glyph(font_number, font, id, ctm, budget)?;
+                }
+                let spacing =
+                    text.char_spacing + if code == b' ' { text.word_spacing } else { 0.0 };
+                let tx = (font.advance(code) * text.size + spacing) * text.horizontal_scale;
+                self.advance(tx, at)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the glyph procedure `id` of a Type 3 font with `ctm`. A glyph
+    /// that cannot be drawn (not a readable stream, invalid content, nested
+    /// too deep or inside itself) is skipped, or drawn up to its error, and
+    /// reported (`Text`); the text goes on.
+    fn glyph(
+        &mut self,
+        number: usize,
+        font: &type3::Type3,
+        id: ObjectId,
+        ctm: Matrix,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        // Each run is an operation, even of an empty procedure.
+        self.operations += 1;
+        if self.operations > self.limits.max_operations {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::Operations,
+                limit: self.limits.max_operations,
+            });
+        }
+        if self.forms.len() >= MAX_FORM_DEPTH || self.forms.contains(&id) || !ctm.is_finite() {
+            self.skipped.insert(Unsupported::Text);
+            return Ok(());
+        }
+        let content = match self.glyph_contents.get(&id) {
+            Some(Some(content)) => Arc::clone(content),
+            Some(None) => {
+                self.skipped.insert(Unsupported::Text);
+                return Ok(());
+            }
+            None => {
+                let decoded = match self.file.resolve(id, budget) {
+                    Ok(IndirectValue::Stream(stream)) => {
+                        match self.file.decoded_stream_data(&stream, budget) {
+                            Ok(content) => Some(content),
+                            Err(
+                                pdf_syntax::Error::Unsupported(_)
+                                | pdf_syntax::Error::Malformed { .. }
+                                | pdf_syntax::Error::Truncated { .. },
+                            ) => None,
+                            Err(other) => return Err(Error::Syntax(other)),
+                        }
+                    }
+                    Ok(IndirectValue::Object(_))
+                    | Err(
+                        pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. },
+                    ) => None,
+                    Err(other) => return Err(Error::Syntax(other)),
+                };
+                let Some(decoded) = decoded else {
+                    // Not read again at its next occurrence.
+                    self.glyph_contents.insert(id, None);
+                    self.skipped.insert(Unsupported::Text);
+                    return Ok(());
+                };
+                let content = Arc::new(decoded);
+                if self.cached_form_bytes + content.len() <= MAX_CACHED_FORM_BYTES {
+                    self.cached_form_bytes += content.len();
+                    self.glyph_contents.insert(id, Some(Arc::clone(&content)));
+                }
+                content
+            }
+        };
+        let scope = font.resources.as_ref().map(|resources| {
+            self.type3_scopes.remove(&number).unwrap_or_else(|| Scope {
+                resources: Some(resources.clone()),
+                ..Scope::default()
+            })
+        });
+        let outer = (
+            std::mem::replace(&mut self.glyph_start, true),
+            std::mem::replace(&mut self.uncolored, false),
+        );
+        let nested = Nested {
+            ctm,
+            clip: None,
+            group: None,
+            scope,
+        };
+        let ran = self.run_nested(id, nested, &content, budget);
+        (self.glyph_start, self.uncolored) = outer;
+        let (result, scope) = ran?;
+        if let Some(scope) = scope
+            && self.type3_scopes.len() < MAX_FORM_SCOPES
+        {
+            self.type3_scopes.insert(number, scope);
+        }
+        self.nested_result(result, Unsupported::Text)
+    }
+
+    /// Runs `content` as nested content `id` (a form, a Type 3 glyph): in a
+    /// saved state it cannot restore, with the matrix, clip, group and scope
+    /// of `nested`, outside any text object, path, marked content or
+    /// compatibility section; then undoes whatever the content left open.
+    /// Returns the content's result and the scope, to be kept.
+    fn run_nested(
+        &mut self,
+        id: ObjectId,
+        nested: Nested,
+        content: &[u8],
+        budget: &mut Budget,
+    ) -> Result<(Result<(), Error>, Option<Scope>), Error> {
+        self.save()?;
+        let outer_floor = std::mem::replace(&mut self.floor, self.saved.len());
+        self.state.ctm = nested.ctm;
+        if let Some((clip, device)) = &nested.clip {
+            self.canvas.push_clip(clip, device, false);
+            self.state.clips += 1;
+            self.active_clips += 1;
+        }
+        let layer = match nested.group {
+            Some(layer) => {
+                self.state.fill.alpha = 1.0;
+                self.state.stroke.alpha = 1.0;
+                layer
+            }
+            None => None,
+        };
+        if let Some(alpha) = layer {
+            self.canvas.push_opacity(alpha);
+        }
+        let outer = (
+            std::mem::take(&mut self.path),
+            self.pending_clip.take(),
+            std::mem::take(&mut self.marked_content),
+            std::mem::take(&mut self.compatibility),
+            std::mem::replace(&mut self.in_text, false),
+            self.text_matrix,
+            self.line_matrix,
+        );
+        let mut scope = nested.scope;
+        if let Some(scope) = &mut scope {
+            self.swap_scope(scope);
+        }
+        self.forms.push(id);
+
+        let result = self.run_content(content, budget);
+
+        // Leave, whatever the content left open: its states, text object,
+        // path, marked content; then the layer and the entry state.
+        self.forms.pop();
+        if let Some(scope) = &mut scope {
+            self.swap_scope(scope);
+        }
+        while self.saved.len() > self.floor {
+            self.restore();
+        }
+        if layer.is_some() {
+            self.canvas.pop_layer();
+        }
+        self.floor = outer_floor;
+        self.restore();
+        (
+            self.path,
+            self.pending_clip,
+            self.marked_content,
+            self.compatibility,
+            self.in_text,
+            self.text_matrix,
+            self.line_matrix,
+        ) = outer;
+        Ok((result, scope))
+    }
+
+    /// The result of nested content: invalid content (or damaged objects
+    /// it reads) only affects it and is reported as `capability`; limits
+    /// and cancellation stop the rendering.
+    fn nested_result(
+        &mut self,
+        result: Result<(), Error>,
+        capability: Unsupported,
+    ) -> Result<(), Error> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(
+                Error::Content { .. }
+                | Error::Syntax(
+                    pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. },
+                ),
+            ) => {
+                self.skipped.insert(capability);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
     }
 
     fn advance(&mut self, tx: f64, at: u64) -> Result<(), Error> {

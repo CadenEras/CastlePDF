@@ -21,10 +21,10 @@ pub(crate) enum Family {
     Mono,
 }
 
-/// Family and style that replace the font named \`name\` (subset prefix
-/// removed) with descriptor \`flags\`, \`weight\` (\`/FontWeight\`) and
-/// \`italic_angle\`: from the name first, then the descriptor (ISO 32000-2,
-/// 9.8.2, table 121: \`FixedPitch\` 1, \`Serif\` 2, \`Italic\` 64, \`ForceBold\`
+/// Family and style that replace the font named `name` (subset prefix
+/// removed) with descriptor `flags`, `weight` (`/FontWeight`) and
+/// `italic_angle`: from the name first, then the descriptor (ISO 32000-2,
+/// 9.8.2, table 121: `FixedPitch` 1, `Serif` 2, `Italic` 64, `ForceBold`
 /// 262 144).
 pub(crate) fn choose(
     name: &[u8],

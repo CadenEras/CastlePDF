@@ -25,7 +25,7 @@ incluses TrueType (5.2a, fait) et CFF (5.2b, fait) ; 5.3 polices non incluses (j
 Helvetica, Times, Courier et polices nommées, fait ; 5.3b Symbol et ZapfDingbats, fait) ; 5.4 images Flate et DCT (5.4a
 XObjects image, fait ; 5.4b images en ligne, fait ; 5.4c XObjects de formulaire et groupes
 de transparence, fait) ;
-5.5 polices Type 3.
+5.5 polices Type 3, fait.
 
 ### Limites ouvertes à lever avant la fin de P2
 

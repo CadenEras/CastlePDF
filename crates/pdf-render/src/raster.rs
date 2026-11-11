@@ -457,9 +457,10 @@ impl Canvas {
         }
     }
 
-    /// Starts a layer composited with \`opacity\` when popped (a
+    /// Starts a layer composited with `opacity` when popped (a
     /// transparency group painted with a constant alpha, ISO 32000-2,
-    /// 11.6.4.4). Clips pushed inside are popped before it.
+    /// 11.6.4.4). Clips and layers are separate stacks: a clip pushed after
+    /// the layer may be popped after it.
     pub fn push_opacity(&mut self, opacity: f32) {
         let span = self.visible();
         self.for_cells(span, |cell| cell.context.push_opacity_layer(opacity));

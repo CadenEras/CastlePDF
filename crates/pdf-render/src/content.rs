@@ -284,7 +284,7 @@ mod tests {
     /// Dictionary keys and data of an inline image.
     type Inline = (Vec<String>, Vec<u8>);
 
-    /// The dictionary keys and data of each inline image of \`data\`.
+    /// The dictionary keys and data of each inline image of `data`.
     fn inline_images(data: &[u8]) -> Result<Vec<Inline>, Error> {
         let mut reader = ContentReader::new(data, page());
         let mut budget = budget();
