@@ -444,6 +444,43 @@ function inlinePage() {
   ], '1.4');
 }
 
+// Form XObjects (ISO 32000-2, 8.10): one 200 x 200 page.
+// - /R (top left): a form rotated 30 degrees by its /Matrix, which fills far
+//   beyond its 50 x 50 /BBox in red, with a blue diagonal stroke: only the
+//   rotated box is painted.
+// - /N (top right): a form with its own resources, drawing the image /N (a
+//   4 x 1 Indexed image: yellow, cyan, magenta, black) then the form /M,
+//   which draws a green square; the page's /N is the form itself.
+// - /N again at the bottom left, scaled by the page's cm.
+// - /G (bottom right): a transparency group of two overlapping opaque red
+//   squares, painted at fill alpha 0.5: the overlap is not darker.
+function formsPage() {
+  const page = [
+    'q 1 0 0 1 40 120 cm /R Do Q',
+    'q 1 0 0 1 110 110 cm /N Do Q',
+    'q 0.6 0 0 0.6 10 10 cm /N Do Q',
+    '/H gs /G Do',
+  ].join('\n');
+  const form = (entries, content) => stream(content,
+    ` /Type /XObject /Subtype /Form ${entries}`);
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject '
+      + '<< /R 5 0 R /N 6 0 R /G 9 0 R >> /ExtGState << /H << /ca 0.5 >> >> >> /Contents 4 0 R >>',
+    stream(page),
+    form('/BBox [0 0 50 50] /Matrix [0.8660254 0.5 -0.5 0.8660254 0 0]',
+      '1 0 0 rg -100 -100 300 300 re f 0 0 1 RG 3 w 0 0 m 50 50 l S'),
+    form('/BBox [0 0 80 80] /Resources << /XObject << /N 7 0 R /M 8 0 R >> >>',
+      'q 80 0 0 40 0 40 cm /N Do Q /M Do'),
+    imageStream(4, 1, ' /ColorSpace [/Indexed /DeviceRGB 3 <FFFF0000FFFFFF00FF000000>] '
+      + '/BitsPerComponent 2', [0b00011011]),
+    form('/BBox [0 0 80 40]', '0 0.6 0 rg 20 5 40 30 re f'),
+    form('/BBox [0 0 200 200] /Group << /S /Transparency >>',
+      '1 0 0 rg 110 10 50 50 re f 140 40 50 50 re f'),
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -532,6 +569,9 @@ export const fixtures = {
   // Inline images: abbreviations, resource colour space, Flate, stencil,
   // JPEG; see inlinePage.
   'inline-images.pdf': inlinePage(),
+  // Form XObjects: matrix and bounding box, own resources, nesting, reuse,
+  // transparency group; see formsPage.
+  'forms.pdf': formsPage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

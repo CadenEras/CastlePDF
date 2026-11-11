@@ -1,5 +1,5 @@
 //! `render_area` and `page_size`: tiles of a page assemble into the page
-//! rendering (each channel within 1), and invalid areas are refused.
+//! rendering exactly, and invalid areas are refused.
 
 #![allow(
     clippy::expect_used,
@@ -21,8 +21,13 @@ fn budget() -> Budget {
 }
 
 fn shapes() -> Document<MemorySource> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/public/shapes.pdf");
+    fixture("shapes.pdf")
+}
+
+fn fixture(name: &str) -> Document<MemorySource> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus/public")
+        .join(name);
     let pdf = std::fs::read(path).expect("fixture");
     Document::open(
         MemorySource::from_vec(pdf, &ResourceLimits::default()).expect("source"),
@@ -38,8 +43,7 @@ fn options(scale: f64) -> RenderOptions {
 }
 
 /// Renders the page in tiles of `tile` pixels and compares every pixel with
-/// the whole-page rendering: each channel within 1, the rasteriser rounding
-/// shifted coordinates differently.
+/// the whole-page rendering: the same pixels exactly (same cells).
 fn assert_tiles_match(document: &Document<MemorySource>, index: usize, scale: f64, tile: u32) {
     let page = document.page(index).expect("page");
     let options = options(scale);
@@ -73,8 +77,9 @@ fn assert_tiles_match(document: &Document<MemorySource>, index: usize, scale: f6
                     ) else {
                         panic!("pixel outside a bitmap");
                     };
-                    assert!(
-                        got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
+                    assert_eq!(
+                        got,
+                        want,
                         "page {index} scale {scale} tile {tile}: pixel ({}, {}) {got:?} != {want:?}",
                         x + tx,
                         y + ty
@@ -98,6 +103,15 @@ fn tiles_assemble_into_the_page() {
         // Tiles not aligned on the rasteriser's 4-pixel grid, odd scale.
         assert_tiles_match(&document, index, 1.37 * factor, 97);
     }
+}
+
+#[test]
+fn tiles_of_forms_and_groups_assemble_into_the_page() {
+    // Clipped and nested forms, and a transparency group drawn through an
+    // opacity layer.
+    let document = fixture("forms.pdf");
+    assert_tiles_match(&document, 0, 3.0, 256);
+    assert_tiles_match(&document, 0, 1.37, 97);
 }
 
 #[test]
@@ -187,6 +201,35 @@ fn the_pixel_limit_applies_to_the_area() {
             limit: 256 * 256
         })
     );
+    // An area off the cell grid counts the cells it touches: 1 x 300 pixels
+    // at (10, 10) touch two cells of 256 x 256.
+    let narrow = PixelRect {
+        x: 10,
+        y: 10,
+        width: 1,
+        height: 300,
+    };
+    options.limits.max_pixels = 2 * 256 * 256 - 1;
+    assert_eq!(
+        render_area(document.file(), page, &options, narrow, &mut budget()).err(),
+        Some(Error::LimitExceeded {
+            kind: RenderLimitKind::Pixels,
+            limit: 2 * 256 * 256 - 1
+        })
+    );
+    options.limits.max_pixels = 2 * 256 * 256;
+    assert!(render_area(document.file(), page, &options, narrow, &mut budget()).is_ok());
+    // At the page's side, cells are cut: the last column is 800 - 768 wide.
+    let side = PixelRect {
+        x: 790,
+        y: 0,
+        width: 10,
+        height: 10,
+    };
+    options.limits.max_pixels = 32 * 256;
+    assert!(render_area(document.file(), page, &options, side, &mut budget()).is_ok());
+    options.limits.max_pixels = 32 * 256 - 1;
+    assert!(render_area(document.file(), page, &options, side, &mut budget()).is_err());
     // `page_size` does not apply `max_pixels`.
     assert_eq!(page_size(page, &options), Ok((800, 800)));
 }
@@ -231,8 +274,26 @@ fn page_with_content(content: &[u8]) -> Document<MemorySource> {
 /// and the page placed its edge differently (a channel off by 34).
 #[test]
 fn far_geometry_renders_the_same_in_a_tile() {
+    assert_fuzz_area_matches("far-shear-tile.bin");
+}
+
+/// Found by the `render` fuzz target: the same sheared square drawn twice.
+/// The rasteriser's coverage depends on where an edge lies on its canvas,
+/// so a tile and the page, each with its own origin, differed by 1 per
+/// draw, and by 2 where two edges overlapped. Both now rasterise the same
+/// cells from the same coordinates.
+#[test]
+fn overlapping_edges_render_the_same_in_a_tile() {
+    assert_fuzz_area_matches("overlap-tile.bin");
+}
+
+/// Renders a `render` fuzz input as its target does, then the area the
+/// target checks (off the cell grid): the same pixels exactly.
+fn assert_fuzz_area_matches(name: &str) {
     let input = std::fs::read(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/far-shear-tile.bin"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(name),
     )
     .expect("fuzz input");
     // As in the fuzz target: the first byte chooses the scale.
@@ -257,10 +318,7 @@ fn far_geometry_renders_the_same_in_a_tile() {
                 .bitmap
                 .pixel(area.x + x, area.y + y)
                 .expect("page pixel");
-            assert!(
-                got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
-                "({x}, {y}) {got:?} != {want:?}"
-            );
+            assert_eq!(got, want, "({x}, {y}) {got:?} != {want:?}");
         }
     }
 }

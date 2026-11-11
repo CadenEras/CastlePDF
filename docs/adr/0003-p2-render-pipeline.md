@@ -88,3 +88,30 @@ ou base64 : exclu.
   basculer vers `tiny-skia` ; Flate est derrière l'interface de filtre de `pdf-syntax`.
 - Acceptée le 2026-11-07 : `docs/ROADMAP.md` (contenu de P2 et P3) et la ligne
   « OS minimums » d'ADR-0001 sont amendés en conséquence.
+
+## Amendement du 2026-11-10 : cellules de rasterisation
+
+Le fuzzing de `render` a montré qu'une tuile et la page entière ne donnaient pas
+exactement les mêmes pixels.
+- **Cause :** `vello_cpu` calcule en simple précision, à partir de coordonnées absolues,
+  la couverture d'un bord. Elle dépend donc de l'endroit où le bord tombe sur le canevas.
+  Translater la page d'un nombre entier de pixels change l'arrondi.
+- **Ampleur :** l'écart était d'au plus 1 niveau par dessin, mais il s'additionnait
+  quand des bords se superposaient (2 pour un même tracé dessiné deux fois).
+- **Essais sans effet :** caler les coordonnées sur une grille de 1/128 px, aligner la
+  tuile sur la grille de 4 px et élargir la marge de découpe.
+
+Décision : l'adaptateur découpe le canevas en **cellules de 256 px** (le côté des
+tuiles du visualiseur), sur une grille fixée au coin supérieur gauche de la page.
+- Chaque cellule a son propre contexte `vello_cpu` et sa propre origine.
+- Chaque cellule aplatit et découpe elle-même les tracés en double précision à partir
+  des coordonnées de la page, puis les ramène à son origine.
+- `render_page` et `render_area` assemblent les mêmes cellules. Une zone quelconque
+  donne donc **exactement** les pixels de la page. Les tests de tuiles, la cible de
+  fuzzing et la documentation de `render_area` exigent maintenant l'égalité exacte.
+- Une tuile du visualiseur est une seule cellule : elle ne coûte pas plus qu'avant.
+
+Une page entière est rasterisée cellule par cellule. Un tracé est aplati une fois par
+cellule qu'il touche, et l'estimation de travail (`max_path_work`) le compte. Une
+découpe qui ne touche pas une cellule la masque jusqu'à son retrait, au lieu d'y être
+poussée. Le coût est mesuré par `survey` (`docs/QUALITY.md`).

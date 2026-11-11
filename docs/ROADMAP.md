@@ -23,7 +23,8 @@ Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objet
 (ADR-0005), par étapes : 5.1 décompte des types de police dans `survey` (fait) ; 5.2 polices
 incluses TrueType (5.2a, fait) et CFF (5.2b, fait) ; 5.3 polices non incluses (jeu OFL : 5.3a
 Helvetica, Times, Courier et polices nommées, fait ; 5.3b Symbol et ZapfDingbats) ; 5.4 images Flate et DCT (5.4a
-XObjects image, fait ; 5.4b images en ligne, fait) ;
+XObjects image, fait ; 5.4b images en ligne, fait ; 5.4c XObjects de formulaire et groupes
+de transparence, fait) ;
 5.5 polices Type 3.
 
 ### Limites ouvertes à lever avant la fin de P2
@@ -45,7 +46,7 @@ de cette liste sans preuve.
 | Chaque tuile réinterprète tout le contenu de la page | Coût multiplié par le nombre de tuiles sur une page lourde | Mesure sur pages lourdes, puis cache de la liste d'affichage si nécessaire |
 | Polices et images relues et décodées à chaque rendu, donc à chaque tuile (pas encore de cache par document) ; une image en ligne l'est à chaque dessin, même dans un rendu | Avec le texte et les images, le temps médian par fichier de `survey` passe de 5 à 21 ms, et le p95 de 43 à 211 ms (SafeDocs, 2026-11-10) | Cache borné par document dans le worker (ADR-0005), mesuré par tuile ; images en ligne clées par contenu si la mesure le justifie |
 | Images en ASCIIHex, ASCII85, LZW, RunLength ou CCITT signalées (`Image`), pas dessinées : seul Flate est décodé | Courant pour les images en ligne ; 112 et 149 premières pages du corpus gardent une image non dessinée (filtre ou taille, 2026-11-10) | Filtres secondaires (P3, ADR-0003), ou avancés en P2 si la mesure le justifie |
-| Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 3 premières pages du corpus (`limit/DecodedBytes`) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
+| Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 4 premières pages du corpus (`limit/DecodedBytes`), dont une par les images de ses formulaires (2026-11-10) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
 | Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
 | Pas de jobs CI ARM64 ni de build macOS x86_64 | Annoncés par ADR-0003 | Jobs ajoutés ou report motivé |
 

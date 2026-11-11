@@ -376,10 +376,7 @@ fn text_tiles_assemble_into_the_page() {
                 .bitmap
                 .pixel(area.x + x, area.y + y)
                 .expect("page pixel");
-            assert!(
-                got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 1),
-                "({x}, {y}) {got:?} != {want:?}"
-            );
+            assert_eq!(got, want, "({x}, {y}) {got:?} != {want:?}");
         }
     }
 }
