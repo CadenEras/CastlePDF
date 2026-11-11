@@ -106,9 +106,12 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
 - le canvas de l'UI est limité à 16 Mpx : une page haute et étroite est rendue à une
   échelle plus faible.
 
+Un worker perdu (crash, protocole violé) est relancé par le shell, au plus 3 fois par
+minute. La tâche qu'il exécutait échoue sans être renvoyée, puisqu'elle a pu provoquer la
+perte. Le document courant est rouvert seulement si son fichier n'a pas changé (taille et
+date de modification). Au-delà de la limite, toute requête échoue explicitement.
+
 Limites connues :
-- un worker perdu (crash, protocole violé) n'est pas relancé : il faut redémarrer
-  l'application ;
 - sur macOS, l'ouverture depuis le Finder (`RunEvent::Opened`) n'est pas prise en charge.
 
 Le texte extrait reste du texte. Nettoyer les noms d'export et interdire traversée,

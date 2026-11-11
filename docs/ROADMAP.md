@@ -38,7 +38,6 @@ de cette liste sans preuve.
 | Temps côté WebView non mesuré (`ipc::Response` → `ArrayBuffer` → `putImageData`) | Le transport d'ADR-0003 n'est ni confirmé ni infirmé | Mesure dans l'application réelle, médiane et dispersion, sur les trois OS |
 | Mémoire application + worker + WebView non mesurée pendant la navigation | Critère de sortie de P2 (« mémoire/worker contrôlés ») | `scripts/measure-memory.mjs` étendu à l'ouverture et au parcours de pages |
 | Démarrage du worker mesuré une seule fois (491 ms) | Une mesure n'est pas une médiane | Démarrage à froid, plusieurs exécutions |
-| Worker planté non relancé | L'utilisateur doit redémarrer l'application | Relance bornée par le shell, document rouvert, erreur explicite au-delà |
 | Glisser-déposer non testé automatiquement | Seul chemin d'ouverture depuis l'UI | Test natif du shell ou procédure manuelle consignée par OS |
 | Affichage non vérifié sur macOS et Linux | La CI compile et teste, elle ne regarde pas l'écran | Capture vérifiée sur chaque OS |
 | Ouverture depuis le Finder (macOS) non prise en charge | Usage courant sur macOS | `RunEvent::Opened` géré, ou limite publiée |
