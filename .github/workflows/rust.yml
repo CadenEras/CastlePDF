@@ -21,7 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest is ARM64 (Apple Silicon): ARM64 Linux and Windows, and
+        # Intel macOS, complete the targets of ADR-0003. Standard hosted runners,
+        # free for public repositories.
+        os: [ubuntu-latest, windows-latest, macos-latest, ubuntu-24.04-arm, windows-11-arm, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -40,6 +43,22 @@ jobs:
           sudo apt-get $APT_OPTS install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
       # Standard hosted runners only (free for public repositories). They ship
       # rustup; rust-toolchain.toml selects the exact version.
+      # Some images (Windows on ARM) may not ship rustup: installed if missing.
+      - name: Install rustup if missing
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null; then
+            case "$RUNNER_OS" in
+              Windows)
+                curl -sSfL -o "$RUNNER_TEMP/rustup-init.exe" https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe
+                "$RUNNER_TEMP/rustup-init.exe" -y --default-toolchain none --profile minimal
+                ;;
+              *)
+                curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+                ;;
+            esac
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
       - name: Install pinned toolchain
         run: rustup toolchain install
       # Only main writes the cache, so a pull request cannot poison it.

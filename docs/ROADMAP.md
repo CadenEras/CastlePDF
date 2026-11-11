@@ -46,7 +46,6 @@ de cette liste sans preuve.
 | Images en CCITTFax, JBIG2 ou JPX signalées (`Image`), pas dessinées | 113 et 140 premières pages du corpus gardent une image non dessinée, pour un de ces filtres ou une taille au-delà de `max_image_pixels` (2026-11-11) | Filtres de P3 (ADR-0003, amendé), avec leurs propres oracles et fuzzing |
 | Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 4 premières pages du corpus (`limit/DecodedBytes`), dont une par les images de ses formulaires (2026-11-10) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
 | Mesures sur page simple et Windows seulement | Pas représentatives | Pages du corpus avec texte et images, trois OS |
-| Pas de jobs CI ARM64 ni de build macOS x86_64 | Annoncés par ADR-0003 | Jobs ajoutés ou report motivé |
 
 ## Première tranche concrète pour Claude
 
