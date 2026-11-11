@@ -9,6 +9,18 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- UI : **défilement continu**. Les pages se suivent dans une zone qui défile, chacune ajustée
+  à la largeur.
+  - Seules les pages proches de la vue sont dans le document, avec un canevas. Les autres
+    gardent leur place.
+  - Les tailles sont mesurées à l'approche de la vue ; les pages pas encore mesurées sont
+    estimées d'après la première.
+  - Le défilement reste ancré sur la page du haut quand une page au-dessus est mesurée.
+  - Chaque changement de pages visibles est une nouvelle vue : le shell abandonne les tuiles
+    des pages quittées, et les tuiles déjà dessinées ne sont pas redemandées.
+  - Les boutons Page précédente et Page suivante font défiler.
+  - Une page est annoncée comme image dès qu'elle est proche de la vue.
+  - La zone des pages se défile au clavier et occupe la hauteur de la fenêtre.
 - Shell : **relance du worker**. Un worker qui meurt ou viole le protocole est relancé, au plus
   3 fois par minute.
   - La tâche qu'il exécutait échoue sans être renvoyée.

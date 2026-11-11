@@ -58,8 +58,21 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+/* With a document, the page fills the window: only the pages scroll. */
 .app:has(.viewer) {
   max-width: none;
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.app:has(.viewer) .document,
+.viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .name {
@@ -94,4 +107,37 @@ button:focus-visible {
   margin: 0 auto;
   background: #fff;
   box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+}
+
+/* Pages one under the other, scrolled; only those near the view have a
+   canvas, the others keep their place. */
+.pages {
+  flex: 1;
+  min-height: 12rem;
+  margin-top: 1rem;
+  overflow: auto;
+  position: relative;
+}
+
+.pages:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.track {
+  position: relative;
+}
+
+.sheet {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+}
+
+.sheet canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
