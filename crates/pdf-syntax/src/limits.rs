@@ -141,6 +141,10 @@ pub enum MalformedKind {
     InvalidFilter,
     /// Flate data that is not a valid zlib stream (header, codes, checksum).
     InvalidFlateData,
+    /// ASCIIHex, ASCII85, LZW or RunLength data that cannot be decoded: a
+    /// character or code outside the filter's alphabet, an ASCII85 group out
+    /// of range, an LZW code not yet defined.
+    InvalidFilterData,
     /// Predictor parameters out of range, or predicted data that is not a
     /// whole number of rows or uses an unknown PNG filter type.
     InvalidPredictor,

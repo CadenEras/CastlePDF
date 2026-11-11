@@ -141,7 +141,7 @@ fn corrupt_and_truncated_flate_data() {
 #[test]
 fn filter_entries_are_validated() {
     let data = compress_to_vec_zlib(b"x", 6);
-    for filter in [&b"LZWDecode"[..], b"DCTDecode", b"ASCIIHexDecode", b"Fl"] {
+    for filter in [&b"CCITTFaxDecode"[..], b"DCTDecode", b"JBIG2Decode", b"Fl"] {
         assert_eq!(
             decode_stream(
                 &dict(vec![(b"Filter", name(filter))]),
@@ -358,7 +358,7 @@ fn everything_is_validated_before_decoding() {
     let bomb = compress_to_vec_zlib(&vec![0_u8; 4 << 20], 9);
     let chain = dict(vec![(
         b"Filter",
-        Object::Array(vec![name(b"FlateDecode"), name(b"LZWDecode")]),
+        Object::Array(vec![name(b"FlateDecode"), name(b"CCITTFaxDecode")]),
     )]);
     let mut b = budget();
     assert_eq!(
@@ -430,4 +430,323 @@ fn png_predictors_with_other_component_sizes() {
             );
         }
     }
+}
+
+fn filter(names: &[&[u8]]) -> Dictionary {
+    let names = names.iter().map(|n| name(n)).collect();
+    dict(vec![(b"Filter", Object::Array(names))])
+}
+
+fn decode(names: &[&[u8]], data: &[u8]) -> Result<Vec<u8>, Error> {
+    decode_stream(&filter(names), data, 100, &mut budget())
+}
+
+#[test]
+fn ascii_hex_decodes_pairs_and_stops_at_the_marker() {
+    let hex: &[u8] = b"ASCIIHexDecode";
+    assert_eq!(decode(&[hex], b"48656C6c6F>"), Ok(b"Hello".to_vec()));
+    // White space anywhere, a last odd digit followed by an implied 0, the
+    // end of the data as the marker, what follows `>` ignored.
+    assert_eq!(decode(&[hex], b"4 8\n65\t7>"), Ok(vec![0x48, 0x65, 0x70]));
+    assert_eq!(decode(&[hex], b"4865"), Ok(vec![0x48, 0x65]));
+    assert_eq!(decode(&[hex], b"41>zz"), Ok(vec![0x41]));
+    assert_eq!(decode(&[hex], b">"), Ok(vec![]));
+    assert_eq!(
+        decode(&[hex], b"4G>"),
+        bad(MalformedKind::InvalidFilterData)
+    );
+}
+
+#[test]
+fn ascii85_decodes_groups_like_a_reference_encoder() {
+    let a85: &[u8] = b"ASCII85Decode";
+    // Vectors from Python's base64.a85encode (adobe=False), plus the marker.
+    for (encoded, decoded) in [
+        (&b"87cURD]j7BEbo7~>"[..], &b"Hello world"[..]),
+        (b"z@:E^~>", b"\0\0\0\0abc"),
+        (b"@/~>", b"a"),
+        (b"@:B~>", b"ab"),
+        (b"@:E^~>", b"abc"),
+        (b"s8W-!~>", b"\xff\xff\xff\xff"),
+        // White space anywhere, even inside the marker; the end as the marker.
+        (b"87cU RD]j\n7BEbo7~ >", b"Hello world"),
+        (b"@:E^", b"abc"),
+        (b"~>", b""),
+    ] {
+        assert_eq!(
+            decode(&[a85], encoded),
+            Ok(decoded.to_vec()),
+            "{}",
+            String::from_utf8_lossy(encoded)
+        );
+    }
+    for invalid in [
+        // Out of the alphabet; z inside a group; a last group of one
+        // character; a group worth more than 2^32 - 1; a tilde not before >.
+        &b"87c{URD~>"[..],
+        b"87zcU~>",
+        b"87cUR@~>",
+        b"uuuuu~>",
+        b"87cUR~x",
+    ] {
+        assert_eq!(
+            decode(&[a85], invalid),
+            bad(MalformedKind::InvalidFilterData),
+            "{}",
+            String::from_utf8_lossy(invalid)
+        );
+    }
+}
+
+#[test]
+fn run_length_copies_and_repeats() {
+    let rl: &[u8] = b"RunLengthDecode";
+    // Copy 3, repeat 4 times, end; what follows the end is ignored.
+    assert_eq!(
+        decode(&[rl], &[2, b'a', b'b', b'c', 253, b'z', 128, 5]),
+        Ok(b"abczzzz".to_vec())
+    );
+    // The longest runs: 128 copied, 128 repeated; no end marker.
+    let mut data = vec![127];
+    data.extend(0..128_u8);
+    data.extend([129, 7]);
+    let mut expected: Vec<u8> = (0..128).collect();
+    expected.extend([7; 128]);
+    assert_eq!(decode(&[rl], &data), Ok(expected));
+    // Cut short: what is there is kept.
+    assert_eq!(decode(&[rl], &[4, b'a', b'b']), Ok(b"ab".to_vec()));
+    assert_eq!(decode(&[rl], &[200]), Ok(vec![]));
+}
+
+#[test]
+fn run_length_is_charged_before_it_is_kept() {
+    // 2 bytes become 128: a bomb of 1000 runs stops at the limit.
+    let bomb: Vec<u8> = [129_u8, 0].repeat(1000);
+    let filters = filter(&[b"RunLengthDecode"]);
+    let exact = 128 * 1000;
+    assert_eq!(
+        decode_stream(&filters, &bomb, 0, &mut limited(exact)).map(|d| d.len()),
+        Ok(128_000)
+    );
+    let mut b = limited(exact - 1);
+    assert!(matches!(
+        decode_stream(&filters, &bomb, 0, &mut b),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::DecodedBytes,
+            ..
+        })
+    ));
+    assert!(b.decoded_bytes() < exact);
+}
+
+/// A PDF LZW encoder (7.4.4.2), the reference for the decoder: codes of 9
+/// to 12 bits, a clear code first, and when the table is full a clear code
+/// (`clear_when_full`) or a full table kept.
+fn lzw_encode(data: &[u8], early_change: bool, clear_when_full: bool) -> Vec<u8> {
+    use std::collections::HashMap;
+    /// Bits written, and the code width as the decoder will read it: its
+    /// table lags the encoder's by one entry (it adds the entry of a code
+    /// when it reads the next one).
+    struct Writer {
+        out: Vec<u8>,
+        buffer: u32,
+        bits: u32,
+        width: u32,
+        /// The decoder's table size, and whether a code follows the clear.
+        seen: u32,
+        started: bool,
+        early_change: bool,
+    }
+    impl Writer {
+        fn put(&mut self, code: u32) {
+            self.buffer = (self.buffer << self.width) | code;
+            self.bits += self.width;
+            while self.bits >= 8 {
+                self.out.push((self.buffer >> (self.bits - 8)) as u8);
+                self.bits -= 8;
+                self.buffer &= (1 << self.bits) - 1;
+            }
+        }
+        fn code(&mut self, code: u32) {
+            self.put(code);
+            if self.started && self.seen < 4096 {
+                self.seen += 1;
+            }
+            self.started = true;
+            let limit = self.seen + u32::from(self.early_change);
+            self.width = match limit {
+                0..=511 => 9,
+                512..=1023 => 10,
+                1024..=2047 => 11,
+                _ => 12,
+            };
+        }
+        fn clear(&mut self) {
+            self.put(256);
+            self.width = 9;
+            self.seen = 258;
+            self.started = false;
+        }
+    }
+    let fresh =
+        || -> HashMap<Vec<u8>, u32> { (0..=255_u8).map(|b| (vec![b], u32::from(b))).collect() };
+    let mut out = Writer {
+        out: Vec::new(),
+        buffer: 0,
+        bits: 0,
+        width: 9,
+        seen: 258,
+        started: false,
+        early_change,
+    };
+    let mut table = fresh();
+    let mut next = 258_u32;
+    out.clear();
+    let mut current: Vec<u8> = Vec::new();
+    for &byte in data {
+        let mut extended = current.clone();
+        extended.push(byte);
+        if table.contains_key(&extended) {
+            current = extended;
+            continue;
+        }
+        out.code(table[&current]);
+        if next < 4096 {
+            table.insert(extended, next);
+            next += 1;
+        } else if clear_when_full {
+            out.clear();
+            table = fresh();
+            next = 258;
+        }
+        current = vec![byte];
+    }
+    if !current.is_empty() {
+        out.code(table[&current]);
+    }
+    out.put(257);
+    if out.bits > 0 {
+        let last = (out.buffer << (8 - out.bits)) as u8;
+        out.out.push(last);
+    }
+    out.out
+}
+
+#[test]
+fn lzw_decodes_the_standard_example() {
+    // ISO 32000-2, 7.4.4.2: 45 45 45 45 45 65 45 45 45 66.
+    let encoded = [0x80, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01];
+    let decoded = vec![45, 45, 45, 45, 45, 65, 45, 45, 45, 66];
+    assert_eq!(decode(&[b"LZWDecode"], &encoded), Ok(decoded.clone()));
+    assert_eq!(lzw_encode(&decoded, true, true), encoded);
+}
+
+fn lzw_params(early_change: i64) -> Dictionary {
+    dict(vec![
+        (b"Filter", name(b"LZWDecode")),
+        (
+            b"DecodeParms",
+            Object::Dictionary(dict(vec![(b"EarlyChange", Object::Integer(early_change))])),
+        ),
+    ])
+}
+
+#[test]
+fn lzw_round_trips_through_every_code_width() {
+    // Enough varied data to fill the table: widths 9 to 12, then a clear
+    // or a full table kept.
+    let mut state = 0x1234_5678_u32;
+    let data: Vec<u8> = (0..60_000)
+        .map(|i| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            if i % 7 == 0 {
+                b'a'
+            } else {
+                (state % 23) as u8 + b'a'
+            }
+        })
+        .collect();
+    for early in [true, false] {
+        for clear in [true, false] {
+            let encoded = lzw_encode(&data, early, clear);
+            let params = lzw_params(i64::from(early));
+            let decoded = decode_stream(&params, &encoded, 0, &mut budget());
+            let same = decoded.as_ref().map(|d| {
+                d.iter()
+                    .zip(&data)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(d.len().min(data.len()))
+            });
+            assert!(
+                decoded.as_ref() == Ok(&data),
+                "early change {early}, clear when full {clear}: first difference {same:?}, lengths {:?} {}",
+                decoded.as_ref().map(Vec::len),
+                data.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn lzw_refuses_undefined_codes_and_bad_parameters() {
+    // After the clear code, 300 is not defined yet (only 258 could be).
+    let mut encoded = Vec::new();
+    let (mut buffer, mut bits) = (0_u32, 0_u32);
+    for code in [256_u32, 65, 300, 257] {
+        buffer = (buffer << 9) | code;
+        bits += 9;
+        while bits >= 8 {
+            encoded.push((buffer >> (bits - 8)) as u8);
+            bits -= 8;
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    encoded.push((buffer << (8 - bits)) as u8);
+    assert_eq!(
+        decode(&[b"LZWDecode"], &encoded),
+        bad(MalformedKind::InvalidFilterData)
+    );
+    assert_eq!(
+        decode_stream(&lzw_params(2), &[], 100, &mut budget()),
+        bad(MalformedKind::InvalidFilter)
+    );
+}
+
+#[test]
+fn lzw_with_a_predictor() {
+    // PNG Up predictor over rows of 3 bytes.
+    let rows = vec![vec![1_u8, 2, 3], vec![4, 5, 6]];
+    let encoded = lzw_encode(&png_encode(&rows, 2, 1), true, true);
+    let params = dict(vec![
+        (b"Filter", name(b"LZWDecode")),
+        (
+            b"DecodeParms",
+            Object::Dictionary(dict(vec![
+                (b"Predictor", Object::Integer(12)),
+                (b"Columns", Object::Integer(3)),
+            ])),
+        ),
+    ]);
+    assert_eq!(
+        decode_stream(&params, &encoded, 0, &mut budget()),
+        Ok(rows.concat())
+    );
+}
+
+#[test]
+fn simple_filters_chain_with_flate() {
+    // ASCII hexadecimal of zlib data, then the zlib data inflated.
+    let zlib = compress_to_vec_zlib(b"chained", 6);
+    let hex: String = zlib.iter().map(|b| format!("{b:02x}")).collect::<String>() + ">";
+    assert_eq!(
+        decode(&[b"ASCIIHexDecode", b"FlateDecode"], hex.as_bytes()),
+        Ok(b"chained".to_vec())
+    );
+    // ASCIIHex of RunLength data.
+    assert_eq!(
+        decode(&[b"ASCIIHexDecode", b"RunLengthDecode"], b"FE41 80>"),
+        Ok(b"AAA".to_vec())
+    );
 }

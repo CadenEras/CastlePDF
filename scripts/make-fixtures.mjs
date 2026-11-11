@@ -512,6 +512,127 @@ function type3Page() {
   ], '1.4');
 }
 
+// Encoders of the simple filters (ISO 32000-2, 7.4.2 to 7.4.5), for the
+// filters fixture. Each takes and returns a latin1 string.
+const toHex = text => Buffer.from(text, 'latin1').toString('hex').toUpperCase().replace(/(.{64})/g, '$1\n') + '>';
+function toAscii85(text) {
+  const bytes = Buffer.from(text, 'latin1');
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 4) {
+    const chunk = [0, 1, 2, 3].map(k => bytes[i + k] ?? 0);
+    const count = Math.min(4, bytes.length - i);
+    let value = ((chunk[0] << 24) >>> 0) + (chunk[1] << 16) + (chunk[2] << 8) + chunk[3];
+    if (value === 0 && count === 4) {
+      out += 'z';
+      continue;
+    }
+    const digits = [];
+    for (let k = 0; k < 5; k += 1) {
+      digits.unshift(String.fromCharCode(33 + (value % 85)));
+      value = Math.floor(value / 85);
+    }
+    out += digits.slice(0, count + 1).join('');
+  }
+  return out + '~>';
+}
+function toRunLength(text) {
+  const bytes = Buffer.from(text, 'latin1');
+  const out = [];
+  let i = 0;
+  while (i < bytes.length) {
+    let run = 1;
+    while (i + run < bytes.length && bytes[i + run] === bytes[i] && run < 128) run += 1;
+    if (run > 1) {
+      out.push(257 - run, bytes[i]);
+      i += run;
+    } else {
+      let end = i + 1;
+      while (end < bytes.length && end - i < 128 && bytes[end] !== bytes[end - 1]) end += 1;
+      out.push(end - i - 1, ...bytes.subarray(i, end));
+      i = end;
+    }
+  }
+  out.push(128);
+  return Buffer.from(out).toString('latin1');
+}
+// LZW with EarlyChange 1: the code width follows the decoder's table.
+function toLzw(text) {
+  const bytes = Buffer.from(text, 'latin1');
+  const out = [];
+  let buffer = 0;
+  let bits = 0;
+  let width = 9;
+  const put = code => {
+    buffer = (buffer * (1 << width)) + code;
+    bits += width;
+    while (bits >= 8) {
+      out.push(Math.floor(buffer / 2 ** (bits - 8)) & 0xff);
+      bits -= 8;
+      buffer %= 2 ** bits;
+    }
+  };
+  let table = new Map();
+  for (let b = 0; b < 256; b += 1) table.set(String.fromCharCode(b), b);
+  let next = 258;
+  let seen = 258;
+  let started = false;
+  const code = c => {
+    put(c);
+    if (started && seen < 4096) seen += 1;
+    started = true;
+    const limit = seen + 1;
+    width = limit < 512 ? 9 : limit < 1024 ? 10 : limit < 2048 ? 11 : 12;
+  };
+  put(256);
+  let current = '';
+  for (const b of bytes) {
+    const extended = current + String.fromCharCode(b);
+    if (table.has(extended)) {
+      current = extended;
+      continue;
+    }
+    code(table.get(current));
+    if (next < 4096) table.set(extended, next++);
+    current = String.fromCharCode(b);
+  }
+  if (current !== '') code(table.get(current));
+  put(257);
+  if (bits > 0) out.push((buffer * (1 << (8 - bits))) & 0xff);
+  return Buffer.from(out).toString('latin1');
+}
+
+// The simple filters on one 200 x 200 page: its content in ASCIIHex, a
+// 4 x 4 RGB image in LZW (quarters red, green, blue, gray), a 16 x 1 gray
+// ramp in RunLength (runs of 4), and a 2 x 2 RGB image in ASCII85 then
+// Flate. Each image covers a quarter of the page.
+function filtersPage() {
+  const content = ['q 90 0 0 90 5 105 cm /L Do Q', 'q 90 0 0 90 105 105 cm /R Do Q',
+    'q 90 0 0 90 5 5 cm /A Do Q', '0 0 1 rg 120 20 60 60 re f'].join('\n');
+  const rgb = [];
+  for (let y = 0; y < 4; y += 1) {
+    for (let x = 0; x < 4; x += 1) {
+      const quarter = (y < 2 ? 0 : 2) + (x < 2 ? 0 : 1);
+      rgb.push(...[[255, 0, 0], [0, 255, 0], [0, 0, 255], [128, 128, 128]][quarter]);
+    }
+  }
+  const ramp = [];
+  for (let x = 0; x < 16; x += 1) ramp.push(Math.floor(x / 4) * 85);
+  const latin = bytes => Buffer.from(bytes).toString('latin1');
+  const image = (width, height, extra, filter, data) => stream(data,
+    ` /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /BitsPerComponent 8${extra} /Filter ${filter}`);
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /XObject << /L 5 0 R /R 6 0 R /A 7 0 R >> >> /Contents 4 0 R >>',
+    stream(toHex(content), ' /Filter /ASCIIHexDecode'),
+    image(4, 4, ' /ColorSpace /DeviceRGB', '/LZWDecode', toLzw(latin(rgb))),
+    image(16, 1, ' /ColorSpace /DeviceGray', '/RunLengthDecode', toRunLength(latin(ramp))),
+    image(2, 2, ' /ColorSpace /DeviceRGB', '[/ASCII85Decode /FlateDecode]',
+      toAscii85(zlibFixedHuffman(latin([255, 255, 0, 0, 255, 255, 255, 0, 255, 0, 0, 0])))),
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -606,6 +727,9 @@ export const fixtures = {
   // A Type 3 font: uncoloured and coloured glyphs, font resources; see
   // type3Page.
   'type3.pdf': type3Page(),
+  // The simple filters: ASCIIHex content, LZW, RunLength and ASCII85 +
+  // Flate images; see filtersPage.
+  'filters.pdf': filtersPage(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

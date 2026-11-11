@@ -182,6 +182,30 @@ en 12 803 tuiles de 256 px à l'échelle 2, comme le visualiseur, release, WSL) 
 - résultats identiques au pixel près avec ou sans cache (test `cache`, fixtures de texte,
   d'images, de formulaires et de Type 3, pages et zones dans plusieurs ordres).
 
+Défilement continu, vérifié à la main dans l'application sous Windows, sur un long PDF
+(2026-11-11) :
+- défilement à la molette et au clavier, suivi de la page dans la barre d'état, boutons page
+  par page, redessin correct après un défilement rapide aller-retour : les quatre points OK ;
+- mémoire relevée dans le Gestionnaire des tâches (mémoire privée), au repos puis pendant
+  le défilement :
+  - WebView2 (ensemble) : 74,8 Mo, puis 89,2 Mo (moteur de rendu CastlePDF : 14,8 puis
+    27,3 Mo) ;
+  - shell : 5,9 Mo, puis 47,1 Mo (cache de tuiles, 128 Mio au plus) ;
+  - worker : 1,4 Mo, puis 36,8 Mo (cache de rendu, 64 Mio au plus par document) ;
+  - total : environ 82 Mo au repos, 173 Mo en défilement.
+- Une mesure à la main sur une machine : elle borne l'ordre de grandeur, pas une
+  référence de régression (voir la limite ouverte de la feuille de route).
+
+Après les filtres ASCIIHex, ASCII85, LZW et RunLength (même protocole) :
+- premières pages rendues : 1 911 → 1 920 (SafeDocs) et 2 204 → 2 229 (UNSAFE). Les échecs
+  `unsupported/StreamFilter` (contenus de page dans ces filtres) passent de 9 et 25 à 0 ;
+- premières pages avec une image non dessinée (`Image`) : 113 et 140 (UNSAFE : 152 → 140 ;
+  SafeDocs reste à 113, car les pages désormais rendues ont leurs propres images) ;
+- aucun crash ni timeout ;
+- oracle qpdf : 15 fixtures, 51 flux décodés identiques, dont ceux de `filters.pdf` ;
+  `filters.pdf` identique à `pdftoppm` (0,000 %) ;
+- fuzzing `flate`, étendu aux nouveaux filtres : 2 401 353 exécutions en 10 min, aucun crash.
+
 La cible de fuzzing `font` a trouvé une panique de `read-fonts` 0.41.0, corrigée
 par la mise à jour (amendement d'ADR-0005). Après correction : 134 791 exécutions en 600 s,
 aucun crash. Comparaison à `pdftoppm` 22.02 : 0,010 % de pixels hors tolérance pour

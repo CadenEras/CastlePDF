@@ -9,6 +9,16 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-syntax` : **filtres ASCIIHexDecode, ASCII85Decode, LZWDecode et RunLengthDecode**
+  (ISO 32000-2, 7.4.2 à 7.4.5), avancés de P3 (amendement d'ADR-0003).
+  - LZW lit les codes de 9 à 12 bits, avec `/EarlyChange` et les prédicteurs, et garde une
+    table pleine jusqu'au code de remise à zéro.
+  - Chaque octet décodé est imputé au budget avant d'être gardé : une expansion RunLength ou
+    LZW s'arrête à `max_decoded_bytes`.
+  - Une donnée invalide donne `MalformedKind::InvalidFilterData`.
+  - Les images XObject et en ligne qui les utilisent sont dessinées.
+  - Fixture `filters.pdf`, identique à `pdftoppm`, flux décodés identiques à qpdf.
+  - La cible de fuzzing `flate` couvre les nouveaux filtres.
 - UI : **défilement continu**. Les pages se suivent dans une zone qui défile, chacune ajustée
   à la largeur.
   - Seules les pages proches de la vue sont dans le document, avec un canevas. Les autres
