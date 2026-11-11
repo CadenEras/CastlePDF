@@ -9,6 +9,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- CI : **ARM64 et macOS Intel**. Les tests Rust et le build natif tournent aussi sur
+  `ubuntu-24.04-arm`, `windows-11-arm` et `macos-15-intel` (`macos-latest` étant ARM64). Ce sont
+  des runners standard, gratuits pour un dépôt public. rustup est installé s'il manque.
 - CI : workflow **`screenshot`**, lancé à la main. Il fait afficher `truetype.pdf` et `forms.pdf` à
   l'application release sous Linux (affichage virtuel), Windows et macOS, et joint les captures
   au run pour relecture. Il sert à vérifier l'affichage sur les OS que personne ne regarde à la

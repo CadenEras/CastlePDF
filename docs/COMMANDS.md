@@ -26,9 +26,10 @@ pas l'abonnement.
 
 ## Produit (P0)
 
-Disponibles depuis P0 et exécutées par la CI : workflow `rust` (fmt, Clippy, tests, sur
-les trois OS) et workflow `desktop` (contrôles du frontend sur Ubuntu, build natif release
-sans installateur sur les trois OS).
+Disponibles depuis P0 et exécutées par la CI : workflow `rust` (fmt, Clippy, tests) et workflow
+`desktop` (contrôles du frontend sur Ubuntu, build natif release sans installateur). Les deux
+tournent sur les trois OS, en x86_64 et en ARM64 : Linux et Windows sur les deux architectures,
+macOS sur ARM64 (`macos-latest`) et Intel (`macos-15-intel`).
 npm, un `package-lock.json` dans `apps/desktop`, sans workspace npm racine ; workspace
 Cargo racine avec `apps/desktop/src-tauri` comme membre. Prérequis : rustup (la version
 vient de `rust-toolchain.toml`), Node 24, dépendances système Tauri (WebKitGTK sous Linux).
