@@ -91,8 +91,11 @@ TypeScript peut toujours être falsifiée. Éviter que des chemins libres ou ide
 de documents permettent de traverser un répertoire ou d'accéder à un document fermé.
 
 État du shell (P2, tranche 4) :
-- l'UI ne nomme jamais un chemin. Le shell ouvre un fichier déposé sur la fenêtre ou passé
-  en argument, et n'annonce à l'UI que son nom ;
+- l'UI ne nomme jamais un chemin. Le shell ouvre un fichier déposé sur la fenêtre, passé
+  en argument ou ouvert depuis le Finder (macOS), et n'annonce à l'UI que son nom ;
+- un seul fichier à la fois : un dépôt ou une ouverture qui en nomme plusieurs n'ouvre rien.
+  Depuis le Finder, seule une URL `file:` locale est acceptée ; tout autre schéma est
+  ignoré, jamais chargé ;
 - les commandes `page_size` et `render_tile` n'acceptent que le document courant, une page
   existante, une échelle finie dans ]0, 64] et une tuile d'au plus 256 × 256 ;
 - `current_document` ne rend que le dernier événement de document ;
@@ -111,8 +114,9 @@ minute. La tâche qu'il exécutait échoue sans être renvoyée, puisqu'elle a p
 perte. Le document courant est rouvert seulement si son fichier n'a pas changé (taille et
 date de modification). Au-delà de la limite, toute requête échoue explicitement.
 
-Limites connues :
-- sur macOS, l'ouverture depuis le Finder (`RunEvent::Opened`) n'est pas prise en charge.
+L'ouverture depuis le Finder n'existe que dans l'application empaquetée (`.app`), qui
+déclare le type PDF en lecteur de rang `Alternate` : elle s'offre dans « Ouvrir avec »
+sans prendre la place du lecteur par défaut.
 
 Le texte extrait reste du texte. Nettoyer les noms d'export et interdire traversée,
 écriture arbitraire et ouverture d'attachement automatique. Tester le nettoyage de

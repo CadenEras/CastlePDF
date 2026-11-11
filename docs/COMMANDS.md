@@ -16,7 +16,8 @@ correspondent aux versions fixées (toolchain Rust, Node de la CI, `package.json
 Le plancher mémoire de l'application release se mesure avec `node scripts/measure-memory.mjs`
 (voir `docs/PERFORMANCE.md`). `node scripts/screenshot-app.mjs <fichier.pdf> <sortie.png>` lance
 l'application release sur un PDF et capture l'écran, pour une relecture humaine ; le workflow
-`screenshot` (manuel) le fait sur les trois OS et joint les images au run. Le validateur contrôle JSON, frontmatter du
+`screenshot` (manuel) le fait sur les trois OS et joint les images au run ; sous macOS, il
+ouvre aussi un document par `open -a`, comme le Finder. Le validateur contrôle JSON, frontmatter du
 sous-ensemble utilisé, références Markdown locales et configuration des hooks. Il
 n'est pas un validateur officiel du schéma Claude Code ni un interpréteur YAML général.
 
