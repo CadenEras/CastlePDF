@@ -9,6 +9,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **polices Type 3** (ADR-0005, étape 5.5). Chaque glyphe est une procédure de
+  contenu, exécutée comme un formulaire. Elle prend la matrice de la police et la matrice de rendu
+  du texte, et les ressources de la police ou, à défaut, celles du contenu appelant.
+  - Le texte avance de la largeur du code multipliée par `/FontMatrix`, avec l'espacement, la
+    mise à l'échelle, l'élévation et les ajustements `TJ`.
+  - Un glyphe `d1` (non coloré) est peint dans la couleur du texte. Ses opérateurs de couleur
+    sont ignorés, et ses images qui ne sont pas des masques sont signalées.
+  - Un glyphe endommagé ou appelé par lui-même est sauté ou dessiné jusqu'à son erreur, et signalé
+    (`Text`). Chaque glyphe compte comme une opération.
+  - Formulaires et glyphes partagent l'entrée et la sortie du contenu imbriqué (`run_nested`).
+  - Fixture `type3.pdf`, à 0,001 % de `pdftoppm`.
 - `pdf-render` : **Symbol et ZapfDingbats** non inclus sont dessinés (ADR-0005, étape 5.3b)
   avec « CastlePDF Symbols ». Cette police de 55 Kio réunit des glyphes de Noto Sans Math,
   Noto Sans, Noto Sans Symbols et Symbols 2 (SIL OFL 1.1), choisis glyphe par glyphe et

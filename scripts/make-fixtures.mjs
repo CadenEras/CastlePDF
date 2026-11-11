@@ -481,6 +481,37 @@ function formsPage() {
   ], '1.4');
 }
 
+// A Type 3 font (ISO 32000-2, 9.6.4) on one 200 x 200 page. Glyph A
+// (width 1000) is uncoloured (d1): a triangle with a square hole
+// (even-odd), painted in the fill colour. Glyph B (width 600) is coloured
+// (d0): a red bar and the 4 x 1 Indexed image of the font's resources.
+// Font matrix 0.001. "ABBA" in blue at 30 points from (10, 150); "AB" in
+// green at 50 points, rotated 30 degrees, from (40, 30); "BA" at 20 points
+// with Tc 5 and a TJ adjustment from (110, 120).
+function type3Page() {
+  const content = [
+    '0 0 1 rg BT /T3 30 Tf 10 150 Td (ABBA) Tj ET',
+    '0 0.6 0 rg BT /T3 50 Tf 0.8660254 0.5 -0.5 0.8660254 40 30 Tm (AB) Tj ET',
+    '0 0 1 rg BT /T3 20 Tf 5 Tc 110 120 Td [(B) -300 (A)] TJ ET',
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+      + '/Resources << /Font << /T3 5 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    '<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] '
+      + '/FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /tri 6 0 R /bar 7 0 R >> '
+      + '/Encoding << /Type /Encoding /Differences [65 /tri /bar] >> '
+      + '/FirstChar 65 /LastChar 66 /Widths [1000 600] '
+      + '/Resources << /XObject << /I 8 0 R >> >> >>',
+    stream('1000 0 0 0 1000 1000 d1 0 0 m 1000 0 l 500 1000 l h 350 150 300 300 re f*'),
+    stream('600 0 d0 1 0 0 rg 0 0 200 1000 re f q 350 0 0 800 220 100 cm /I Do Q'),
+    imageStream(4, 1, ' /ColorSpace [/Indexed /DeviceRGB 3 <FFFF0000FFFFFF00FF000000>] '
+      + '/BitsPerComponent 2', [0b00011011]),
+  ], '1.4');
+}
+
 export const fixtures = {
   // One A4 page, one line of text in a standard 14 font, uncompressed.
   'minimal.pdf': buildPdf(onePage('CastlePDF minimal fixture')),
@@ -572,6 +603,9 @@ export const fixtures = {
   // Form XObjects: matrix and bounding box, own resources, nesting, reuse,
   // transparency group; see formsPage.
   'forms.pdf': formsPage(),
+  // A Type 3 font: uncoloured and coloured glyphs, font resources; see
+  // type3Page.
+  'type3.pdf': type3Page(),
   // The same page, then an incremental update replacing its content stream.
   'incremental.pdf': appendUpdate(
     buildPdf(onePage('CastlePDF original revision')),

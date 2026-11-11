@@ -180,6 +180,20 @@ Contraintes :
   - **Largeurs.** Sans `/Widths`, les largeurs sont celles des métriques AFM d'Adobe
     (`metrics.js` de pdf.js), par nom de glyphe : les glyphes Noto n'ont pas ces chasses.
   - Les autres polices symboliques (Wingdings…) ne sont pas remplacées et restent `Text`.
+- **Amendement du 2026-11-11 (étape 5.5) :**
+  - **Profondeur.** Une procédure de glyphe s'exécute comme un formulaire : elle partage
+    avec eux la pile d'imbrication (16 niveaux) et la détection de cycle. Un glyphe peut donc
+    afficher du texte dans une autre police Type 3, mais pas dans lui-même. L'interdiction
+    « pas de Type 3 dans un Type 3 » est remplacée par ces bornes communes, testées.
+  - **Coût.** Chaque exécution d'une procédure compte au moins une opération. Le contenu
+    décodé est gardé dans le même budget que celui des formulaires, et une procédure illisible
+    n'est lue qu'une fois.
+  - **Glyphes non colorés (`d1`).** Ils sont peints avec la couleur du texte. Leurs
+    opérateurs de couleur sont ignorés, ainsi que ceux des formulaires qu'ils appellent. Une
+    image qui n'est pas un masque est signalée (`Image`), pas dessinée. `d0` et `d1` ne sont
+    acceptés qu'en première opération d'une procédure.
+  - **Police illisible.** Une police sans `/Encoding`, ou avec des `/Resources` présentes mais
+    illisibles, n'est pas dessinée et reste signalée `Text`.
 - **Acceptation (2026-11-10) :**
   - ADR-0002 est amendé sur la ligne « Réutiliser » : `skrifa` et `zune-jpeg` sont retenus,
     sans le code SIMD de `zune-jpeg` ;

@@ -4,9 +4,9 @@
 //! Supported: graphics state (`q Q cm w J j M d ri i gs`), paths, painting,
 //! clipping, device colours (`DeviceGray`, `DeviceRGB`, naive `DeviceCMYK`),
 //! constant alpha, text in embedded TrueType, OpenType and CFF fonts or their
-//! replacements, images (XObjects and inline, ADR-0005), and form XObjects
-//! with transparency groups at a constant alpha. Text in symbolic or Type 3
-//! fonts, shadings, patterns, other colour spaces, blend modes, knockout
+//! replacements and in Type 3 fonts, images (XObjects and inline, ADR-0005),
+//! and form XObjects with transparency groups at a constant alpha. Text in
+//! symbolic fonts other than Symbol and ZapfDingbats, shadings, patterns, other colour spaces, blend modes, knockout
 //! groups, soft masks, transfer functions and optional content are not
 //! rendered yet: when a page uses them, the rendering is
 //! partial and `Rendering::skipped` lists them, so that the caller can say
@@ -138,9 +138,11 @@ impl Default for RenderOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Unsupported {
-    /// Text not drawn: a font not read yet (standard, not embedded, Type 1
-    /// program, Type 3), a font set by an `ExtGState`, or a glyph the font
-    /// program does not have or cannot draw.
+    /// Text not drawn: a font that cannot be read or replaced (a symbolic
+    /// font other than Symbol and ZapfDingbats, a CID font not embedded,
+    /// a damaged Type 3 font), a font set by an `ExtGState`, a glyph the
+    /// font program does not have or cannot draw, or a Type 3 glyph
+    /// procedure that is damaged or drawn only up to an error.
     Text,
     /// Text rendering modes 4 to 7 (text added to the clip): what follows is
     /// painted without that clip, so the rendering may show too much.

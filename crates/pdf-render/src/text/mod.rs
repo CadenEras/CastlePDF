@@ -7,6 +7,7 @@
 pub(crate) mod encodings;
 pub(crate) mod font;
 pub(crate) mod standard;
+pub(crate) mod type3;
 
 use std::sync::Arc;
 
@@ -27,6 +28,12 @@ pub(crate) enum Selected {
     Font {
         number: usize,
         font: Arc<font::Font>,
+    },
+    /// A Type 3 font, whose glyphs are content streams, and its number in
+    /// the rendering (key of its resource scope).
+    Type3 {
+        number: usize,
+        font: Arc<type3::Type3>,
     },
 }
 

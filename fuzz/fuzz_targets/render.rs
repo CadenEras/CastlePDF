@@ -4,8 +4,11 @@
 //! whose content is the same bytes, scaled and moved (`/X1`: a
 //! transparency group without resources of its own; `/X2`: a plain form
 //! whose resources name `/X1` and itself, so that forms nest and repeat),
-//! a shading, a pattern and a property list. The first byte chooses the
-//! scale (1 to 8, so up to 512 x 512 pixels); the rest is the content.
+//! a Type 3 font (`/T3`: codes 32 to 127 show one glyph whose procedure
+//! is the same bytes, so that glyphs run `d0`, `d1` and text in their own
+//! font, except `e`, an empty procedure), a shading, a pattern and a
+//! property list. The first byte chooses the scale (1 to 8, so up to
+//! 512 x 512 pixels); the rest is the content.
 //! Properties: no panic in the interpreter or the rasteriser, no unbounded
 //! work (operations and path work are limited), a successful rendering has
 //! exactly `width * height * 4` bytes, and `render_area` of an inner
@@ -21,7 +24,7 @@ const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resour
     /ExtGState << /GS0 5 0 R /GS1 7 0 R >> \
     /ColorSpace << /CS0 /DeviceRGB /CS1 [/ICCBased 6 0 R] /CS2 /Pattern >> \
     /XObject << /X0 6 0 R /X1 8 0 R /X2 9 0 R >> /Shading << /Sh0 6 0 R >> /Pattern << /P0 6 0 R >> \
-    /Properties << /MC0 << /Type /OCG >> >> \
+    /Properties << /MC0 << /Type /OCG >> >> /Font << /T3 10 0 R >> \
     >> /Contents 4 0 R >>";
 
 fn pdf(content: &[u8]) -> Vec<u8> {
@@ -45,7 +48,17 @@ fn pdf(content: &[u8]) -> Vec<u8> {
     .into_bytes();
     plain.extend_from_slice(content);
     plain.extend_from_slice(b"\nendstream");
-    let bodies: [&[u8]; 9] = [
+    let names = "/g ".repeat(96);
+    let type3 = format!(
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+         /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /g 11 0 R /e 12 0 R >> \
+         /Encoding << /Differences [32 {names} 101 /e] >> /FirstChar 32 /LastChar 32 /Widths [600] >>"
+    )
+    .into_bytes();
+    let mut glyph = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    glyph.extend_from_slice(content);
+    glyph.extend_from_slice(b"\nendstream");
+    let bodies: [&[u8]; 12] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         PAGE,
@@ -55,6 +68,9 @@ fn pdf(content: &[u8]) -> Vec<u8> {
         b"<< /TR 6 0 R /HT 6 0 R /CA 0.5 /BM /Multiply >>",
         &form,
         &plain,
+        &type3,
+        &glyph,
+        b"<< /Length 0 >>\nstream\n\nendstream",
     ];
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
