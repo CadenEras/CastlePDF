@@ -240,6 +240,55 @@ il trouve un trailer. Sans trailer, il refuse le fichier là où CastlePDF prend
 catalogue. Il indexe aussi un en-tête `10 0 obj` placé dans les données d'un flux à
 `/Length` indirecte, que CastlePDF saute volontairement (`header-in-stream.pdf`).
 
+Mémoire mesurée par le workflow `memory` (application release, runners GitHub partagés,
+2026-11-11, run 43078129487), au repos puis avec `forms.pdf` ouvert, médiane de plusieurs
+relevés, en Mio :
+
+| OS (runner) | Shell | Worker | WebView | Total retenu, au repos → avec document |
+| --- | --- | --- | --- | --- |
+| Windows x64 (working set) | 28,1 → 32,2 | 3,5 → 4,8 | 275,3 → 308,5 | mémoire privée : 102,0 → 115,9 |
+| macOS ARM64, M1 virtuel (RSS) | 93,6 → 97,6 | 1,7 → 3,8 | 74,9 → 113,8 | RSS : 170,3 → 215,3 |
+| Linux x64 (RSS) | 184,9 → 193,6 | 3,1 → 5,1 | 359,8 → 443,2 | PSS : 339,4 → 432,8 |
+
+- Le worker reste sous 6 Mio partout. Sous Linux, WebKitGTK et le shell dominent ; le runner
+  n'a pas de GPU et dessine en logiciel sous Xvfb, ce qui peut gonfler ces chiffres. À
+  comparer avec une machine Linux réelle.
+- Le working set de Windows compte des pages partagées : la mémoire privée est la mesure à
+  comparer au relevé à la main (environ 82 Mo au repos).
+- Runners partagés : ordres de grandeur, pas des seuils de régression.
+
+Affichage vérifié sur captures du workflow `screenshot` (2026-11-11, run 43076099447) :
+`truetype.pdf` et `forms.pdf` rendus correctement sous Linux (Xvfb) et macOS ARM64 (texte,
+espacement, échelle horizontale, formes pivotées, couleurs). Sous Windows, la console du
+worker recouvrait la fenêtre, avant `CREATE_NO_WINDOW` (#53).
+
+## Contrôles manuels par OS
+
+Ce que la CI ne voit pas : un geste dans l'application release
+(`npm --prefix apps/desktop run tauri -- build --no-bundle -- --locked`). Le choix du fichier
+déposé ou ouvert est testé en Rust (`apps/desktop/src-tauri/src/opening.rs`) ; le geste lui-même
+ne l'est que par cette procédure. Consigner la date, l'OS et le résultat de chaque point.
+
+Glisser-déposer :
+1. Déposer un PDF : son nom s'affiche et la première page est rendue.
+2. Déposer un second PDF alors qu'un document est ouvert : il le remplace.
+3. Déposer deux PDF à la fois : rien ne change, le document courant reste affiché.
+4. Déposer un fichier qui n'est pas un PDF (un `.txt`) : un échec explicite s'affiche, et un
+   PDF déposé ensuite s'ouvre normalement.
+5. Déposer un PDF dont le chemin contient des espaces et des lettres accentuées : il s'ouvre.
+
+Finder (macOS, application empaquetée `.app`) :
+6. « Ouvrir avec » CastlePDF sur un PDF, application fermée puis déjà ouverte : le document
+   s'ouvre. CastlePDF ne devient pas le lecteur PDF par défaut.
+
+Défilement : voir le relevé du 2026-11-11 ci-dessus (quatre points).
+
+| OS | Date | Points 1 à 5 | Point 6 |
+| --- | --- | --- | --- |
+| Windows | à faire | | sans objet |
+| macOS | à faire (pas de machine pour l'instant) ; la CI ouvre un PDF par `open -a` (workflow `screenshot`) | | |
+| Linux | à faire (pas de machine pour l'instant) | | sans objet |
+
 ## Principes de tests
 
 Vérifier les comportements, pas les détails de l'implémentation. Un bug reproductible
