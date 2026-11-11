@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "contentTypes": ["com.adobe.pdf"],
+        "name": "PDF document",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ]
+  }
+}

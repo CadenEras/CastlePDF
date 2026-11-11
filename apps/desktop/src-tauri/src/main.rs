@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cache;
+mod opening;
 mod worker;
 
 use std::path::PathBuf;
@@ -115,7 +116,8 @@ fn publish_document(app: &AppHandle, event: DocumentEvent) {
 }
 
 /// Opens a file chosen by the user through the operating system (dropped on
-/// the window, or given on the command line); the UI never names a path.
+/// the window, given on the command line, or opened from the Finder); the UI
+/// never names a path.
 fn open_document(app: &AppHandle, path: PathBuf) {
     let name = path
         .file_name()
@@ -153,11 +155,10 @@ fn main() -> ExitCode {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
-                // One file at a time; other drops are ignored.
-                if let [path] = paths.as_slice() {
-                    open_document(window.app_handle(), path.clone());
-                }
+            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event
+                && let Some(path) = opening::single_path(paths)
+            {
+                open_document(window.app_handle(), path);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -177,6 +178,15 @@ fn main() -> ExitCode {
                 RunEvent::Ready => {
                     if let Some(path) = std::env::args_os().nth(1) {
                         open_document(app, PathBuf::from(path));
+                    }
+                }
+                // Finder: "Open With", a double-click or a drop on the Dock
+                // icon, at launch or later. Needs the bundled app, which
+                // declares the PDF document type.
+                #[cfg(target_os = "macos")]
+                RunEvent::Opened { urls } => {
+                    if let Some(path) = opening::single_file_url(&urls) {
+                        open_document(app, path);
                     }
                 }
                 RunEvent::Exit => app.state::<WorkerHandle>().stop(),

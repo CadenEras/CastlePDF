@@ -73,6 +73,21 @@ jobs:
               node scripts/screenshot-app.mjs "tests/corpus/public/$name.pdf" "$out"
             fi
           done
+      - name: Open a document from the Finder side (macOS)
+        if: runner.os == 'macOS'
+        # `open -a` sends the same Apple event as a Finder double-click
+        # (RunEvent::Opened), with no command-line argument. The bundle is built
+        # for this check only: shipping the worker in it is for packaging.
+        run: |
+          (cd apps/desktop && npm run tauri -- build --bundles app --config '{"bundle":{"active":true}}' -- --locked)
+          app="$PWD/target/release/bundle/macos/CastlePDF.app"
+          cp target/release/pdf-worker "$app/Contents/MacOS/"
+          codesign --force --deep --sign - "$app"
+          open -a "$app" tests/corpus/public/forms.pdf
+          sleep 15
+          screencapture -x screenshots/macOS-finder-forms.png
+          osascript -e 'quit app "CastlePDF"' || pkill -x castle-pdf-desktop || true
+          test -s screenshots/macOS-finder-forms.png
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; update by reviewed PR
         if: always()
         with:
