@@ -12,8 +12,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 - Shell : **ouverture depuis le Finder** (macOS) : « Ouvrir avec », double-clic ou dépôt
   sur l'icône du Dock (`RunEvent::Opened`). L'application empaquetée déclare le type PDF en
   lecteur de rang `Alternate`, sans devenir le lecteur par défaut. Seule une URL `file:`
-  locale est ouverte, un fichier à la fois, comme pour le glisser-déposer ; le choix est
-  testé (`opening.rs`). Le workflow `screenshot` ouvre `forms.pdf` par `open -a` sous macOS
+  locale est ouverte, un fichier à la fois, comme pour le glisser-déposer. Une demande reçue
+  au lancement, avant que le shell soit prêt, est gardée puis ouverte (le premier essai en CI
+  paniquait) ; choix et ordre sont testés (`opening.rs`). Le workflow `screenshot` ouvre `forms.pdf` par `open -a` sous macOS
   et joint la capture.
 - `scripts/measure-memory.mjs` mesure aussi l'application avec un document ouvert (argument
   facultatif). Le workflow `memory` mesure au repos puis avec `forms.pdf`.
