@@ -267,6 +267,77 @@ export function parseTile(value: unknown, width: number, height: number): Tile {
   return { ...tile, repair, pixels: new Uint8ClampedArray(value, TILE_HEADER) };
 }
 
+/**
+ * A word of a page's text layer: its text, its baseline from (x0, y0) to
+ * (x1, y1) and its font size, in pixels of the page rendered at scale 1
+ * (y down, rotation applied).
+ */
+export interface LayerWord {
+  text: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  size: number;
+}
+
+/** The text of a page: lines in reading order (ADR-0006, tranche 3.6). */
+export interface TextLayer {
+  lines: LayerWord[][];
+  /** Words were left out to keep the layer bounded. */
+  truncated: boolean;
+  /** Text the page shows is missing (a font or glyph not read). */
+  incomplete: boolean;
+}
+
+/**
+ * Most words accepted in a layer: the shell bounds its response to 960 KiB
+ * of words of 22 bytes at least, under 45 000; anything beyond is refused.
+ */
+export const MAX_LAYER_WORDS = 50_000;
+
+function isWord(value: unknown): value is LayerWord {
+  return (
+    isRecord(value) &&
+    typeof value.text === "string" &&
+    [value.x0, value.y0, value.x1, value.y1, value.size].every(
+      (n) => typeof n === "number" && Number.isFinite(n),
+    ) &&
+    (value.size as number) >= 0
+  );
+}
+
+/** Checks a text layer from the shell, keeping known fields only. */
+export function parseTextLayer(value: unknown): TextLayer {
+  const invalid = () => new Error("invalid text layer from shell");
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.lines) ||
+    typeof value.truncated !== "boolean" ||
+    typeof value.incomplete !== "boolean"
+  ) {
+    throw invalid();
+  }
+  let count = 0;
+  const lines = value.lines.map((line: unknown) => {
+    if (!Array.isArray(line)) {
+      throw invalid();
+    }
+    count += line.length;
+    if (count > MAX_LAYER_WORDS) {
+      throw invalid();
+    }
+    return line.map((word: unknown) => {
+      if (!isWord(word)) {
+        throw invalid();
+      }
+      const { text, x0, y0, x1, y1, size } = word;
+      return { text, x0, y0, x1, y1, size };
+    });
+  });
+  return { lines, truncated: value.truncated, incomplete: value.incomplete };
+}
+
 async function command(name: string, args: Record<string, unknown>): Promise<unknown> {
   try {
     return await invoke<unknown>(name, args);
@@ -314,6 +385,15 @@ export interface TileRequest {
 export async function renderTile(request: TileRequest): Promise<Tile> {
   const buffer = await command("render_tile", { request });
   return parseTile(buffer, request.width, request.height);
+}
+
+/** The text layer of `page`, for view `generation` (dropped if older). */
+export async function pageText(
+  document: number,
+  page: number,
+  generation: number,
+): Promise<TextLayer> {
+  return parseTextLayer(await command("page_text", { document, page, generation }));
 }
 
 /**

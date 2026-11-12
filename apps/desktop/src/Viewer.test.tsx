@@ -7,7 +7,13 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { PageSize, RepairState, Tile, TileRequest } from "./ipc";
+import type {
+  PageSize,
+  RepairState,
+  TextLayer,
+  Tile,
+  TileRequest,
+} from "./ipc";
 import {
   MAX_CANVAS_PIXELS,
   fitScale,
@@ -26,6 +32,10 @@ const ipc = vi.hoisted(() => ({
       (document: number, page: number, scale: number) => Promise<PageSize>
     >(),
   renderTile: vi.fn<(request: TileRequest) => Promise<Tile>>(),
+  pageText:
+    vi.fn<
+      (document: number, page: number, generation: number) => Promise<TextLayer>
+    >(),
 }));
 
 vi.mock("./ipc", async (original) => ({
@@ -33,6 +43,7 @@ vi.mock("./ipc", async (original) => ({
   beginView: ipc.beginView,
   pageSize: ipc.pageSize,
   renderTile: ipc.renderTile,
+  pageText: ipc.pageText,
 }));
 
 /** Tiles drawn: page canvas label, x, y, width, height. */
@@ -118,6 +129,11 @@ beforeEach(() => {
   ipc.renderTile.mockImplementation((request) =>
     Promise.resolve(tileFor(request)),
   );
+  ipc.pageText.mockResolvedValue({
+    lines: [],
+    truncated: false,
+    incomplete: false,
+  });
   // The shell numbers views.
   ipc.beginView.mockImplementation(() => {
     ipc.generation += 1;
@@ -188,11 +204,11 @@ describe("Viewer", () => {
     expect(drawn).toContainEqual(["Page 1 de plan.pdf", 768, 512, 32, 88]);
     expect(status()).toBe("Page 1 sur 3.");
     const canvas = screen
-      .getByRole("img", { name: "Page 1 de plan.pdf" })
+      .getByRole("group", { name: "Page 1 de plan.pdf" })
       .querySelector("canvas");
     expect([canvas?.width, canvas?.height]).toEqual([800, 600]);
     expect(
-      screen.queryByRole("img", { name: "Page 3 de plan.pdf" }),
+      screen.queryByRole("group", { name: "Page 3 de plan.pdf" }),
     ).toBeNull();
   });
 
@@ -208,7 +224,7 @@ describe("Viewer", () => {
     expect(third[0]?.generation).toBeGreaterThan(first);
     expect(status()).toBe("Page 3 sur 3.");
     expect(
-      screen.queryByRole("img", { name: "Page 1 de plan.pdf" }),
+      screen.queryByRole("group", { name: "Page 1 de plan.pdf" }),
     ).toBeNull();
     // Back to page 1: its canvas is new, so it is drawn again.
     scrollTo(0);
@@ -360,5 +376,42 @@ describe("Viewer", () => {
       await Promise.resolve();
     });
     expect(drawn.length).toBe(before);
+  });
+
+  it("lays the text of the pages in view over them, after their tiles", async () => {
+    let tilesWhenText = -1;
+    ipc.pageText.mockImplementation((_document, page) => {
+      tilesWhenText = ipc.renderTile.mock.calls.length;
+      return Promise.resolve({
+        lines: [[{ text: `page${String(page + 1)}`, x0: 10, y0: 20, x1: 60, y1: 20, size: 12 }]],
+        truncated: false,
+        incomplete: false,
+      });
+    });
+    render(<Viewer info={INFO} />);
+    await settle();
+    // Page 1 in view: its 12 tiles first, then its text, for the same view.
+    expect(tilesWhenText).toBe(12);
+    expect(ipc.pageText).toHaveBeenCalledWith(3, 0, ipc.generation);
+    const text = screen.getByLabelText("Texte de la page 1");
+    expect(text.textContent).toContain("page1");
+    // Scale 2 at a pixel ratio of 1: twice the page pixels at scale 1.
+    expect(text.querySelector<HTMLElement>("[data-word]")?.style.left).toBe("20px");
+    expect(screen.queryByRole("note", { name: "Texte partiel" })).toBeNull();
+  });
+
+  it("says when text is missing, and keeps the page shown when text fails", async () => {
+    ipc.pageText.mockResolvedValueOnce({ lines: [], truncated: false, incomplete: true });
+    render(<Viewer info={INFO} />);
+    await settle();
+    expect(screen.getByRole("note", { name: "Texte partiel" })).toBeTruthy();
+    cleanup();
+    ipc.pageText.mockRejectedValue(new Error("délai dépassé"));
+    render(<Viewer info={INFO} />);
+    await settle();
+    expect(
+      screen.getByRole("note", { name: "Texte indisponible" }).textContent,
+    ).toContain("délai dépassé");
+    expect(status()).toBe("Page 1 sur 3.");
   });
 });

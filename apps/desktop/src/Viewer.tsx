@@ -13,6 +13,7 @@ import {
   beginView,
   isStale,
   pageSize,
+  pageText,
   renderTile,
   FONT_SUBSTITUTED,
   skippedLabels,
@@ -20,7 +21,9 @@ import {
   type DocumentInfo,
   type PageSize,
   type RepairState,
+  type TextLayer,
 } from "./ipc";
+import { TextLayerView } from "./TextLayerView";
 import { describeTimings, record, summarize, type TileTiming } from "./timings";
 
 /** Tile requests in flight at once: keeps the shell queue busy, not full. */
@@ -232,6 +235,16 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     repair: "none" as RepairState,
   });
   const mounted = useRef(new Map<number, Mounted>());
+  // Text layers of the pages kept, fetched after their tiles; the ref lets
+  // the drawing effect see which pages already have one.
+  const [layers, setLayers] = useState<Map<number, TextLayer>>(
+    () => new Map(),
+  );
+  const layersRef = useRef(layers);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
+  const [textFailure, setTextFailure] = useState<Failure>(null);
   // Time per tile on the WebView side ("Mesures" panel).
   const timings = useRef<TileTiming[]>([]);
   const [measures, setMeasures] = useState(() => summarize([]));
@@ -456,6 +469,37 @@ export function Viewer({ info }: { info: DocumentInfo }) {
       };
       await Promise.all(Array.from({ length: CONCURRENCY }, worker));
       setMeasures(summarize(timings.current));
+      // Then the text of the pages in view, after their tiles: one view's
+      // text never delays another view's tiles (the shell drops it).
+      for (const { page } of drawable) {
+        if (!active() || layersRef.current.has(page)) {
+          continue;
+        }
+        let layer;
+        try {
+          layer = await pageText(document, page, generation);
+        } catch (error: unknown) {
+          if (!isStale(error) && active()) {
+            setTextFailure({ page, message: errorMessage(error) });
+          }
+          return;
+        }
+        if (!active()) {
+          return;
+        }
+        // Only the layers of pages near this view stay: a page coming back
+        // fetches its layer again.
+        const near = (other: number) =>
+          drawable.some(
+            (shown) => Math.abs(shown.page - other) <= KEEP_AROUND,
+          );
+        setLayers((current) =>
+          new Map([...current].filter(([other]) => near(other))).set(
+            page,
+            layer,
+          ),
+        );
+      }
     };
     draw().catch((error: unknown) => {
       if (!cancelled && !isStale(error)) {
@@ -496,6 +540,13 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   // Shown as soon as the document is known to be repaired, or when a tile
   // reveals it (an object found by a scan while rendering).
   const repair = worseRepair(info.repair, reported.repair);
+  // Text partly missing on a page kept: selection and copy miss it too.
+  const partialText = [...layers].some(
+    ([page, layer]) =>
+      page >= keepFirst &&
+      page <= keepLast &&
+      (layer.incomplete || layer.truncated),
+  );
 
   // Only the pages near the view are in the document: the track's height
   // keeps the place of the others. A page is announced as soon as it is
@@ -515,11 +566,12 @@ export function Viewer({ info }: { info: DocumentInfo }) {
             ? width
             : (size.width * fitScale(width, size.width, size.height, ratio)) /
               ratio;
+      const layer = layers.get(page);
       return (
         <div
           key={page}
           className="sheet"
-          role="img"
+          role="group"
           aria-label={`Page ${String(page + 1)} de ${info.name}`}
           style={{
             top: `${String(top)}px`,
@@ -549,6 +601,14 @@ export function Viewer({ info }: { info: DocumentInfo }) {
               height={exact.pixels.height}
               data-page={page}
               aria-hidden="true"
+            />
+          )}
+          {exact !== undefined && layer !== undefined && (
+            <TextLayerView
+              layer={layer}
+              // Pixels of the page at scale 1 to CSS pixels.
+              factor={exact.scale / ratio}
+              label={`Texte de la page ${String(page + 1)}`}
             />
           )}
         </div>
@@ -596,6 +656,19 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           Polices remplacées : des polices ne sont pas incluses dans le
           document. Le texte est affiché avec une police approchante, aux mêmes
           largeurs.
+        </p>
+      )}
+      {partialText && (
+        <p className="partial" role="note" aria-label="Texte partiel">
+          Texte partiel : une partie du texte n'a pas pu être lue ; la
+          sélection et la copie ne la contiennent pas.
+        </p>
+      )}
+      {textFailure !== null && (
+        <p className="partial" role="note" aria-label="Texte indisponible">
+          Texte de la page {textFailure.page + 1} indisponible (
+          {textFailure.message}) : la page s'affiche, mais son texte ne peut
+          pas être sélectionné.
         </p>
       )}
       {missing.length > 0 && (

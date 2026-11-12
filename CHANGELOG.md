@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- UI : **sélection et copie du texte** (ADR-0006, tranche 3.6b). Une couche de texte transparente
+  couvre chaque page dessinée : un élément par mot, placé sur sa ligne de base, tourné selon
+  elle et étiré à sa longueur, donc sélectionnable avec la souris et lu par les lecteurs
+  d'écran dans l'ordre de lecture. La copie reconstruit le texte sélectionné (une espace entre
+  les mots, un saut de ligne entre les lignes). Le texte n'est demandé qu'après les tuiles de
+  la vue et seulement pour les pages autour d'elle ; la réponse du shell est validée
+  (`parseTextLayer`). Une note signale un texte partiel ou indisponible. Les pages ont le rôle
+  `group` au lieu d'`img`, pour que leur texte soit atteint.
+
 - Worker et shell : **couche de texte d'une page** (ADR-0006, tranche 3.6a). Requête
   `PageText` (protocole **v5**), réponse en lignes dans l'ordre de lecture, chaque mot avec sa
   ligne de base et sa taille sur la page rendue à l'échelle 1 (rotation comprise), en 1/64 de

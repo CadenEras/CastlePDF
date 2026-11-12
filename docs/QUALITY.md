@@ -419,6 +419,20 @@ Défilement : voir le relevé du 2026-11-11 ci-dessus (quatre points).
 | macOS | à faire (pas de machine pour l'instant) ; la CI ouvre un PDF par `open -a` (workflow `screenshot`) | | |
 | Linux | à faire (pas de machine pour l'instant) | | sans objet |
 
+Sélection et copie du texte (tranche 3.6b) :
+7. Glisser la souris sur une ligne : la surbrillance couvre les mots dessinés.
+8. Copier (Ctrl+C ou Cmd+C) une sélection de plusieurs lignes et la coller dans un éditeur :
+   mots séparés d'une espace, lignes d'un saut de ligne, dans l'ordre de lecture.
+9. Sur une page à deux colonnes, une sélection dans une colonne ne prend pas l'autre.
+10. Faire défiler loin puis revenir : le texte d'une page revenue est de nouveau sélectionnable.
+11. Lecteur d'écran (Narrateur, VoiceOver, Orca) : le texte de la page est lu.
+
+| OS | Date | Points 7 à 11 |
+| --- | --- | --- |
+| Windows | à faire | |
+| macOS | à faire (pas de machine pour l'instant) | |
+| Linux | à faire (pas de machine pour l'instant) | |
+
 ## Principes de tests
 
 Vérifier les comportements, pas les détails de l'implémentation. Un bug reproductible

@@ -103,7 +103,8 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   jamais retarder les tuiles visibles ; la couche de texte
   rendue est bornée (`MAX_TEXT_LAYER_BYTES`, 960 Kio, puis `truncated`) et le décodage de sa
   réponse vérifie chaque nombre de lignes et de mots avant d'allouer (cible de fuzzing
-  `protocol`). Le texte reste une donnée : l'UI ne l'insère que comme texte ;
+  `protocol`). Le texte reste une donnée : l'UI le valide (`parseTextLayer`), ne l'insère que
+  comme texte (jamais comme HTML) et reconstruit elle-même la copie depuis ses mots ;
 - `current_document` ne rend que le dernier événement de document ;
 - `begin_view` numérote les vues côté shell : une tuile ne peut citer qu'une génération
   déjà attribuée ;
