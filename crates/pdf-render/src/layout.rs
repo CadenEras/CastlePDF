@@ -41,6 +41,11 @@ pub struct TextWord {
     /// Axis-aligned bounds in default user space: left, bottom, right, top,
     /// from the glyphs' baseline, advance and size (not their outlines).
     pub bounds: [f64; 4],
+    /// Baseline in default user space, from the first glyph's origin to the
+    /// last glyph's end: start x, start y, end x, end y.
+    pub baseline: [f64; 4],
+    /// Largest font size of its glyphs, in default user space.
+    pub size: f64,
 }
 
 /// A line: its words in content order.
@@ -191,26 +196,45 @@ impl Builder {
             return;
         }
         let along = self.baseline.map_or((1.0, 0.0), |(_, along)| along);
-        self.append(&item, Some(bounds(&geometry, along)));
+        self.append(&item, Some((geometry, bounds(&geometry, along))));
     }
 
-    fn append(&mut self, item: &Item<'_>, bounds: Option<[f64; 4]>) {
+    fn append(&mut self, item: &Item<'_>, placed: Option<(Geometry, [f64; 4])>) {
         match &mut self.word {
             Some(word) => {
                 word.text.push_str(item.text);
                 word.glyphs.end = word.glyphs.end.max(item.glyphs.end);
-                if let Some(b) = bounds {
+                if let Some((geometry, b)) = placed {
                     word.bounds = union(word.bounds, b);
+                    word.baseline[2] = geometry.end.0;
+                    word.baseline[3] = geometry.end.1;
+                    word.size = word.size.max(geometry.size);
                 }
             }
             None => {
-                let bounds = bounds
-                    .or_else(|| self.last.map(|((x, y), _)| [x, y, x, y]))
-                    .unwrap_or([0.0; 4]);
+                let (bounds, baseline, size) = match placed {
+                    Some((geometry, bounds)) => (
+                        bounds,
+                        [
+                            geometry.start.0,
+                            geometry.start.1,
+                            geometry.end.0,
+                            geometry.end.1,
+                        ],
+                        geometry.size,
+                    ),
+                    None => {
+                        let (x, y, size) =
+                            self.last.map_or((0.0, 0.0, 0.0), |((x, y), s)| (x, y, s));
+                        ([x, y, x, y], [x, y, x, y], size)
+                    }
+                };
                 self.word = Some(TextWord {
                     text: item.text.to_owned(),
                     glyphs: item.glyphs.clone(),
                     bounds,
+                    baseline,
+                    size,
                 });
             }
         }

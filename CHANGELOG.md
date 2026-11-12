@@ -9,6 +9,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Worker et shell : **couche de texte d'une page** (ADR-0006, tranche 3.6a). Requête
+  `PageText` (protocole **v5**), réponse en lignes dans l'ordre de lecture, chaque mot avec sa
+  ligne de base et sa taille sur la page rendue à l'échelle 1 (rotation comprise), en 1/64 de
+  pixel. Réponse bornée à 960 Kio (`truncated` au-delà) ; décodage qui vérifie les nombres de
+  lignes et de mots avant d'allouer. Commande Tauri `page_text` (permission
+  `allow-page-text`), document courant et page existante seulement. Polices et CMap viennent
+  du cache de rendu du document.
+- `pdf-render` : `page_transform` (de l'espace utilisateur aux pixels du rendu) ; chaque
+  `TextWord` donne sa ligne de base et sa taille.
+- Fuzzing : cible `protocol` (requêtes et réponses du worker).
+
 - `pdf-render` : **ordre de lecture** (`reading_lines`, ADR-0006, tranche 3.5b). Les morceaux
   d'une ligne horizontale montrés à part sont recollés (même ligne de base, moins d'une taille
   d'écart), puis les lignes sont ordonnées par découpes récursives le long des plus larges

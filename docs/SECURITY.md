@@ -98,6 +98,10 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   ignoré, jamais chargé ;
 - les commandes `page_size` et `render_tile` n'acceptent que le document courant, une page
   existante, une échelle finie dans ]0, 64] et une tuile d'au plus 256 × 256 ;
+- `page_text` n'accepte que le document courant et une page existante ; la couche de texte
+  rendue est bornée (`MAX_TEXT_LAYER_BYTES`, 960 Kio, puis `truncated`) et le décodage de sa
+  réponse vérifie chaque nombre de lignes et de mots avant d'allouer (cible de fuzzing
+  `protocol`). Le texte reste une donnée : l'UI ne l'insère que comme texte ;
 - `current_document` ne rend que le dernier événement de document ;
 - `begin_view` numérote les vues côté shell : une tuile ne peut citer qu'une génération
   déjà attribuée ;

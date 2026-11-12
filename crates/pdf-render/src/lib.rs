@@ -498,6 +498,16 @@ impl fmt::Debug for RenderCache {
     }
 }
 
+/// The matrix `[a, b, c, d, e, f]` from default user space to the device
+/// pixels of the page rendered at `options.scale` (origin at the top-left
+/// corner of the rotated crop box, y down): a point `(x, y)` lands at
+/// `(a x + c y + e, b x + d y + f)`. It places text (`TextWord`) over a
+/// rendering.
+pub fn page_transform(page: &Page, options: &RenderOptions) -> Result<[f64; 6], Error> {
+    let (_, _, m) = page_geometry(page, options)?;
+    Ok([m.a, m.b, m.c, m.d, m.e, m.f])
+}
+
 /// Size in device pixels of the whole page rendered at `options.scale`:
 /// the size of `render_page`'s bitmap, without its `max_pixels` check.
 /// Each side is at most `MAX_SIDE`.

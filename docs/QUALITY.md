@@ -382,6 +382,12 @@ première page comparé à celui de `pdftotext` (mode par défaut, son ordre de 
 - Fuzzing `render` (propriété : l'ordre de lecture garde chaque mot) : 95 690 exécutions en
   10 min, aucun crash.
 
+Couche de texte du worker (tranche 3.6a, 2026-11-12) : aller-retour des messages `PageText`,
+nombres de lignes et de mots refusés avant allocation, placement sur `columns.pdf` et sur une
+page tournée de 90°, troncature d'environ 120 000 mots dans la borne (réponse encodée entre
+960 Kio − 64 octets et 960 Kio), commande du shell de bout en bout avec le processus worker.
+Fuzzing `protocol` : 144 150 598 exécutions en 10 min (WSL), aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

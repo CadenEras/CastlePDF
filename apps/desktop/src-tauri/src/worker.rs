@@ -20,7 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pdf_worker::client::{ClientError, WorkerProcess};
 use pdf_worker::protocol::{
-    ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response, TileRect,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response,
+    TextLayer, TileRect,
 };
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +125,58 @@ pub struct PageSize {
     pub height: u32,
 }
 
+/// The text layer of a page, for the UI (ADR-0006, tranche 3.6a): lines in
+/// reading order, each word placed on the page rendered at scale 1, in
+/// pixels (y down, rotation applied). The UI scales it with its rendering.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayerDto {
+    pub lines: Vec<Vec<WordDto>>,
+    /// Words were left out to keep the layer bounded.
+    pub truncated: bool,
+}
+
+/// A word: its text and baseline (start and end) and font size, in pixels
+/// of the page at scale 1.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WordDto {
+    pub text: String,
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub size: f64,
+}
+
+impl From<TextLayer> for TextLayerDto {
+    fn from(layer: TextLayer) -> Self {
+        let pixels = |units: i32| f64::from(units) / LAYER_UNITS_PER_PIXEL;
+        Self {
+            lines: layer
+                .lines
+                .into_iter()
+                .map(|line| {
+                    line.words
+                        .into_iter()
+                        .map(|word| {
+                            let [x0, y0, x1, y1] = word.baseline;
+                            WordDto {
+                                text: word.text,
+                                x0: pixels(x0),
+                                y0: pixels(y0),
+                                x1: pixels(x1),
+                                y1: pixels(y1),
+                                size: f64::from(word.size) / LAYER_UNITS_PER_PIXEL,
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            truncated: layer.truncated,
+        }
+    }
+}
+
 /// Arguments of `render_tile`, as sent by the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -204,6 +257,11 @@ enum Job {
         key: TileKey,
         generation: u64,
         reply: Reply<Arc<Vec<u8>>>,
+    },
+    Text {
+        document: u32,
+        page: u32,
+        reply: Reply<TextLayerDto>,
     },
     /// Opens the current document again in a restarted worker.
     Reopen { path: String },
@@ -382,6 +440,22 @@ impl WorkerHandle {
             document,
             page,
             scale,
+            reply,
+        }) {
+            Ok(()) => Pending::Waiting(receiver),
+            Err(error) => Pending::Ready(Err(error)),
+        }
+    }
+
+    /// The text layer of `page` of the current document.
+    pub fn page_text(&self, document: u32, page: u32) -> Pending<TextLayerDto> {
+        if let Err(error) = self.check_page(document, page) {
+            return Pending::Ready(Err(error));
+        }
+        let (reply, receiver) = channel();
+        match self.queue(Job::Text {
+            document,
+            page,
             reply,
         }) {
             Ok(()) => Pending::Waiting(receiver),
@@ -627,6 +701,9 @@ impl Manager<'_> {
             Job::Tile { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
+            Job::Text { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
             Job::Reopen { .. } => {}
         }
     }
@@ -676,7 +753,7 @@ impl Manager<'_> {
                 }
             }
             let target = match &job {
-                Job::Size { document, .. } => Some(*document),
+                Job::Size { document, .. } | Job::Text { document, .. } => Some(*document),
                 Job::Tile { key, .. } => Some(key.document),
                 _ => None,
             };
@@ -719,6 +796,11 @@ impl Manager<'_> {
                     scale: key.scale(),
                     rect: key.rect(),
                 },
+                Job::Text { page, .. } => Request::PageText {
+                    id,
+                    document: worker_document,
+                    page: *page,
+                },
                 Job::Reopen { path } => Request::OpenDocument {
                     id,
                     path: path.clone(),
@@ -741,7 +823,8 @@ impl Manager<'_> {
             | Response::JobFailed { id, .. }
             | Response::DocumentOpened { id, .. }
             | Response::PageSize { id, .. }
-            | Response::Tile { id, .. } => *id,
+            | Response::Tile { id, .. }
+            | Response::PageText { id, .. } => *id,
             Response::HelloAck { .. } | Response::ProtocolError { .. } => {
                 eprintln!("castle-pdf: unexpected worker response: {response:?}");
                 self.lose_worker();
@@ -859,6 +942,9 @@ impl Manager<'_> {
             }
             (Job::Size { reply, .. }, Response::PageSize { width, height, .. }) => {
                 let _ = reply.send(Ok(PageSize { width, height }));
+            }
+            (Job::Text { reply, .. }, Response::PageText { layer, .. }) => {
+                let _ = reply.send(Ok(TextLayerDto::from(layer)));
             }
             (
                 Job::Tile { key, reply, .. },
@@ -1313,6 +1399,37 @@ mod tests {
         assert_eq!(
             handle.open(&fixture("shapes.pdf")).wait(TIMEOUT),
             Err(CommandError::WorkerUnavailable)
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_page_gives_its_text_layer() {
+        let (handle, _events) = start();
+        assert_eq!(
+            handle.page_text(1, 0).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "document" })
+        );
+        let info = handle.open(&fixture("columns.pdf")).wait(TIMEOUT).unwrap();
+        let layer = handle.page_text(info.document, 0).wait(TIMEOUT).unwrap();
+        assert!(!layer.truncated);
+        let texts: Vec<String> = layer
+            .lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert_eq!(texts[1..4], ["Left one", "Left two", "Left three"]);
+        // In pixels of the page at scale 1: "A" at (60, 40), 18 px.
+        let first = &layer.lines[0][0];
+        assert_eq!((first.x0, first.y0, first.size), (60.0, 40.0, 18.0));
+        assert_eq!(
+            handle.page_text(info.document, 1).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "page" })
         );
         handle.stop();
     }

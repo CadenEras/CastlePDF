@@ -247,6 +247,16 @@ fn job_of(request: Request, documents: &Shared<Documents>) -> Option<(u64, Work)
             };
             (id, Box::new(work))
         }
+        Request::PageText { id, document, page } => {
+            let document = lock(documents).get(document);
+            let work = move |budget: &mut Budget| {
+                document
+                    .ok_or(ErrorCode::UnknownDocument)
+                    .and_then(|document| documents::page_text(&document, page, id, budget))
+                    .unwrap_or_else(|code| failed(id, code))
+            };
+            (id, Box::new(work))
+        }
         Request::Hello { .. }
         | Request::Cancel { .. }
         | Request::Shutdown
