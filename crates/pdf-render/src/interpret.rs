@@ -15,7 +15,7 @@ use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle
 use crate::text::cmap::Code as CodeKey;
 use crate::text::unicode::TextMap;
 use crate::text::{self, Selected, TextState, font, type3};
-use crate::{MAX_DASH_ENTRIES, RenderLimits, TextGlyph, Unsupported};
+use crate::{ActualText, MAX_DASH_ENTRIES, RenderLimits, TextGlyph, Unsupported};
 
 /// Most form XObjects drawn inside one another (8.10); a deeper form is
 /// skipped and reported (`XObject`).
@@ -292,6 +292,12 @@ pub(crate) struct Interpreter<'a, S> {
     /// Bytes of strings shown in a font that cannot be read, when text is
     /// extracted: their glyphs are not recorded.
     unread_bytes: u64,
+    /// Open marked-content sequences when text is extracted, one per
+    /// `BMC`/`BDC` of the current content: the index of the `/ActualText`
+    /// span it opened, if any.
+    marks: Vec<Option<usize>>,
+    /// `/ActualText` spans (14.9.4), when text is extracted.
+    actual_texts: Vec<ActualText>,
 }
 
 /// How nested content (a form, a Type 3 glyph) is entered.
@@ -366,6 +372,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             text_glyphs: None,
             unreadable_to_unicode: 0,
             unread_bytes: 0,
+            marks: Vec::new(),
+            actual_texts: Vec::new(),
         }
     }
 
@@ -382,7 +390,16 @@ impl<'a, S: Source> Interpreter<'a, S> {
         content: &[u8],
         budget: &mut Budget,
     ) -> (
-        Result<(Vec<TextGlyph>, BTreeSet<Unsupported>, u32, u64), Error>,
+        Result<
+            (
+                Vec<TextGlyph>,
+                Vec<ActualText>,
+                BTreeSet<Unsupported>,
+                u32,
+                u64,
+            ),
+            Error,
+        >,
         Caches,
     ) {
         self.drawing = false;
@@ -394,6 +411,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             result.map(|()| {
                 (
                     glyphs,
+                    std::mem::take(&mut self.actual_texts),
                     self.skipped,
                     self.unreadable_to_unicode,
                     self.unread_bytes,
@@ -443,6 +461,61 @@ impl<'a, S: Source> Interpreter<'a, S> {
             });
         }
         Ok(true)
+    }
+
+    /// Opens an `/ActualText` span (14.9.4) if the properties of a `BDC`
+    /// (inline or a `/Properties` resource) have one and no span is open:
+    /// the text of an outer span replaces everything inside it. The span
+    /// counts against `max_text_glyphs` and is charged to the budget.
+    fn start_actual_text(
+        &mut self,
+        properties: &Object,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<Option<usize>, Error> {
+        if self.marks.iter().any(Option::is_some) {
+            return Ok(None);
+        }
+        let dictionary = match properties {
+            Object::Dictionary(dictionary) => Some(dictionary.clone()),
+            Object::Name(name) => {
+                let object = self.resource(b"Properties", name, at, budget)?;
+                text::resolve_dictionary(self.file, &object, budget)?
+            }
+            _ => None,
+        };
+        let actual = match dictionary.as_ref().and_then(|d| d.get(b"ActualText")) {
+            Some(object) => match text::resolve(self.file, object, budget)? {
+                Some(Object::String(bytes)) => Some(text::string::text_string(&bytes)),
+                _ => None,
+            },
+            None => None,
+        };
+        let Some(actual) = actual else {
+            return Ok(None);
+        };
+        let count = self.text_glyphs.as_ref().map_or(0, Vec::len);
+        if (count + self.actual_texts.len()) as u64 >= self.limits.max_text_glyphs {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::TextGlyphs,
+                limit: self.limits.max_text_glyphs,
+            });
+        }
+        budget
+            .charge_decoded_bytes((2 * std::mem::size_of::<ActualText>() + actual.len()) as u64)?;
+        self.actual_texts.push(ActualText {
+            text: actual,
+            glyphs: count..count,
+        });
+        Ok(Some(self.actual_texts.len() - 1))
+    }
+
+    /// Closes the `/ActualText` span `span` after the glyphs recorded so far.
+    fn end_actual_text(&mut self, span: usize) {
+        let count = self.text_glyphs.as_ref().map_or(0, Vec::len);
+        if let Some(actual) = self.actual_texts.get_mut(span) {
+            actual.glyphs.end = count;
+        }
     }
 
     /// Sets the end of the glyph recorded last to the text position after
@@ -938,11 +1011,21 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 }
                 if op.operator.starts_with(b"B") {
                     self.marked_content = self.marked_content.saturating_add(1);
+                    if self.text_glyphs.is_some() {
+                        let span = match properties {
+                            Some(properties) => self.start_actual_text(properties, at, budget)?,
+                            None => None,
+                        };
+                        self.marks.push(span);
+                    }
                 }
             }
             b"EMC" => {
                 no_operands(ops).ok_or_else(bad)?;
                 self.marked_content = self.marked_content.checked_sub(1).ok_or_else(misplaced)?;
+                if let Some(Some(span)) = self.marks.pop() {
+                    self.end_actual_text(span);
+                }
             }
             // Compatibility sections (7.8.2).
             b"BX" => {
@@ -1753,6 +1836,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if let Some(alpha) = layer {
             self.canvas.push_opacity(alpha);
         }
+        let outer_marks = std::mem::take(&mut self.marks);
         let outer = (
             std::mem::take(&mut self.path),
             self.pending_clip.take(),
@@ -1773,6 +1857,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
         // Leave, whatever the content left open: its states, text object,
         // path, marked content; then the layer and the entry state.
         self.forms.pop();
+        // Spans the nested content left open end with it.
+        for span in std::mem::replace(&mut self.marks, outer_marks)
+            .into_iter()
+            .flatten()
+        {
+            self.end_actual_text(span);
+        }
         if let Some(scope) = &mut scope {
             self.swap_scope(scope);
         }

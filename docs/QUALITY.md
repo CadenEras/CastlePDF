@@ -342,6 +342,28 @@ Police « texte seulement » (tranche 3.4b, même protocole, 2026-11-12) :
   timeouts inchangés ; fuzzing `font` (le programme arbitraire, souvent illisible, passe par la
   police texte seulement) : 98 846 exécutions en 10 min, aucun crash.
 
+Mots et lignes (tranche 3.5a, 2026-11-12, release, WSL) : test ignoré `layout_corpus`
+(`CASTLE_CORPUS`, `CASTLE_PDFTOTEXT`), mots de la première page comparés en sac (ordre à part)
+à ceux de `pdftotext` 22.02 (mode par défaut), F1 = 2 |communs| / (|nôtres| + |siens|) :
+
+| Corpus | Pages comparées | F1 moyen | p10 | Médiane | ≥ 0,99 | ≥ 0,9 | Pages avec `/ActualText` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SafeDocs | 1 675 | 0,953 | 0,915 | 1,000 | 70,0 % | 90,8 % | 93 |
+| UNSAFE | 2 003 | 0,961 | 0,938 | 1,000 | 66,8 % | 93,6 % | 70 |
+
+- Texte d'un seul côté : 5 et 6 pages chez nous seulement, 3 et 2 chez Poppler seulement.
+- Seuil entre mots (fois la taille) : 0,1 donne 0,954 et 0,961, 0,15 donne 0,953 et 0,961,
+  0,2 donne 0,952 et 0,958, 0,25 donne 0,944 et 0,954. Retenu : 0,15, à peine moins bon que 0,1
+  mais qui ne coupe pas un texte à espacement de lettres modéré (2 pt sur 18 pt dans
+  `truetype.pdf`, soit 0,11).
+- Les écarts restants mêlent glyphes inconnus (signalés chez nous, imprimés autrement par
+  Poppler), coupures de mots différentes, texte dupliqué pour un faux gras (Poppler fusionne
+  les glyphes superposés) et `/ActualText` (voir `pdftotext_oracle.rs`) ; non ventilés, faute
+  de lire le contenu du corpus.
+- Fixtures : mots identiques à `pdftotext -raw` sur les pages comparées par l'oracle.
+- Fuzzing `render` (`text_lines` ajouté, la propriété : au plus un mot par glyphe ou plage) :
+  101 646 exécutions en 10 min, aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

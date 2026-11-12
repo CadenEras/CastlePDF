@@ -366,6 +366,33 @@ const encodingCMap = (name, codespace, body, before = '') => [
   'CMapName currentdict /CMap defineresource pop', 'end', 'end',
 ].join('\n');
 
+// Words, lines and /ActualText (ADR-0006, tranche 3.5a), in Helvetica: an
+// /ActualText inline ("fi" for the code of "f") and from a /Properties
+// resource ("Reading"), nested (the outer one wins), and without glyphs
+// (an image of text, "Logo"); words apart by a TJ gap without a space, a
+// small kerning that does not split a word; words placed one by one on a
+// line; a line rotated by 90 degrees.
+function layoutPage() {
+  const content = [
+    'BT /F1 14 Tf 20 260 Td /Span << /ActualText (fi) >> BDC (f) Tj EMC (ne print) Tj ET',
+    'BT /F1 14 Tf 20 230 Td /Span /P0 BDC (Reeding) Tj EMC ( order) Tj ET',
+    'BT /F1 14 Tf 20 200 Td /Span << /ActualText (Outer) >> BDC /Span << /ActualText (Inner) >> BDC (xx) Tj EMC (yy) Tj EMC ET',
+    '/Span << /ActualText <FEFF004C006F0067006F> >> BDC q 40 0 0 20 200 195 cm 0.5 g 0 0 1 1 re f Q EMC',
+    'BT /F1 14 Tf 20 170 Td [(Gap) -400 (Words) -20 (Kern)] TJ ET',
+    'BT /F1 14 Tf 20 140 Td (One) Tj ET BT /F1 14 Tf 60 140 Td (by) Tj ET BT /F1 14 Tf 82 140 Td (one) Tj ET',
+    'BT /F1 14 Tf 0 1 -1 0 270 40 Tm (Rotated text) Tj ET',
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> '
+      + '/Properties << /P0 6 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    '<< /ActualText (Reading) >>',
+  ], '1.5');
+}
+
 // Type 0 encodings beyond Identity-H (ADR-0006, tranche 3.4a), in Arimo
 // whose CIDs are glyph ids. Page 1: Identity-V, vertical text with the
 // default /DW2 (F1); an embedded CMap mixing one-byte codes and a two-byte
@@ -907,6 +934,8 @@ export const fixtures = {
   'text.pdf': textPage(),
   // Type 0 encodings: Identity-V, embedded CMaps, usecmap; see cmapsPage.
   'cmaps.pdf': cmapsPage(),
+  // Words, lines and /ActualText; see layoutPage.
+  'layout.pdf': layoutPage(),
   // The simple filters: ASCIIHex content, LZW, RunLength and ASCII85 +
   // Flate images; see filtersPage.
   'filters.pdf': filtersPage(),
