@@ -331,6 +331,17 @@ Encodages Type 0 au-delà d'`Identity-H` (tranche 3.4a, même protocole, 2026-11
   `pdftotext` (deux pages) ; fuzzing `font` avec ces encodages : 101 792 exécutions en 10 min,
   aucun crash.
 
+Police « texte seulement » (tranche 3.4b, même protocole, 2026-11-12) :
+- premières pages dont du texte est en police non lue : 45 → 22 (SafeDocs, 135 889 → 90 691
+  octets) et 31 → 15 (UNSAFE, 49 767 → 32 582 octets) ; il ne reste que des CMap prédéfinies
+  autres qu'`Identity` (3.7b) et des dictionnaires abîmés ;
+- glyphes extraits : 2 985 364 → 3 029 322 (SafeDocs) et 3 477 212 → 3 493 756 (UNSAFE) ; part
+  des inconnus 0,69 % → 1,01 % et 0,78 % → 0,83 % : ces polices sans `/ToUnicode` ni noms
+  utilisables sont désormais signalées au lieu d'être absentes ;
+- rendu inchangé : 54 et 39 premières pages où du texte n'est pas dessiné ; taux, crashs et
+  timeouts inchangés ; fuzzing `font` (le programme arbitraire, souvent illisible, passe par la
+  police texte seulement) : 98 846 exécutions en 10 min, aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

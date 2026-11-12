@@ -213,6 +213,12 @@ impl Font {
         self.substituted
     }
 
+    /// Has a program to draw its glyphs; a font loaded for its text only
+    /// (`load_text_only`) has none.
+    pub fn drawable(&self) -> bool {
+        !self.program.is_empty()
+    }
+
     /// Writes vertically: `Identity-V` or a CMap with `/WMode 1`.
     pub fn vertical(&self) -> bool {
         matches!(
@@ -423,6 +429,100 @@ pub(crate) fn load<S: Source>(
         Some(b"Type0") => cid(file, font, budget),
         _ => Ok(None),
     }
+}
+
+/// A font for its text only, when \`load\` cannot read it for drawing
+/// (ADR-0006, tranche 3.4b): no program, its codes, widths and text from
+/// the dictionary alone. A simple font's codes are one byte, named by its
+/// \`/Encoding\` over the standard encoding (none for a symbolic font
+/// without one); a Type 0 font's codes follow \`Identity-H\`/\`-V\` or an
+/// embedded CMap, its widths \`/W\` and \`/W2\`. \`Ok(None)\` for another kind,
+/// another predefined CMap, or a damaged dictionary. Drawing it draws
+/// nothing (\`drawable\` is false).
+pub(crate) fn load_text_only<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    budget: &mut Budget,
+) -> Result<Option<Font>, Error> {
+    let mapping = match font.get(b"Subtype").and_then(Object::as_name) {
+        Some(b"TrueType" | b"Type1" | b"MMType1") => {
+            let descriptor = match font.get(b"FontDescriptor") {
+                Some(object) => match resolve_dictionary(file, object, budget)? {
+                    Some(descriptor) => descriptor,
+                    None => return Ok(None),
+                },
+                None => Dictionary::new(),
+            };
+            let flags = descriptor
+                .get(b"Flags")
+                .and_then(Object::as_integer)
+                .unwrap_or(0);
+            let encoding = match font.get(b"Encoding") {
+                Some(object) => resolve(file, object, budget)?,
+                None => None,
+            };
+            let default = if flags & 4 != 0 && encoding.is_none() {
+                None
+            } else {
+                Some(&STANDARD)
+            };
+            let names = encoding_names(file, encoding.as_ref(), default, budget)?;
+            let glyphs = Box::new([None; 256]);
+            let widths = simple_widths(file, font, &descriptor, None, &glyphs, 1000.0, budget)?;
+            return Ok(Some(Font {
+                program: Arc::from(Vec::new()),
+                format: Format::OpenType,
+                units_per_em: 1000.0,
+                mapping: Mapping::Simple {
+                    glyphs,
+                    missing: Box::new([false; 256]),
+                    widths,
+                },
+                substituted: false,
+                text: TextMap::new(font, Some(&names)),
+            }));
+        }
+        Some(b"Type0") => {
+            let Some((codes, vertical)) = cid_encoding(file, font, budget)? else {
+                return Ok(None);
+            };
+            let descendant = match font.get(b"DescendantFonts") {
+                Some(object) => match resolve(file, object, budget)? {
+                    Some(Object::Array(items)) => match items.as_slice() {
+                        [descendant] => resolve_dictionary(file, descendant, budget)?,
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                None => None,
+            };
+            let Some(descendant) = descendant else {
+                return Ok(None);
+            };
+            let widths = cid_widths(file, &descendant, budget)?;
+            let vertical = if vertical {
+                Some(vertical_metrics(file, &descendant, budget)?)
+            } else {
+                None
+            };
+            Mapping::Cid {
+                codes,
+                // No program: no glyph either way.
+                cid_to_gid: Some(Vec::new()),
+                widths,
+                vertical,
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(Font {
+        program: Arc::from(Vec::new()),
+        format: Format::OpenType,
+        units_per_em: 1000.0,
+        mapping,
+        substituted: false,
+        text: TextMap::new(font, None),
+    }))
 }
 
 /// Glyph of each code of a simple font, and the codes whose glyph name

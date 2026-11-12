@@ -1349,9 +1349,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
             _ => None,
         };
         if let Some(selected) = id.and_then(|id| self.caches.font_objects.get(&id)) {
-            let selected = selected.clone();
-            self.fonts.insert(name.to_vec(), selected.clone());
-            return Ok(selected);
+            // A font a rendering could not read may still give its text.
+            let retry = self.text_glyphs.is_some() && matches!(selected, Selected::Unsupported);
+            if !retry {
+                let selected = selected.clone();
+                self.fonts.insert(name.to_vec(), selected.clone());
+                return Ok(selected);
+            }
         }
         let dictionary = match entry {
             Some(object) => text::resolve_dictionary(self.file, &object, budget)?,
@@ -1372,16 +1376,24 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     None => Selected::Unsupported,
                 }
             }
-            Some(dictionary) => match font::load(self.file, &dictionary, budget)? {
-                Some(font) => {
-                    self.caches.loaded_fonts += 1;
-                    Selected::Font {
-                        number: self.caches.loaded_fonts,
-                        font: Arc::new(font),
-                    }
+            Some(dictionary) => {
+                let mut font = font::load(self.file, &dictionary, budget)?;
+                // For text, a font that cannot be drawn is read without its
+                // program (ADR-0006, tranche 3.4b).
+                if font.is_none() && self.text_glyphs.is_some() {
+                    font = font::load_text_only(self.file, &dictionary, budget)?;
                 }
-                None => Selected::Unsupported,
-            },
+                match font {
+                    Some(font) => {
+                        self.caches.loaded_fonts += 1;
+                        Selected::Font {
+                            number: self.caches.loaded_fonts,
+                            font: Arc::new(font),
+                        }
+                    }
+                    None => Selected::Unsupported,
+                }
+            }
             None => Selected::Unsupported,
         };
         self.fonts.insert(name.to_vec(), selected.clone());
@@ -1428,6 +1440,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let draws = self.drawing && !matches!(mode, 3 | 7);
         if draws && font.substituted() {
             self.skipped.insert(Unsupported::FontSubstituted);
+        }
+        // Loaded for its text only (a cache shared with text extraction):
+        // nothing to draw, as for a font that cannot be read.
+        if draws && !font.drawable() {
+            self.skipped.insert(Unsupported::Text);
         }
         let scale = text.size / font.units_per_em();
         let glyph_space = Matrix::new(
