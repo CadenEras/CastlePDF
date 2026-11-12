@@ -10,7 +10,7 @@
 //! property list. The first byte chooses the scale (1 to 8, so up to
 //! 512 x 512 pixels); the rest is the content. The Type 3 font's
 //! `/ToUnicode` is the same bytes too, and the page's text is extracted
-//! and laid out (`page_text` and `text_lines`, ADR-0006 tranches 3.3, 3.5a).
+//! and laid out (`page_text`, `text_lines`, `reading_lines`, ADR-0006 3.3, 3.5).
 //! Properties: no panic in the interpreter or the rasteriser, no unbounded
 //! work (operations and path work are limited), a successful rendering has
 //! exactly `width * height * 4` bytes, and `render_area` of an inner
@@ -21,7 +21,8 @@
 use libfuzzer_sys::fuzz_target;
 use pdf_document::Document;
 use pdf_render::{
-    PixelRect, RenderLimits, RenderOptions, page_text, render_area, render_page, text_lines,
+    PixelRect, RenderLimits, RenderOptions, page_text, reading_lines, render_area, render_page,
+    text_lines,
 };
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
@@ -160,5 +161,8 @@ fuzz_target!(|data: &[u8]| {
         // Every glyph and span lands in at most one word.
         let words: usize = text_lines(&text).iter().map(|line| line.words.len()).sum();
         assert!(words <= text.glyphs.len() + text.actual_texts.len());
+        // Reading order keeps every word.
+        let ordered: usize = reading_lines(&text).iter().map(|line| line.words.len()).sum();
+        assert_eq!(ordered, words);
     }
 });

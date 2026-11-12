@@ -364,6 +364,24 @@ Mots et lignes (tranche 3.5a, 2026-11-12, release, WSL) : test ignoré `layout_c
 - Fuzzing `render` (`text_lines` ajouté, la propriété : au plus un mot par glyphe ou plage) :
   101 646 exécutions en 10 min, aucun crash.
 
+Ordre de lecture (tranche 3.5b, même test `layout_corpus`, 2026-11-12) : ordre des mots de la
+première page comparé à celui de `pdftotext` (mode par défaut, son ordre de lecture),
+2 LCS / (|nôtres| + |siens|), pages d'au plus 5 000 mots :
+
+| Corpus | Ordre du contenu (`text_lines`) | Ordre de lecture (`reading_lines`) | Plafond (F1 des mots) |
+| --- | --- | --- | --- |
+| SafeDocs | moyenne 0,840, médiane 0,944, ≥ 0,9 : 58,6 % | moyenne 0,887, médiane 0,979, ≥ 0,9 : 70,7 % | 0,953 |
+| UNSAFE | moyenne 0,873, médiane 0,970, ≥ 0,9 : 67,1 % | moyenne 0,907, médiane 0,984, ≥ 0,9 : 77,5 % | 0,961 |
+
+- Seuil de recollage des morceaux de ligne (fois la taille) : 0,5 et 1,0 donnent 0,887 et
+  0,907 ; 1,5, 2 et 3 dégradent (0,884 à 0,879 sur SafeDocs). Retenu : 1,0, qui garde entière
+  une ligne justifiée aux espaces larges.
+- Poppler n'est pas une vérité de l'ordre : sur `columns.pdf`, il lit la colonne droite après le
+  pied de page. L'écart restant au plafond mêle de tels choix et des pages que la découpe XY
+  lit mal (tableaux, encadrés) ; non ventilé, faute de lire le contenu du corpus.
+- Fuzzing `render` (propriété : l'ordre de lecture garde chaque mot) : 95 690 exécutions en
+  10 min, aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

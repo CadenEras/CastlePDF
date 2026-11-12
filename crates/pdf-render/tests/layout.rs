@@ -190,3 +190,51 @@ fn actual_text_spans_count_against_the_glyph_limit() {
         })
     ));
 }
+
+#[test]
+fn reading_order_reads_a_title_then_each_column() {
+    let page = text(fixture("columns.pdf"));
+    assert_eq!(
+        lines(&pdf_render::reading_lines(&page)),
+        [
+            "A title over both columns",
+            "Left one",
+            "Left two",
+            "Left three",
+            "Right one",
+            "Right two",
+            "Right three",
+            "First half, second half",
+            "Footer under both columns"
+        ]
+    );
+    // Content order is kept by `text_lines`: the columns alternate and the
+    // pieces of a line stay apart.
+    let content = lines(&text_lines(&page));
+    assert_eq!(&content[1..3], ["Left one", "Right one"]);
+    assert!(content.contains(&"second half".to_owned()));
+    assert!(content.contains(&"First half,".to_owned()));
+}
+
+#[test]
+fn reading_order_keeps_simple_pages_as_they_are() {
+    for name in ["text.pdf", "layout.pdf", "minimal.pdf"] {
+        let page = text(fixture(name));
+        assert_eq!(
+            lines(&pdf_render::reading_lines(&page)),
+            lines(&text_lines(&page)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_wide_gap_on_a_line_makes_columns_a_near_one_does_not() {
+    // "a" and "b" 1 size apart join; "c" 3 sizes further is another column.
+    let content = "BT /F1 10 Tf 20 100 Td (a) Tj ET BT /F1 10 Tf 35 100 Td (b) Tj ET \
+        BT /F1 10 Tf 80 100 Td (c) Tj ET BT /F1 10 Tf 20 85 Td (d) Tj ET BT /F1 10 Tf 80 85 Td (e) Tj ET";
+    assert_eq!(
+        lines(&pdf_render::reading_lines(&text(page(content, "", &[])))),
+        ["a b", "d", "c", "e"]
+    );
+}
