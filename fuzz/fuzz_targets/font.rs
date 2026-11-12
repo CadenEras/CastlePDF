@@ -8,7 +8,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use pdf_document::Document;
-use pdf_render::{RenderOptions, render_page};
+use pdf_render::{RenderLimits, RenderOptions, page_text, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 fn budget() -> Budget {
@@ -90,4 +90,5 @@ fuzz_target!(|data: &[u8]| {
     let mut options = RenderOptions::default();
     options.scale = 2.0;
     let _ = render_page(document.file(), page, &options, &mut budget());
+    let _ = page_text(document.file(), page, &RenderLimits::default(), &mut budget());
 });

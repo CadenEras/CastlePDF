@@ -11,7 +11,13 @@
 //! with a budget of their own; `fonts=<category>` if that fails. Then
 //! `text=<sources>` tells where their Unicode would come from and, if the
 //! page has Type 0 fonts, `cmaps=<encodings>` lists their encodings
-//! (ADR-0006, tranche 3.1); `text=<category>` if that fails.
+//! (ADR-0006, tranche 3.1); `text=<category>` if that fails. Last, the
+//! text of the first page is extracted (tranche 3.3), with a budget of its
+//! own: `glyphs=<n> unknown=<n> other-length=<n> unread=<n>` counts its
+//! glyphs, those whose text is unknown, those read through a `/ToUnicode`
+//! code of another length, and the bytes shown in fonts that cannot be read
+//! (their glyphs are not counted); `glyphs=<category>` if the extraction
+//! fails.
 //!
 //! A file whose structure was repaired (ADR-0004) ends its line with
 //! `repaired=<category>`, the category of the strict reading error, prefixed
@@ -29,7 +35,10 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use pdf_document::Document;
-use pdf_render::{RenderOptions, page_font_kinds, page_text_profile, render_page};
+use pdf_render::{
+    RenderLimits, RenderOptions, UnicodeSource, page_font_kinds, page_text, page_text_profile,
+    render_page,
+};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, RepairTrailer, ResourceLimits};
 
 /// Probes `path` and writes the outcome line to `out`.
@@ -92,6 +101,21 @@ pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
                 }
             }
             Err(e) => write!(out, " text={}", render_category(&e))?,
+        }
+        let mut budget = Budget::new(limits, CancellationToken::new());
+        match page_text(document.file(), page, &RenderLimits::default(), &mut budget) {
+            Ok(text) => {
+                let count = |source| text.glyphs.iter().filter(|g| g.source == source).count();
+                write!(
+                    out,
+                    " glyphs={} unknown={} other-length={} unread={}",
+                    text.glyphs.len(),
+                    count(UnicodeSource::Unknown),
+                    count(UnicodeSource::ToUnicodeOtherLength),
+                    text.unread_bytes
+                )?;
+            }
+            Err(e) => write!(out, " glyphs={}", render_category(&e))?,
         }
     }
     // Checked last: an object found by a scan during rendering also counts.

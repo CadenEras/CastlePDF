@@ -9,6 +9,26 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **extraction du texte** (`page_text`, ADR-0006, tranche 3.3). Chaque glyphe
+  montré par la page, formulaires compris, avec son texte Unicode et sa position en espace
+  utilisateur. Le texte vient de la CMap `/ToUnicode` de la police (lue au premier besoin, jamais
+  par un rendu), puis du nom de glyphe de l'encodage (liste de glyphes d'Adobe, `uniXXXX`,
+  `uXXXX`, ligatures `_`), y compris les noms du charset d'une police CFF à encodage intégré.
+  Un glyphe sans source est **inconnu, signalé, jamais deviné**. Un code `/ToUnicode` d'une autre
+  longueur que celui de la police est accepté et signalé ; une `/ToUnicode` illisible est
+  comptée. Le contenu est interprété sans rien peindre ni décoder d'image. Nouvelle limite
+  `RenderLimits::max_text_glyphs` (un million) ; chaque glyphe est imputé au budget.
+  `page_text_cached` partage polices et CMap avec les autres pages et rendus du document. Les
+  octets montrés dans une police que le moteur ne lit pas sont comptés (`unread_bytes`).
+- CLI : **`castle-pdf text <fichier> [--page <n>]`** affiche le texte ; caractères de contrôle,
+  contrôles bidirectionnels et séparateurs de ligne venus du document remplacés par U+FFFD.
+  Une page en échec est signalée et les suivantes sont affichées (code 1). `probe` et `survey` mesurent le texte des premières pages.
+- Fixture `text.pdf` : `/ToUnicode` (ligature, paire de substitution, codes d'une autre
+  longueur), noms de glyphes, texte inconnu, `/ToUnicode` endommagée, texte invisible. Oracle
+  `pdftotext` (workflow `oracle`) sur les pages dont tout le texte est connu ; les écarts voulus
+  sont documentés dans `pdftotext_oracle.rs`. Les cibles de fuzzing `render` et `font` extraient
+  aussi le texte.
+
 - `pdf-render` : **lecteur de CMap** (`CMap`, ISO 32000-2, 9.7.5 et 9.10.3 ; ADR-0006,
   tranche 3.2), commun à `/ToUnicode` et aux encodages des polices Type 0. Il lit les plages de
   codes (comparées octet par octet), `bfchar`, `bfrange` (forme de base et tableau), `cidchar`,

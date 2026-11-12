@@ -9,6 +9,7 @@ pub(crate) mod encodings;
 pub(crate) mod font;
 pub(crate) mod standard;
 pub(crate) mod type3;
+pub(crate) mod unicode;
 
 use std::sync::Arc;
 

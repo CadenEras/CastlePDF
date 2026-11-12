@@ -8,6 +8,7 @@ use pdf_syntax::{Budget, Dictionary, Object, ObjectId, PdfFile, Source};
 
 use super::font::{encoding_names, simple_widths};
 use super::resolve_dictionary;
+use super::unicode::TextMap;
 use crate::Error;
 use crate::geometry::Matrix;
 
@@ -24,6 +25,8 @@ pub(crate) struct Type3 {
     pub widths: Box<[f64; 256]>,
     /// The font's resources; `None`: those of the content showing text.
     pub resources: Option<Dictionary>,
+    /// The Unicode text of its codes: `/ToUnicode`, then glyph names.
+    pub text: TextMap,
 }
 
 impl Type3 {
@@ -102,6 +105,7 @@ pub(crate) fn load<S: Source>(
         missing,
         widths,
         resources,
+        text: TextMap::new(font, Some(&names)),
     }))
 }
 

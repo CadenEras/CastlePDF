@@ -79,6 +79,8 @@ pub enum RenderLimitKind {
     Clips,
     /// Segments of one glyph outline.
     GlyphSegments,
+    /// Glyphs recorded when the text of a page is extracted.
+    TextGlyphs,
 }
 
 impl From<pdf_syntax::Error> for Error {
