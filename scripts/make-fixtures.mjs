@@ -355,6 +355,95 @@ function textPage() {
   ], '1.4');
 }
 
+// An embedded encoding CMap (ISO 32000-2, 9.7.5.3) named `name`, with the
+// codespace ranges `codespace` and the mapping blocks `body` (and
+// `before`, such as a `usecmap`, ahead of them).
+const encodingCMap = (name, codespace, body, before = '') => [
+  '/CIDInit /ProcSet findresource begin', '12 dict begin', 'begincmap',
+  '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def',
+  `/CMapName /${name} def`, '/CMapType 1 def', before,
+  `1 begincodespacerange\n${codespace}\nendcodespacerange`, body, 'endcmap',
+  'CMapName currentdict /CMap defineresource pop', 'end', 'end',
+].join('\n');
+
+// Type 0 encodings beyond Identity-H (ADR-0006, tranche 3.4a), in Arimo
+// whose CIDs are glyph ids. Page 1: Identity-V, vertical text with the
+// default /DW2 (F1); an embedded CMap mixing one-byte codes and a two-byte
+// code (F2); an embedded CMap over F2's by /UseCMap, one code overridden
+// (F4). Page 2: an embedded CMap over Identity-H by `usecmap`, one CID
+// overridden (F3), which pdftoppm draws as notdef boxes without
+// poppler-data: page 1 alone is compared with it. Each font has a
+// /ToUnicode for the text.
+function cmapsPage() {
+  const gid = ch => arimoGlyphs.glyphs[ch][0];
+  const widthOf = g => {
+    const ch = Object.keys(arimoGlyphs.glyphs).find(c => arimoGlyphs.glyphs[c][0] === g);
+    return arimoWidth(ch);
+  };
+  const gidHex = text => [...text].map(ch => hex4(gid(ch))).join('');
+  const latin = '0123456789 !,.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  const allGids = [...new Set([...latin].map(gid))].sort((a, b) => a - b);
+  const w = allGids.map(g => `${g} [${widthOf(g)}]`).join(' ');
+  const byteHex = text => [...text].map(ch => ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')).join('');
+  // One-byte codes of the Latin characters to their glyph ids, and <8140> to Z.
+  const latinCids = [...latin].map(ch => `<${byteHex(ch)}> ${gid(ch)}`);
+  const f2cmap = encodingCMap('Castle-OneByte', '<00> <7F>\n<8140> <8140>',
+    `${latinCids.length} begincidchar\n${latinCids.join('\n')}\n<8140> ${gid('Z')}\nendcidchar`);
+  const f3cmap = encodingCMap('Castle-UseIdentity', '<0000> <FFFF>',
+    `1 begincidchar\n<${hex4(gid(' '))}> ${gid('!')}\nendcidchar`, '/Identity-H usecmap');
+  const f4cmap = encodingCMap('Castle-UseParent', '<00> <7F>',
+    `1 begincidchar\n<45> ${gid('X')}\nendcidchar`);
+  // The /ToUnicode of glyph-id codes; `shown` gives the text of a glyph
+  // whose CID is overridden.
+  const gidToUnicode = (text, shown = {}) => {
+    const entries = [...new Set(text)]
+      .map(ch => `<${hex4(gid(ch))}> <${hex4((shown[ch] ?? ch).codePointAt(0))}>`);
+    return toUnicodeCMap('<0000> <FFFF>', `${entries.length} beginbfchar\n${entries.join('\n')}\nendbfchar`);
+  };
+  const vertical = 'Vertical';
+  const usecmap = 'Use CMap';
+  const content = [
+    `BT /F1 20 Tf 270 230 Td <${gidHex(vertical)}> Tj ET`,
+    `BT /F2 18 Tf 10 220 Td <${byteHex('Embedded CMap ')}8140> Tj ET`,
+    `BT /F4 18 Tf 10 180 Td <${byteHex('Parent Entry')}> Tj ET`,
+  ].join('\n');
+  const page2 = `BT /F3 18 Tf 10 220 Td <${gidHex(usecmap)}> Tj ET`;
+  const type0 = (encoding, toUnicode) => '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLFF+Arimo '
+    + `/Encoding ${encoding} /DescendantFonts [8 0 R] /ToUnicode ${toUnicode} 0 R >>`;
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 19 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 260] '
+      + '/Resources << /Font << /F1 5 0 R /F2 6 0 R /F4 11 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    type0('/Identity-V', 13),
+    type0('12 0 R', 14),
+    type0('15 0 R', 16),
+    '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CSTLFF+Arimo '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+      + `/FontDescriptor 9 0 R /CIDToGIDMap /Identity /DW 1000 /W [${w}] >>`,
+    '<< /Type /FontDescriptor /FontName /CSTLFF+Arimo /Flags 32 /FontBBox [-544 -303 2700 1060] '
+      + '/ItalicAngle 0 /Ascent 905 /Descent -212 /CapHeight 716 /StemV 80 /FontFile2 10 0 R >>',
+    stream(arimo.toString('latin1'), ` /Length1 ${arimo.length}`),
+    type0('17 0 R', 18),
+    stream(f2cmap, ' /Type /CMap /CMapName /Castle-OneByte '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>'),
+    stream(gidToUnicode(vertical)),
+    stream(toUnicodeCMap('<00> <7F>\n<8140> <8140>',
+      '1 beginbfrange\n<20> <7A> <0020>\nendbfrange\n1 beginbfchar\n<8140> <005A>\nendbfchar')),
+    stream(f3cmap, ' /Type /CMap /CMapName /Castle-UseIdentity '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>'),
+    stream(gidToUnicode(usecmap, { ' ': '!' })),
+    stream(f4cmap, ' /Type /CMap /CMapName /Castle-UseParent /UseCMap 12 0 R '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>'),
+    stream(toUnicodeCMap('<00> <7F>',
+      '1 beginbfrange\n<20> <7A> <0020>\nendbfrange\n1 beginbfchar\n<45> <0058>\nendbfchar')),
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 260] '
+      + '/Resources << /Font << /F3 7 0 R >> >> /Contents 20 0 R >>',
+    stream(page2),
+  ], '1.4');
+}
+
 // CFF test fonts (SIL OFL 1.1, tests/fonts), built by
 // scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
 // an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
@@ -816,6 +905,8 @@ export const fixtures = {
   'type3.pdf': type3Page(),
   // Text extraction: /ToUnicode, glyph names, unknown text; see textPage.
   'text.pdf': textPage(),
+  // Type 0 encodings: Identity-V, embedded CMaps, usecmap; see cmapsPage.
+  'cmaps.pdf': cmapsPage(),
   // The simple filters: ASCIIHex content, LZW, RunLength and ASCII85 +
   // Flate images; see filtersPage.
   'filters.pdf': filtersPage(),

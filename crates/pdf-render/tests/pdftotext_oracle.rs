@@ -31,7 +31,7 @@ use pdf_render::{RenderLimits, UnicodeSource, page_text};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 /// Fixture and page index, every glyph's text known.
-const CASES: [(&str, usize); 9] = [
+const CASES: [(&str, usize); 11] = [
     ("minimal.pdf", 0),
     ("incremental.pdf", 0),
     ("hybrid.pdf", 0),
@@ -40,6 +40,8 @@ const CASES: [(&str, usize); 9] = [
     ("page-tree.pdf", 0),
     ("page-tree.pdf", 2),
     ("text.pdf", 0),
+    ("cmaps.pdf", 0),
+    ("cmaps.pdf", 1),
     ("filters.pdf", 0),
 ];
 

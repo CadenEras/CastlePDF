@@ -318,6 +318,19 @@ Extraction du texte (tranche 3.3, `survey`, release, WSL, 2026-11-12, même prot
   en échec n'arrêtant plus les suivantes, polices et CMap partagées entre les pages
   (`page_text_cached`). Fait avant fusion.
 
+Encodages Type 0 au-delà d'`Identity-H` (tranche 3.4a, même protocole, 2026-11-12) :
+- premières pages dont du texte est en police non lue : 52 → 45 (SafeDocs, 144 562 → 135 889
+  octets) et 33 → 31 (UNSAFE, 52 027 → 49 767 octets) ; les CMap prédéfinies CJK restent pour
+  3.7b ;
+- glyphes inconnus : 0,60 % → 0,69 % (SafeDocs) et 0,76 % → 0,78 % (UNSAFE) : les polices
+  désormais lues sans `/ToUnicode` sont comptées, leur texte signalé inconnu au lieu d'être
+  absent ;
+- premières pages rendues où du texte n'est pas dessiné (`Text`) : 54 (SafeDocs) et 39 (UNSAFE),
+  référence pour les tranches suivantes ; taux, crashs et timeouts inchangés ;
+- `cmaps.pdf` identique à `pdftoppm` à 216 dpi (page 1, texte vertical compris) et à
+  `pdftotext` (deux pages) ; fuzzing `font` avec ces encodages : 101 792 exécutions en 10 min,
+  aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release
