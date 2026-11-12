@@ -9,6 +9,14 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **police « texte seulement »** (ADR-0006, tranche 3.4b). En extraction de texte,
+  une police que le rendu ne dessine pas (non incluse et non remplacée, programme Type 1
+  symbolique, programme endommagé) est lue sans programme : codes, largeurs (`/Widths`, `/W`,
+  `/W2`) et texte (`/ToUnicode`, noms de glyphes) depuis son dictionnaire. Son texte et ses
+  positions ne sont plus perdus. Le rendu la signale toujours (`Text`), même quand elle vient
+  d'un cache partagé avec l'extraction. Seules les polices à CMap prédéfinie autre
+  qu'`Identity` restent non lues (tranche 3.7b).
+
 - `pdf-render` : **encodages des polices Type 0 au-delà d'`Identity-H`** (ADR-0006, tranche
   3.4a), pour le rendu comme pour le texte.
   - `Identity-V` et toute CMap `/WMode 1` : écriture verticale avec `/W2` et `/DW2` (ISO 32000-2,

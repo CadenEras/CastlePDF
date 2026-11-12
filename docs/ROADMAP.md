@@ -19,7 +19,7 @@ pas un booléen « compatible PDF 2.0 ».
 
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
-incluses, fait ; 3.4b police « texte seulement ») ; 3.5 mise en page ; 3.6 couche de
+incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page ; 3.6 couche de
 texte, sélection et copie ; 3.7 recherche ; 3.7b CMap prédéfinies d'Adobe (CJK) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
@@ -29,7 +29,7 @@ Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée ave
 
 | Limite | Pourquoi elle compte | Sortie attendue |
 | --- | --- | --- |
-| Le texte d'une police que le rendu ne lit pas (CMap prédéfinie autre qu'`Identity`, CID non incluse, Type 1 inclus symbolique, programme endommagé) est perdu, même avec une `/ToUnicode` valide ; ses octets sont comptés (`unread_bytes`) | L'extraction dépend de la capacité de dessin, ce que l'ADR-0006 ne demande pas | Police « texte seulement » (`/ToUnicode`, largeurs, codes) en 3.4b ; CMap prédéfinies en 3.7b, Type 1 en 3.8 |
+| Le texte d'une police Type 0 à CMap prédéfinie autre qu'`Identity` est perdu, même avec une `/ToUnicode` valide : ses codes ne peuvent pas être découpés ; ses octets sont comptés (`unread_bytes`). Depuis 3.4b, une police que le rendu ne dessine pas (non incluse, Type 1, programme endommagé) donne son texte | Texte absent sur ces pages | CMap prédéfinies en 3.7b |
 | Police CID `Identity` sans `/ToUnicode`, TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
 | `usecmap` d'une `/ToUnicode` non fusionné (celui des CMap d'encodage l'est depuis 3.4a, sur quatre niveaux) | Parent ignoré | Même résolution bornée que les encodages, si la mesure en trouve |
 | Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |

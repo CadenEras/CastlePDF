@@ -295,8 +295,9 @@ pub struct PageText {
     /// Every glyph shown, in content order, forms included, invisible text
     /// (rendering mode 3) too.
     pub glyphs: Vec<TextGlyph>,
-    /// `Text` when a font could not be read (its glyphs are absent from
-    /// `glyphs`, counted in `unread_bytes`), and what the interpreter met
+    /// `Text` when a font could not be read even for its text (its glyphs
+    /// are absent from `glyphs`, counted in `unread_bytes`), and what the
+    /// interpreter met
     /// without drawing: shadings, soft masks, blend modes, clipping by text,
     /// optional content, unreadable XObjects. Capabilities found only by
     /// drawing (images, colour spaces, patterns, substituted fonts, missing
@@ -306,17 +307,20 @@ pub struct PageText {
     /// again in another form scope counts again): their text comes from glyph
     /// names, or is unknown. A `null` or name entry counts as absent.
     pub unreadable_to_unicode: u32,
-    /// Bytes of strings shown in fonts that cannot be read: their glyphs
-    /// are not listed (one byte per glyph for a simple font, two for
-    /// `Identity-H`).
+    /// Bytes of strings shown in fonts that cannot be read even for their
+    /// text (a predefined CMap other than `Identity`, a damaged dictionary):
+    /// their glyphs are not listed.
     pub unread_bytes: u64,
 }
 
 /// The text of `page` (ADR-0006, tranche 3.3): each glyph its content
 /// shows, with its Unicode text from the font's `/ToUnicode` CMap or its
 /// glyph name, and its position. The content is interpreted as for a
-/// rendering, without painting or decoding images. A glyph of a font that
-/// cannot be read is not listed and the page reports `Text`.
+/// rendering, without painting or decoding images. A font the renderer
+/// cannot draw (no program, a Type 1 program, a damaged one) is read for its
+/// text only: codes, widths and text from its dictionary (tranche 3.4b). A
+/// glyph of a font that cannot be read even so is not listed and the page
+/// reports `Text`.
 ///
 /// `budget` is charged by the content, the resources and each glyph
 /// recorded; `limits.max_text_glyphs` bounds the glyphs.

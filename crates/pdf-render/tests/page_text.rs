@@ -337,3 +337,103 @@ fn text_in_a_font_that_cannot_be_read_is_counted() {
     assert_eq!(page.unread_bytes, 8);
     assert!(page.skipped.contains(&Unsupported::Text));
 }
+
+/// A /ToUnicode CMap stream over two-byte codes mapping `<0001>` to `<0002>`
+/// onto "AB" (96 bytes of data, checked by `to_unicode_length_is_right`).
+const TWO_BYTE_TO_UNICODE: &str = "<< /Length 96 >>
+stream
+begincodespacerange <0000> <FFFF> endcodespacerange beginbfrange <0001> <0002> <0041> endbfrange
+endstream";
+
+#[test]
+fn a_cid_font_that_cannot_be_drawn_still_gives_its_text() {
+    // No embedded program: the renderer cannot draw it (`Text`), its text
+    // comes from /ToUnicode and its positions from /W.
+    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /MSGothic /Encoding /Identity-H /ToUnicode 6 0 R \
+        /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 /BaseFont /MSGothic \
+        /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 /W [1 [500]] >>] >>";
+    let bytes = one_page(
+        "BT /F1 10 Tf 20 50 Td <00010002> Tj ET",
+        "/F1 5 0 R",
+        &[font, TWO_BYTE_TO_UNICODE],
+    );
+    let page = text(bytes.clone(), 0);
+    assert_eq!(lines(&page), ["AB"]);
+    assert_eq!(page.unread_bytes, 0);
+    let xs: Vec<f64> = page.glyphs.iter().map(|glyph| glyph.x).collect();
+    assert_eq!(xs, [20.0, 25.0]);
+    let document = document(bytes);
+    let rendering = render_page(
+        document.file(),
+        document.page(0).expect("page"),
+        &RenderOptions::default(),
+        &mut budget(),
+    )
+    .expect("rendered");
+    assert!(rendering.skipped.contains(&Unsupported::Text));
+}
+
+#[test]
+fn a_symbolic_type1_font_gives_the_text_of_its_glyph_names() {
+    // An embedded Type 1 program is not read, and a symbolic font is not
+    // replaced: the font is read for its text only.
+    let font = "<< /Type /Font /Subtype /Type1 /BaseFont /CMSY10 /FirstChar 65 /LastChar 66 /Widths [600 700] \
+        /Encoding << /Differences [65 /arrowright /bullet] >> /FontDescriptor 6 0 R >>";
+    let descriptor = "<< /Type /FontDescriptor /FontName /CMSY10 /Flags 4 /FontFile 7 0 R >>";
+    let program = "<< /Length 0 >>\nstream\n\nendstream";
+    let page = text(
+        one_page(
+            "BT /F1 10 Tf 0 50 Td (AB) Tj ET",
+            "/F1 5 0 R",
+            &[font, descriptor, program],
+        ),
+        0,
+    );
+    assert_eq!(lines(&page), ["\u{2192}\u{2022}"]);
+    assert!((page.glyphs[1].x - 6.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_shared_cache_gives_the_text_after_a_rendering_and_still_reports_it() {
+    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R \
+        /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /DW 1000 >>] >>";
+    let document = document(one_page(
+        "BT /F1 10 Tf 0 50 Td <00010002> Tj ET",
+        "/F1 5 0 R",
+        &[font, TWO_BYTE_TO_UNICODE],
+    ));
+    let page = document.page(0).expect("page");
+    let mut cache = pdf_render::RenderCache::default();
+    let render = |cache: &mut pdf_render::RenderCache| {
+        pdf_render::render_page_cached(
+            document.file(),
+            page,
+            &RenderOptions::default(),
+            cache,
+            &mut budget(),
+        )
+        .expect("rendered")
+    };
+    assert!(render(&mut cache).skipped.contains(&Unsupported::Text));
+    let text = pdf_render::page_text_cached(
+        document.file(),
+        page,
+        &RenderLimits::default(),
+        &mut cache,
+        &mut budget(),
+    )
+    .expect("text");
+    assert_eq!(lines(&text), ["AB"]);
+    // The text-only font is cached now: a rendering still reports the text.
+    assert!(render(&mut cache).skipped.contains(&Unsupported::Text));
+}
+
+#[test]
+fn to_unicode_length_is_right() {
+    let data = TWO_BYTE_TO_UNICODE
+        .split("stream\n")
+        .nth(1)
+        .and_then(|rest| rest.strip_suffix("\nendstream"))
+        .expect("stream data");
+    assert_eq!(data.len(), 96);
+}
