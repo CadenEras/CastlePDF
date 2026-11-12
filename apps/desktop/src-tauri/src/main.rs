@@ -96,14 +96,17 @@ fn begin_view(worker: State<'_, WorkerHandle>) -> Result<u64, CommandError> {
     worker.begin_view()
 }
 
-/// The text layer of a page (ADR-0006, tranche 3.6a): small, sent as JSON.
+/// The text layer of a page for view `generation` (ADR-0006, tranche 3.6a),
+/// as JSON: at most `MAX_TEXT_LAYER_BYTES` from the worker, a few times that
+/// in JSON, once per page shown.
 #[tauri::command]
 async fn page_text(
     worker: State<'_, WorkerHandle>,
     document: u32,
     page: u32,
+    generation: u64,
 ) -> Result<TextLayerDto, CommandError> {
-    reply(worker.page_text(document, page), REPLY_TIMEOUT).await
+    reply(worker.page_text(document, page, generation), REPLY_TIMEOUT).await
 }
 
 /// Raw bytes, received as an `ArrayBuffer`: no JSON or base64 (ADR-0003).

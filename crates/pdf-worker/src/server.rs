@@ -298,7 +298,11 @@ fn start<W: Write + Send + 'static>(
             // Free the slot first so the peer can start a new job as soon as
             // it reads this response.
             *lock(&current) = None;
-            let _ = send(&output, &response);
+            // A response too large for a frame would leave the peer waiting
+            // for ever: it gets a failure instead.
+            if let Err(FrameError::TooLarge { .. }) = send(&output, &response) {
+                let _ = send(&output, &failed(id, ErrorCode::Internal));
+            }
         })
         .map_err(|e| ServeError::Spawn(e.kind()))?;
     *job = Some(handle);

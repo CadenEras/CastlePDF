@@ -41,6 +41,38 @@ fn open(worker: &WorkerProcess, id: u64, name: &str) -> Response {
 }
 
 #[test]
+fn a_page_gives_its_text_layer_through_the_pipes() {
+    let worker = spawn();
+    assert!(matches!(
+        open(&worker, 1, "columns.pdf"),
+        Response::DocumentOpened { document: 1, .. }
+    ));
+    let Response::PageText { id: 2, layer } = call(
+        &worker,
+        &Request::PageText {
+            id: 2,
+            document: 1,
+            page: 0,
+        },
+    ) else {
+        panic!("text layer expected");
+    };
+    assert!(!layer.truncated && !layer.incomplete);
+    assert_eq!(layer.lines.len(), 9);
+    assert_eq!(layer.lines[1].words[0].text, "Left");
+    // An unknown document or page is refused.
+    for (id, document, page, code) in [
+        (3, 2, 0, ErrorCode::UnknownDocument),
+        (4, 1, 1, ErrorCode::InvalidRequest),
+    ] {
+        assert_eq!(
+            call(&worker, &Request::PageText { id, document, page }),
+            Response::JobFailed { id, code }
+        );
+    }
+}
+
+#[test]
 fn a_page_is_rendered_tile_by_tile() {
     let worker = spawn();
     assert_eq!(

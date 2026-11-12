@@ -178,7 +178,10 @@ pub fn page_text(
         )
         .map_err(|e| render_code(&e))?
     };
-    let mut layer = TextLayer::default();
+    let mut layer = TextLayer {
+        incomplete: text.skipped.contains(&Unsupported::Text) || text.unread_bytes > 0,
+        ..TextLayer::default()
+    };
     let mut size = PAGE_TEXT_HEADER_LEN;
     'lines: for line in reading_lines(&text) {
         size += 4;
@@ -188,7 +191,16 @@ pub fn page_text(
         }
         let mut words = Vec::with_capacity(line.words.len());
         for word in &line.words {
-            let word = layer_word(word, &transform);
+            let mut word = layer_word(word, &transform);
+            // The protocol carries at most 65 535 bytes of a word.
+            if word.text.len() > usize::from(u16::MAX) {
+                let mut end = usize::from(u16::MAX);
+                while !word.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                word.text.truncate(end);
+                layer.truncated = true;
+            }
             size += word_len(&word);
             if size > MAX_TEXT_LAYER_BYTES {
                 layer.truncated = true;
@@ -538,5 +550,70 @@ mod tests {
         assert!(encoded <= MAX_TEXT_LAYER_BYTES, "{encoded}");
         assert!(encoded > MAX_TEXT_LAYER_BYTES - 64, "{encoded}");
         assert_eq!(Response::decode(&response.encode()), Ok(response.clone()));
+    }
+
+    /// The text layer of a one-page document showing `content` with `/F1`
+    /// as `font`.
+    fn layer_of(content: &str, font: &str) -> TextLayer {
+        let bodies = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            font.to_owned(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in bodies.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "castle-layer-{}-{}.pdf",
+            std::process::id(),
+            content.len()
+        ));
+        std::fs::write(&path, pdf).unwrap();
+        let document = open(&path.to_string_lossy(), &mut budget());
+        let _ = std::fs::remove_file(&path);
+        match page_text(&document.unwrap(), 0, 1, &mut budget()) {
+            Ok(Response::PageText { layer, .. }) => layer,
+            other => panic!("text layer expected, got {other:?}"),
+        }
+    }
+
+    const HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    #[test]
+    fn a_page_without_text_gives_an_empty_layer() {
+        let layer = layer_of("0 0 10 10 re f", HELVETICA);
+        assert_eq!(layer, TextLayer::default());
+    }
+
+    #[test]
+    fn a_word_longer_than_the_protocol_allows_is_cut_and_reported() {
+        // 70 000 letters without a space: one word, cut to 65 535 bytes.
+        let content = format!("BT /F1 1 Tf 0 0 Td ({}) Tj ET", "w".repeat(70_000));
+        let layer = layer_of(&content, HELVETICA);
+        assert!(layer.truncated);
+        assert_eq!(layer.lines[0].words[0].text.len(), usize::from(u16::MAX));
+    }
+
+    #[test]
+    fn missing_text_is_reported() {
+        // A predefined CMap other than Identity: the font is not read.
+        let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+        let layer = layer_of("BT /F1 10 Tf 0 0 Td <0041> Tj ET", font);
+        assert!(layer.incomplete && !layer.truncated);
+        assert!(layer.lines.is_empty());
+        assert!(!layer_of("BT /F1 10 Tf 0 0 Td (A) Tj ET", HELVETICA).incomplete);
     }
 }

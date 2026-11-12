@@ -502,9 +502,21 @@ impl fmt::Debug for RenderCache {
 /// pixels of the page rendered at `options.scale` (origin at the top-left
 /// corner of the rotated crop box, y down): a point `(x, y)` lands at
 /// `(a x + c y + e, b x + d y + f)`. It places text (`TextWord`) over a
-/// rendering.
+/// rendering. Unlike a rendering, it has no size limit: the text of a page
+/// too large to render whole at `options.scale` is placed all the same.
 pub fn page_transform(page: &Page, options: &RenderOptions) -> Result<[f64; 6], Error> {
-    let (_, _, m) = page_geometry(page, options)?;
+    let scale = options.scale * page.user_unit;
+    let crop = page.crop_box;
+    if !(options.scale.is_finite()
+        && options.scale > 0.0
+        && scale.is_finite()
+        && scale > 0.0
+        && crop.width() > 0.0
+        && crop.height() > 0.0)
+    {
+        return Err(Error::InvalidRequest);
+    }
+    let m = base_matrix(page, scale);
     Ok([m.a, m.b, m.c, m.d, m.e, m.f])
 }
 
@@ -661,15 +673,21 @@ fn page_geometry(page: &Page, options: &RenderOptions) -> Result<(u16, u16, Matr
     let (Some(width), Some(height)) = (side(rotated_w), side(rotated_h)) else {
         return Err(too_large);
     };
+    Ok((width, height, base_matrix(page, scale)))
+}
+
+/// From default user space to device pixels at `scale` (`/UserUnit`
+/// included): origin at the top-left corner of the rotated crop box, y down.
+fn base_matrix(page: &Page, scale: f64) -> Matrix {
     let s = scale;
+    let crop = page.crop_box;
     let (x0, y0, x1, y1) = (crop.llx, crop.lly, crop.urx, crop.ury);
-    let base = match page.rotation {
+    match page.rotation {
         90 => Matrix::new(0.0, s, s, 0.0, -y0 * s, -x0 * s),
         180 => Matrix::new(-s, 0.0, 0.0, s, x1 * s, -y0 * s),
         270 => Matrix::new(0.0, -s, -s, 0.0, y1 * s, x1 * s),
         _ => Matrix::new(s, 0.0, 0.0, -s, -x0 * s, y1 * s),
-    };
-    Ok((width, height, base))
+    }
 }
 
 /// The page's content streams decoded and concatenated, each followed by a

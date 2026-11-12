@@ -14,9 +14,13 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   ligne de base et sa taille sur la page rendue à l'échelle 1 (rotation comprise), en 1/64 de
   pixel. Réponse bornée à 960 Kio (`truncated` au-delà) ; décodage qui vérifie les nombres de
   lignes et de mots avant d'allouer. Commande Tauri `page_text` (permission
-  `allow-page-text`), document courant et page existante seulement. Polices et CMap viennent
-  du cache de rendu du document.
-- `pdf-render` : `page_transform` (de l'espace utilisateur aux pixels du rendu) ; chaque
+  `allow-page-text`), document courant, page existante et génération de vue seulement : une
+  couche d'une vue périmée est écartée ou annulée comme une tuile. Le drapeau `incomplete`
+  signale du texte manquant (police ou glyphe non lus) ; un mot de plus de 65 535 octets est
+  coupé et marque `truncated`. Une réponse trop grande pour une trame devient un échec
+  `Internal` au lieu d'être perdue. Polices et CMap viennent du cache de rendu du document.
+- `pdf-render` : `page_transform` (de l'espace utilisateur aux pixels du rendu, sans la limite
+  de taille d'un rendu) ; chaque
   `TextWord` donne sa ligne de base et sa taille.
 - Fuzzing : cible `protocol` (requêtes et réponses du worker).
 

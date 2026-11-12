@@ -137,9 +137,12 @@ pub enum Response {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextLayer {
     pub lines: Vec<LayerLine>,
-    /// Words were left out to keep the response within
-    /// `MAX_TEXT_LAYER_BYTES`.
+    /// Words were left out, or a word longer than 65 535 bytes cut, to keep
+    /// the response within `MAX_TEXT_LAYER_BYTES`.
     pub truncated: bool,
+    /// Text the page shows is missing: a font or glyph that could not be
+    /// read (`pdf_render::Unsupported::Text`).
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -305,7 +308,7 @@ const DOCUMENT_OPENED: u8 = 0x85;
 const PAGE_SIZE_REPLY: u8 = 0x86;
 const TILE: u8 = 0x87;
 const PAGE_TEXT_REPLY: u8 = 0x88;
-/// Bytes of a `PageText` response before its lines: tag, id, flag, count.
+/// Bytes of a `PageText` response before its lines: tag, id, flags, count.
 pub const PAGE_TEXT_HEADER_LEN: usize = 1 + 8 + 1 + 4;
 /// Least bytes of an encoded line (its word count) and word (empty text).
 const MIN_LINE_LEN: usize = 4;
@@ -504,9 +507,10 @@ impl Response {
                 .u8(*repair as u8)
                 .bytes(pixels),
             Self::PageText { id, layer } => {
+                let flags = u8::from(layer.truncated) | u8::from(layer.incomplete) << 1;
                 let mut out = Writer::new(PAGE_TEXT_REPLY, PAGE_TEXT_HEADER_LEN)
                     .u64(*id)
-                    .u8(u8::from(layer.truncated))
+                    .u8(flags)
                     .u32(u32::try_from(layer.lines.len()).unwrap_or(u32::MAX));
                 for line in &layer.lines {
                     out = out.u32(u32::try_from(line.words.len()).unwrap_or(u32::MAX));
@@ -577,16 +581,16 @@ impl Response {
             }
             PAGE_TEXT_REPLY => {
                 let id = r.u64()?;
-                let truncated = match r.u8()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(DecodeError),
-                };
+                let flags = r.u8()?;
+                if flags > 0b11 {
+                    return Err(DecodeError);
+                }
                 // Counts are checked against the bytes left before allocating.
                 let lines = r.count(MIN_LINE_LEN)?;
                 let mut layer = TextLayer {
                     lines: Vec::with_capacity(lines),
-                    truncated,
+                    truncated: flags & 1 != 0,
+                    incomplete: flags & 2 != 0,
                 };
                 for _ in 0..lines {
                     let words = r.count(MIN_WORD_LEN)?;
@@ -774,6 +778,7 @@ mod tests {
                         LayerLine { words: Vec::new() },
                     ],
                     truncated: true,
+                    incomplete: true,
                 },
             },
             Response::PageText {
@@ -799,10 +804,10 @@ mod tests {
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&[0; MIN_WORD_LEN]);
         assert_eq!(Response::decode(&bytes), Err(DecodeError));
-        // A truncation flag other than 0 or 1.
+        // A flag other than truncated (1) and incomplete (2).
         let mut bytes = vec![PAGE_TEXT_REPLY];
         bytes.extend_from_slice(&7u64.to_le_bytes());
-        bytes.push(2);
+        bytes.push(4);
         bytes.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(Response::decode(&bytes), Err(DecodeError));
     }

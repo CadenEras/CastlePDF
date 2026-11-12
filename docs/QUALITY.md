@@ -385,7 +385,11 @@ première page comparé à celui de `pdftotext` (mode par défaut, son ordre de 
 Couche de texte du worker (tranche 3.6a, 2026-11-12) : aller-retour des messages `PageText`,
 nombres de lignes et de mots refusés avant allocation, placement sur `columns.pdf` et sur une
 page tournée de 90°, troncature d'environ 120 000 mots dans la borne (réponse encodée entre
-960 Kio − 64 octets et 960 Kio), commande du shell de bout en bout avec le processus worker.
+960 Kio − 64 octets et 960 Kio), commande du shell de bout en bout avec le processus worker. Après la revue : couche d'une vue
+périmée écartée (test déterministe, file occupée par une tâche synthétique), texte manquant
+signalé (`incomplete`), mot de 70 000 octets coupé et signalé, page vide, document ou page
+inconnus par les pipes, `page_transform` pour les quatre rotations, une crop box décalée,
+`/UserUnit` et une page trop grande pour un rendu à l'échelle 1.
 Fuzzing `protocol` : 144 150 598 exécutions en 10 min (WSL), aucun crash.
 
 ## Contrôles manuels par OS
