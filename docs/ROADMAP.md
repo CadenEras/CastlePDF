@@ -22,6 +22,17 @@ glyphes et `castle-pdf text` ; 3.4 encodages composites ; 3.5 mise en page ; 3.6
 texte, sélection et copie ; 3.7 recherche ; 3.7b CMap prédéfinies d'Adobe (CJK) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
+### Limites ouvertes de P3 (texte)
+
+Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée avec sa raison.
+
+| Limite | Pourquoi elle compte | Sortie attendue |
+| --- | --- | --- |
+| Le texte d'une police que le rendu ne lit pas (Type 0 hors `Identity-H`, CID non incluse, Type 1 inclus symbolique, programme endommagé) est perdu, même avec une `/ToUnicode` valide ; ses octets sont comptés (`unread_bytes`) | L'extraction dépend de la capacité de dessin, ce que l'ADR-0006 ne demande pas | Police « texte seulement » (`/ToUnicode`, largeurs, codes) dès que les encodages composites sont lus (3.4), Type 1 en 3.8 |
+| Police CID `Identity` sans `/ToUnicode`, TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
+| `usecmap` d'une `/ToUnicode` non fusionné | Parent ignoré | Résolution bornée en 3.4 |
+| Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |
+
 ## P2 terminée (`v0.1.0-alpha.3`)
 
 Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objets ;

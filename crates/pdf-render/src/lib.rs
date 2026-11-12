@@ -68,6 +68,7 @@ pub use fonts::{
 pub use text::cmap::{
     CMap, CMapError, Code, MAX_CID, MAX_CODE_BYTES, MAX_CODESPACES, MAX_DESTINATION_UNITS,
 };
+pub use text::unicode::UnicodeSource;
 
 use geometry::Matrix;
 use interpret::Interpreter;
@@ -106,6 +107,9 @@ pub struct RenderLimits {
     /// 8 bytes each while it is converted and drawn. A larger image is not
     /// decoded but reported (`Unsupported::Image`).
     pub max_image_pixels: u64,
+    /// Glyphs recorded when the text of a page is extracted (`page_text`),
+    /// those of forms included.
+    pub max_text_glyphs: u64,
 }
 
 impl Default for RenderLimits {
@@ -119,6 +123,7 @@ impl Default for RenderLimits {
             max_clips: 1024,
             max_glyph_segments: 100_000,
             max_image_pixels: 32 * 1024 * 1024,
+            max_text_glyphs: 1_000_000,
         }
     }
 }
@@ -260,6 +265,118 @@ pub struct Rendering {
     pub bitmap: Bitmap,
     /// Empty when every operator of the page was rendered.
     pub skipped: BTreeSet<Unsupported>,
+}
+
+/// One glyph shown on a page, with its text (ADR-0006, tranche 3.3).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TextGlyph {
+    /// Its Unicode text, often one character, several for a ligature;
+    /// `None` when unknown (`source` is `Unknown`).
+    pub text: Option<String>,
+    pub source: UnicodeSource,
+    /// Origin of the glyph in default user space (ISO 32000-2, 8.3.2.3),
+    /// before the crop box and `/Rotate` are applied.
+    pub x: f64,
+    pub y: f64,
+    /// The text position after the glyph's advance (and spacing), in the
+    /// same space.
+    pub end_x: f64,
+    pub end_y: f64,
+    /// Height of the text space unit in default user space: the font size
+    /// through the text and current transformation matrices.
+    pub size: f64,
+}
+
+/// The text of a page, in the order its content shows it (`page_text`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct PageText {
+    /// Every glyph shown, in content order, forms included, invisible text
+    /// (rendering mode 3) too.
+    pub glyphs: Vec<TextGlyph>,
+    /// `Text` when a font could not be read (its glyphs are absent from
+    /// `glyphs`, counted in `unread_bytes`), and what the interpreter met
+    /// without drawing: shadings, soft masks, blend modes, clipping by text,
+    /// optional content, unreadable XObjects. Capabilities found only by
+    /// drawing (images, colour spaces, patterns, substituted fonts, missing
+    /// glyphs) are not checked when text is extracted.
+    pub skipped: BTreeSet<Unsupported>,
+    /// Font loads whose `/ToUnicode` CMap could not be read (a font loaded
+    /// again in another form scope counts again): their text comes from glyph
+    /// names, or is unknown. A `null` or name entry counts as absent.
+    pub unreadable_to_unicode: u32,
+    /// Bytes of strings shown in fonts that cannot be read: their glyphs
+    /// are not listed (one byte per glyph for a simple font, two for
+    /// `Identity-H`).
+    pub unread_bytes: u64,
+}
+
+/// The text of `page` (ADR-0006, tranche 3.3): each glyph its content
+/// shows, with its Unicode text from the font's `/ToUnicode` CMap or its
+/// glyph name, and its position. The content is interpreted as for a
+/// rendering, without painting or decoding images. A glyph of a font that
+/// cannot be read is not listed and the page reports `Text`.
+///
+/// `budget` is charged by the content, the resources and each glyph
+/// recorded; `limits.max_text_glyphs` bounds the glyphs.
+///
+/// Positions are those of the content, independent of any scale: a form far
+/// outside the page (beyond the device coordinate bound) may be read here
+/// and skipped by a rendering at a large scale, and a path a rendering
+/// refuses as out of range does not stop the text.
+pub fn page_text<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    limits: &RenderLimits,
+    budget: &mut Budget,
+) -> Result<PageText, Error> {
+    page_text_cached(file, page, limits, &mut RenderCache::default(), budget)
+}
+
+/// `page_text`, reusing and filling `cache` (see `RenderCache`): fonts,
+/// their `/ToUnicode` CMaps once read, forms and page content are shared
+/// with the other pages and renders of the document.
+pub fn page_text_cached<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    limits: &RenderLimits,
+    cache: &mut RenderCache,
+    budget: &mut Budget,
+) -> Result<PageText, Error> {
+    cache.start(limits);
+    let content = match cache.caches.contents.get(&page.id) {
+        Some(content) => Arc::clone(content),
+        None => {
+            let content = Arc::new(page_content(file, page, budget)?);
+            if cache.caches.reserve(content.len()) {
+                cache.caches.contents.insert(page.id, Arc::clone(&content));
+            }
+            content
+        }
+    };
+    let resources = match page.resources.as_deref() {
+        None => None,
+        Some(object) => Some(resource_dictionary(file, object, page, budget)?),
+    };
+    let interpreter = Interpreter::new(
+        file,
+        page.id,
+        resources,
+        *limits,
+        Canvas::new((1, 1), 0, 0, 1, 1),
+        Matrix::IDENTITY,
+        std::mem::take(&mut cache.caches),
+    );
+    let (result, caches) = interpreter.run_text(&content, budget);
+    cache.caches = caches;
+    let (glyphs, skipped, unreadable_to_unicode, unread_bytes) = result?;
+    Ok(PageText {
+        glyphs,
+        skipped,
+        unreadable_to_unicode,
+        unread_bytes,
+    })
 }
 
 /// Renders `page` of `file`: its crop box, rotated by `/Rotate`, at

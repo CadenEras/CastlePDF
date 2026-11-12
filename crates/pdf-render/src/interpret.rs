@@ -12,8 +12,10 @@ use crate::error::{ContentErrorKind, Error, RenderLimitKind};
 use crate::geometry::{Matrix, Path, Point, Segment, Window};
 use crate::image;
 use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
+use crate::text::cmap::Code as CodeKey;
+use crate::text::unicode::TextMap;
 use crate::text::{self, Selected, TextState, font, type3};
-use crate::{MAX_DASH_ENTRIES, RenderLimits, Unsupported};
+use crate::{MAX_DASH_ENTRIES, RenderLimits, TextGlyph, Unsupported};
 
 /// Most form XObjects drawn inside one another (8.10); a deeper form is
 /// skipped and reported (`XObject`).
@@ -279,6 +281,17 @@ pub(crate) struct Interpreter<'a, S> {
     /// The glyph began with `d1`: it has no colour of its own, colour
     /// operators are ignored (9.6.4).
     uncolored: bool,
+    /// Paths, images and glyphs are drawn; `false` when only the text is
+    /// extracted (forms and their text are still interpreted).
+    drawing: bool,
+    /// The glyphs shown, with their text, when text is extracted.
+    text_glyphs: Option<Vec<TextGlyph>>,
+    /// Font loads whose `/ToUnicode` could not be read, when text is
+    /// extracted.
+    unreadable_to_unicode: u32,
+    /// Bytes of strings shown in a font that cannot be read, when text is
+    /// extracted: their glyphs are not recorded.
+    unread_bytes: u64,
 }
 
 /// How nested content (a form, a Type 3 glyph) is entered.
@@ -349,7 +362,116 @@ impl<'a, S: Source> Interpreter<'a, S> {
             floor: 0,
             glyph_start: false,
             uncolored: false,
+            drawing: true,
+            text_glyphs: None,
+            unreadable_to_unicode: 0,
+            unread_bytes: 0,
         }
+    }
+
+    /// Runs `content` to extract its text instead of drawing it: no path,
+    /// image or glyph is painted or decoded. Returns the glyphs shown, the
+    /// capabilities skipped and the number of fonts whose `/ToUnicode`
+    /// could not be read; the caches come back whatever the result.
+    #[allow(
+        clippy::type_complexity,
+        reason = "a one-off result tuple, as `run` returns"
+    )]
+    pub fn run_text(
+        mut self,
+        content: &[u8],
+        budget: &mut Budget,
+    ) -> (
+        Result<(Vec<TextGlyph>, BTreeSet<Unsupported>, u32, u64), Error>,
+        Caches,
+    ) {
+        self.drawing = false;
+        self.text_glyphs = Some(Vec::new());
+        let result = self.run_page(content, budget);
+        let caches = std::mem::take(&mut self.caches);
+        let glyphs = self.text_glyphs.take().unwrap_or_default();
+        (
+            result.map(|()| {
+                (
+                    glyphs,
+                    self.skipped,
+                    self.unreadable_to_unicode,
+                    self.unread_bytes,
+                )
+            }),
+            caches,
+        )
+    }
+
+    /// Records the glyph of `key` about to be shown, when text is extracted:
+    /// its text and its origin in default user space. Returns whether one was
+    /// recorded, for `end_glyph`. Each glyph is counted against
+    /// `max_text_glyphs` and charged to the budget.
+    fn start_glyph(
+        &mut self,
+        map: &TextMap,
+        key: CodeKey,
+        budget: &mut Budget,
+    ) -> Result<bool, Error> {
+        let Some(count) = self.text_glyphs.as_ref().map(Vec::len) else {
+            return Ok(false);
+        };
+        if count as u64 >= self.limits.max_text_glyphs {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::TextGlyphs,
+                limit: self.limits.max_text_glyphs,
+            });
+        }
+        let mut unreadable = false;
+        let (text, source) = map.text(self.file, key, budget, &mut unreadable)?;
+        if unreadable {
+            self.unreadable_to_unicode += 1;
+        }
+        // Twice the record: the vector may hold as much spare capacity.
+        let size = text.as_ref().map_or(0, String::len);
+        budget.charge_decoded_bytes((2 * std::mem::size_of::<TextGlyph>() + size) as u64)?;
+        let matrix = self.rendering_matrix();
+        if let Some(glyphs) = self.text_glyphs.as_mut() {
+            glyphs.push(TextGlyph {
+                text,
+                source,
+                x: matrix.e,
+                y: matrix.f,
+                end_x: matrix.e,
+                end_y: matrix.f,
+                size: matrix.c.hypot(matrix.d),
+            });
+        }
+        Ok(true)
+    }
+
+    /// Sets the end of the glyph recorded last to the text position after
+    /// its advance.
+    fn end_glyph(&mut self) {
+        let matrix = self.rendering_matrix();
+        if let Some(glyph) = self
+            .text_glyphs
+            .as_mut()
+            .and_then(|glyphs| glyphs.last_mut())
+        {
+            glyph.end_x = matrix.e;
+            glyph.end_y = matrix.f;
+        }
+    }
+
+    /// The text rendering matrix (9.4.4) to default user space.
+    fn rendering_matrix(&self) -> Matrix {
+        let text = &self.state.text;
+        Matrix::new(
+            text.size * text.horizontal_scale,
+            0.0,
+            0.0,
+            text.size,
+            0.0,
+            text.rise,
+        )
+        .then(&self.text_matrix)
+        .then(&self.state.ctm)
     }
 
     /// Runs every operation of `content`, then returns the canvas and the
@@ -865,6 +987,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             return Ok(());
         };
         match stream.dictionary.get(b"Subtype").and_then(Object::as_name) {
+            // Not decoded when only the text is extracted.
+            Some(b"Image") if !self.drawing => return Ok(()),
             Some(b"Image") => {}
             Some(b"Form") => {
                 let form = self.read_form(*id, &stream, budget)?;
@@ -1100,6 +1224,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
         at: u64,
         budget: &mut Budget,
     ) -> Result<(), Error> {
+        if !self.drawing {
+            return Ok(());
+        }
         let dictionary = image::inline_dictionary(raw);
         if self.uncolored && dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
             self.skipped.insert(Unsupported::Image);
@@ -1283,12 +1410,22 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             Selected::None | Selected::Unsupported => {
                 self.skipped.insert(Unsupported::Text);
+                if self.text_glyphs.is_some() {
+                    let bytes: usize = items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Object::String(string) => Some(string.len()),
+                            _ => None,
+                        })
+                        .sum();
+                    self.unread_bytes = self.unread_bytes.saturating_add(bytes as u64);
+                }
                 return Ok(());
             }
         };
         let text = self.state.text.clone();
         let mode = text.render_mode;
-        let draws = !matches!(mode, 3 | 7);
+        let draws = self.drawing && !matches!(mode, 3 | 7);
         if draws && font.substituted() {
             self.skipped.insert(Unsupported::FontSubstituted);
         }
@@ -1318,6 +1455,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 if shown.is_multiple_of(CANCEL_CHECK_CODES) {
                     budget.check_cancelled()?;
                 }
+                let recorded = self.start_glyph(font.text(), code.key, budget)?;
                 if draws && code.missing {
                     self.skipped.insert(Unsupported::Text);
                 }
@@ -1359,6 +1497,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     };
                 let tx = (code.width / 1000.0 * text.size + spacing) * text.horizontal_scale;
                 self.advance(tx, at)?;
+                if recorded {
+                    self.end_glyph();
+                }
             }
         }
         let fill = matches!(mode, 0 | 2 | 4 | 6);
@@ -1384,7 +1525,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         budget: &mut Budget,
     ) -> Result<(), Error> {
         let text = self.state.text.clone();
-        let draws = !matches!(text.render_mode, 3 | 7);
+        let draws = self.drawing && !matches!(text.render_mode, 3 | 7);
         let size = Matrix::new(
             text.size * text.horizontal_scale,
             0.0,
@@ -1410,6 +1551,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     budget.check_cancelled()?;
                 }
                 let index = usize::from(code);
+                let key = CodeKey {
+                    value: u32::from(code),
+                    len: 1,
+                };
+                let recorded = self.start_glyph(&font.text, key, budget)?;
                 if draws && font.missing.get(index).copied().unwrap_or(false) {
                     self.skipped.insert(Unsupported::Text);
                 }
@@ -1425,6 +1571,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     text.char_spacing + if code == b' ' { text.word_spacing } else { 0.0 };
                 let tx = (font.advance(code) * text.size + spacing) * text.horizontal_scale;
                 self.advance(tx, at)?;
+                if recorded {
+                    self.end_glyph();
+                }
             }
         }
         Ok(())
@@ -1688,6 +1837,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
 
     /// Paints the current path, applies a pending clip, then ends the path.
     fn paint(&mut self, at: u64, fill: Option<bool>, stroke: bool) -> Result<(), Error> {
+        if !self.drawing {
+            self.pending_clip = None;
+            self.path.clear();
+            return Ok(());
+        }
         let matrix = self.state.ctm.then(&self.base);
         if !self.path.is_empty() {
             let pad = if stroke {

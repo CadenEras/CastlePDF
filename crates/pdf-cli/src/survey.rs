@@ -88,6 +88,8 @@ enum Status {
         text: Vec<String>,
         /// Encodings of their Type 0 fonts.
         cmaps: Vec<String>,
+        /// Text of the first page: glyph counts, or why it failed.
+        glyphs: Option<Result<GlyphCounts, String>>,
     },
     /// Killed after the timeout.
     Timeout,
@@ -95,6 +97,16 @@ enum Status {
     Crash(String),
     /// The probe could not be started.
     NotStarted(io::ErrorKind),
+}
+
+/// Glyphs of a first page's text (ADR-0006, tranche 3.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GlyphCounts {
+    total: u64,
+    unknown: u64,
+    other_length: u64,
+    /// Bytes shown in fonts that cannot be read.
+    unread: u64,
 }
 
 struct Outcome {
@@ -248,6 +260,7 @@ fn parse_line(line: &str) -> Option<Status> {
     let line = line.strip_suffix('\n')?;
     let (mut open, mut render, mut skipped, mut repaired) = (None, None, Vec::new(), None);
     let (mut fonts, mut text, mut cmaps) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut glyphs, mut counts) = (None, GlyphCounts::default());
     for token in line.split(' ') {
         let (key, value) = token.split_once('=')?;
         match key {
@@ -262,6 +275,18 @@ fn parse_line(line: &str) -> Option<Status> {
             "text" if value != "none" => text = value.split(',').map(str::to_owned).collect(),
             "text" => {}
             "cmaps" => cmaps = value.split(',').map(str::to_owned).collect(),
+            "glyphs" => {
+                glyphs = Some(match value.parse() {
+                    Ok(total) => {
+                        counts.total = total;
+                        Ok(())
+                    }
+                    Err(_) => Err(value.to_owned()),
+                });
+            }
+            "unknown" => counts.unknown = value.parse().ok()?,
+            "other-length" => counts.other_length = value.parse().ok()?,
+            "unread" => counts.unread = value.parse().ok()?,
             _ => return None,
         }
     }
@@ -277,6 +302,7 @@ fn parse_line(line: &str) -> Option<Status> {
         fonts,
         text,
         cmaps,
+        glyphs: glyphs.map(|result| result.map(|()| counts)),
     })
 }
 
@@ -287,6 +313,9 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     let mut font_kinds = BTreeMap::new();
     let mut text_sources = BTreeMap::new();
     let mut cid_encodings = BTreeMap::new();
+    let mut glyph_totals = GlyphCounts::default();
+    let (mut pages_with_text, mut pages_with_unknown, mut pages_with_unread) = (0, 0, 0);
+    let mut text_failures = BTreeMap::new();
     let mut open_failures = BTreeMap::new();
     let mut render_failures = BTreeMap::new();
     let mut skipped = BTreeMap::new();
@@ -301,6 +330,7 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                 fonts,
                 text,
                 cmaps,
+                glyphs,
             } => match render.as_deref() {
                 None => *open_failures.entry(open.clone()).or_insert(0) += 1,
                 Some(render) => {
@@ -316,6 +346,21 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                     }
                     for encoding in cmaps {
                         *cid_encodings.entry(encoding.clone()).or_insert(0) += 1;
+                    }
+                    match glyphs {
+                        Some(Ok(counts)) => {
+                            glyph_totals.total += counts.total;
+                            glyph_totals.unknown += counts.unknown;
+                            glyph_totals.other_length += counts.other_length;
+                            glyph_totals.unread += counts.unread;
+                            pages_with_unread += usize::from(counts.unread > 0);
+                            pages_with_text += usize::from(counts.total > 0);
+                            pages_with_unknown += usize::from(counts.unknown > 0);
+                        }
+                        Some(Err(category)) => {
+                            *text_failures.entry(category.clone()).or_insert(0) += 1;
+                        }
+                        None => {}
                     }
                     if render == "ok" {
                         rendered += 1;
@@ -369,6 +414,28 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     section(out, "repaired, by strict error", &repairs)?;
     section(out, "first page failures", &render_failures)?;
     section(out, "not rendered on rendered first pages", &skipped)?;
+    let unknown_share = |part: u64| {
+        if glyph_totals.total == 0 {
+            "-".to_owned()
+        } else {
+            format!("{:.2}%", part as f64 * 100.0 / glyph_totals.total as f64)
+        }
+    };
+    writeln!(
+        out,
+        "first page text: {} glyphs on {pages_with_text} pages, {} unknown ({}) on {pages_with_unknown} pages, {} through a /ToUnicode code of another length ({})",
+        glyph_totals.total,
+        glyph_totals.unknown,
+        unknown_share(glyph_totals.unknown),
+        glyph_totals.other_length,
+        unknown_share(glyph_totals.other_length),
+    )?;
+    writeln!(
+        out,
+        "first page text in fonts not read: {} bytes on {pages_with_unread} pages",
+        glyph_totals.unread
+    )?;
+    section(out, "first page text failures", &text_failures)?;
     section(out, "first pages declaring a font kind", &font_kinds)?;
     section(out, "first pages with a text source", &text_sources)?;
     section(out, "first pages with a Type 0 encoding", &cid_encodings)
@@ -440,6 +507,7 @@ mod tests {
             fonts: Vec::new(),
             text: Vec::new(),
             cmaps: Vec::new(),
+            glyphs: None,
         }
     }
 
@@ -474,6 +542,30 @@ mod tests {
         };
         assert_eq!(text, ["ToUnicode", "CidIdentity"]);
         assert_eq!(cmaps, ["IdentityH"]);
+        let Some(Status::Probed { glyphs, .. }) = parse_line(
+            "open=ok pages=1 render=ok skipped=none glyphs=12 unknown=3 other-length=2 unread=5\n",
+        ) else {
+            panic!("glyph counts are part of a probe line");
+        };
+        assert_eq!(
+            glyphs,
+            Some(Ok(GlyphCounts {
+                total: 12,
+                unknown: 3,
+                other_length: 2,
+                unread: 5
+            }))
+        );
+        let Some(Status::Probed { glyphs, .. }) =
+            parse_line("open=ok pages=1 render=ok skipped=none glyphs=render-limit/TextGlyphs\n")
+        else {
+            panic!("a text failure is part of a probe line");
+        };
+        assert_eq!(glyphs, Some(Err("render-limit/TextGlyphs".to_owned())));
+        assert_eq!(
+            parse_line("open=ok pages=1 render=ok skipped=none glyphs=1 unknown=x\n"),
+            None
+        );
         // Incomplete or foreign output is not a probe line.
         for line in [
             "open=truncated repaired=truncated\n",
@@ -516,6 +608,12 @@ mod tests {
                     fonts: vec!["Type1".to_owned(), "Standard14".to_owned()],
                     text: vec!["ToUnicode".to_owned()],
                     cmaps: vec!["IdentityH".to_owned()],
+                    glyphs: Some(Ok(GlyphCounts {
+                        total: 40,
+                        unknown: 10,
+                        other_length: 0,
+                        unread: 7,
+                    })),
                 },
                 1,
             ),
@@ -537,6 +635,8 @@ mod tests {
             "first pages declaring a font kind:\n       1  Standard14\n       1  Type1\n",
             "first pages with a text source:\n       1  ToUnicode\n",
             "first pages with a Type 0 encoding:\n       1  IdentityH\n",
+            "first page text: 40 glyphs on 1 pages, 10 unknown (25.00%) on 1 pages, 0 through a /ToUnicode code of another length (0.00%)\n",
+            "first page text in fonts not read: 7 bytes on 1 pages\n",
             "crashes:\n       1  panic\n",
             "open failures:\n       1  malformed/InvalidHeader\n",
             "first page failures:\n       1  content/UnknownOperator\n",

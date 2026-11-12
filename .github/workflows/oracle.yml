@@ -1,7 +1,7 @@
 name: oracle
-# Differential tests against qpdf (ADR-0002) and pdftoppm (ADR-0003): oracles
-# for tests, never shipped nor linked. Not required checks yet: both come from
-# the Ubuntu archive, whose versions move with the runner image, so a
+# Differential tests against qpdf (ADR-0002), pdftoppm (ADR-0003) and pdftotext
+# (ADR-0006): oracles for tests, never shipped nor linked. Not required checks yet:
+# all come from the Ubuntu archive, whose versions move with the runner image, so a
 # disagreement is analysed before gating.
 on:
   pull_request:
@@ -86,3 +86,9 @@ jobs:
           export CASTLE_PDFTOPPM="$(command -v pdftoppm)"
           cargo test -p pdf-render --locked --test pdftoppm_oracle -- --nocapture 2>&1 | tee oracle.log
           grep -q "fixtures: rendering matches pdftoppm" oracle.log
+      - name: Compare text with pdftotext
+        run: |
+          set -o pipefail
+          export CASTLE_PDFTOTEXT="$(command -v pdftotext)"
+          cargo test -p pdf-render --locked --test pdftotext_oracle -- --nocapture 2>&1 | tee text-oracle.log
+          grep -q "fixtures: text matches pdftotext" text-oracle.log

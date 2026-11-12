@@ -298,6 +298,26 @@ avec 50 000 exceptions, annulation). Fuzzing `cmap` : 2 269 700 exécutions, pui
 après la revue (10 min chacune, WSL), aucun crash. La revue a relevé une mémoire de blocs non
 imputée et une recherche linéaire par code (quadratique sur une page) : corrigées avant fusion.
 
+Extraction du texte (tranche 3.3, `survey`, release, WSL, 2026-11-12, même protocole) :
+
+| Corpus | Glyphes des premières pages | Inconnus | Code `/ToUnicode` d'une autre longueur | Octets en police non lue | Échecs |
+| --- | --- | --- | --- | --- | --- |
+| SafeDocs | 2 980 514 sur 1 675 pages | 17 776 (0,60 %) sur 58 pages | 0 | 144 562 sur 52 pages | 18 |
+| UNSAFE | 3 476 082 sur 2 014 pages | 26 482 (0,76 %) sur 96 pages | 541 (0,02 %) | 52 027 sur 33 pages | 51 |
+
+- Les échecs ont les catégories des échecs de rendu (contenu ou flux mal formés) ; aucun crash
+  ni timeout, taux d'ouverture et de rendu inchangés. Temps médian par fichier : 28 ms
+  (SafeDocs, contre 18 ms) et 16 ms (UNSAFE), la sonde extrayant aussi le texte.
+- Oracle `pdftotext` (Poppler 22.02, `-raw`) : caractères identiques, hors espaces, sur les
+  9 pages de fixtures dont tout le texte est connu ; écarts voulus documentés dans
+  `crates/pdf-render/tests/pdftotext_oracle.rs`.
+- Fuzzing, `page_text` ajouté aux cibles `render` (la `/ToUnicode` d'une police Type 3 est
+  l'entrée) et `font` : 125 694 et 75 806 exécutions (10 min chacune), aucun crash.
+- La revue a demandé : compter les octets en police non lue, `/ToUnicode` `null` ou nommée
+  tenue pour absente, contrôles bidirectionnels remplacés dans la sortie de la CLI, une page
+  en échec n'arrêtant plus les suivantes, polices et CMap partagées entre les pages
+  (`page_text_cached`). Fait avant fusion.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

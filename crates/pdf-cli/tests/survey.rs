@@ -31,7 +31,7 @@ fn probe_prints_one_outcome_line() {
         (code, out.as_str(), err.as_str()),
         (
             0,
-            "open=ok pages=3 render=ok skipped=none fonts=none text=none\n",
+            "open=ok pages=3 render=ok skipped=none fonts=none text=none glyphs=0 unknown=0 other-length=0 unread=0\n",
             ""
         )
     );
@@ -39,7 +39,7 @@ fn probe_prints_one_outcome_line() {
     let (_, out, _) = castle(&["probe".as_ref(), minimal.as_os_str()]);
     assert_eq!(
         out,
-        "open=ok pages=1 render=ok skipped=FontSubstituted fonts=Standard14 text=GlyphNames\n"
+        "open=ok pages=1 render=ok skipped=FontSubstituted fonts=Standard14 text=GlyphNames glyphs=25 unknown=0 other-length=0 unread=0\n"
     );
     // A document error is an outcome, not a failure of the probe.
     let manifest = corpus().join("manifest.json");
@@ -64,6 +64,7 @@ fn survey_reports_aggregates_without_names() {
         "open failures:\n       1  malformed/InvalidHeader\n".to_owned(),
         "not rendered on rendered first pages:\n".to_owned(),
         "first pages with a text source:\n".to_owned(),
+        "first page text: ".to_owned(),
     ] {
         assert!(out.contains(&expected), "{expected:?} in {out}");
     }

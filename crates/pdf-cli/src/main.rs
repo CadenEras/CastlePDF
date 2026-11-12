@@ -4,7 +4,8 @@
 //! cross-reference entries, trailer keys) and the pages (ids, boxes, rotation).
 //! It never prints document content: no strings, streams or resource values,
 //! and only standard trailer key names. `castle-pdf render` writes one page to
-//! a new PPM image. `castle-pdf survey` measures how the engine handles every
+//! a new PPM image. `castle-pdf text` prints the text of the pages: the only
+//! command that prints document content, on request. `castle-pdf survey` measures how the engine handles every
 //! file of a directory, each probed in a child process (`castle-pdf probe`),
 //! and reports aggregated counts only. Exit codes: 0 success, 1 the document
 //! cannot be read or rendered, or the image cannot be created, or a surveyed
@@ -15,6 +16,7 @@ mod open;
 mod probe;
 mod render;
 mod survey;
+mod text;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -27,6 +29,11 @@ Usage:
   castle-pdf render <file> <page> <output.ppm> [--scale <factor>]
                               Render a page (numbered from 1) to a new PPM
                               image; scale 1 is 72 pixels per inch
+  castle-pdf text <file> [--page <n>]
+                              Print the text of a page (numbered from 1), or
+                              of every page separated by form feeds, in
+                              content order; a summary per page goes to the
+                              error output
   castle-pdf survey <directory> [--timeout <seconds>] [--jobs <n>] [--paths]
                               Open every file under the directory and render
                               its first page, each in a child process killed
@@ -38,7 +45,8 @@ Usage:
   castle-pdf --help, -h       Show this help
   castle-pdf --version        Show the version
 
-The report lists structure only, never document content. `render` never
+`inspect` lists structure only, never document content; `text` prints the
+document's text, with control characters replaced by U+FFFD. `render` never
 overwrites a file and lists what the page uses but it cannot render yet.
 `survey` reports never hold document content, and file names only with
 --paths. Exit codes: 0 success, 1 the document cannot be read or rendered, or
@@ -69,6 +77,10 @@ fn run(args: &[std::ffi::OsString], out: &mut dyn Write, err: &mut dyn Write) ->
         [command, path] if *command == "inspect" => inspect::run(path.as_ref(), out, err),
         [command, rest @ ..] if *command == "render" => match render::Request::parse(rest) {
             Some(request) => render::run(&request, out, err),
+            None => err.write_all(USAGE.as_bytes()).map(|()| 2),
+        },
+        [command, rest @ ..] if *command == "text" => match text::Request::parse(rest) {
+            Some(request) => text::run(&request, out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),
         },
         [command, rest @ ..] if *command == "survey" => match survey::Request::parse(rest) {

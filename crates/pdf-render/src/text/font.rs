@@ -29,10 +29,12 @@ use skrifa::raw::ps::cff::CffFontRef;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
+use super::cmap::Code as CodeKey;
 use super::encodings::{
     GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, SYMBOL, SYMBOL_WIDTHS, WIN_ANSI, ZAPF_DINGBATS,
     ZAPF_DINGBATS_LIST, ZAPF_DINGBATS_WIDTHS,
 };
+use super::unicode::{TextMap, name_text};
 use super::{resolve, resolve_dictionary, standard, stream_bytes};
 use crate::Error;
 use crate::geometry::{Point, Segment};
@@ -53,6 +55,8 @@ pub(crate) struct Font {
     mapping: Mapping,
     /// Drawn with a replacement font (`standard`): reported.
     substituted: bool,
+    /// The Unicode text of its codes (ADR-0006, tranche 3.3).
+    text: TextMap,
 }
 
 /// How the program bytes are read.
@@ -112,6 +116,8 @@ impl CidWidths {
 /// One code of a shown string.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Code {
+    /// The code as shown, for its Unicode text.
+    pub key: CodeKey,
     pub glyph: Option<u16>,
     /// The code names a glyph the program does not have.
     pub missing: bool,
@@ -137,6 +143,11 @@ impl Font {
         self.substituted
     }
 
+    /// How the Unicode text of its codes is found.
+    pub fn text(&self) -> &TextMap {
+        &self.text
+    }
+
     /// The codes of `string`: one byte each for a simple font, two bytes
     /// (big-endian) for `Identity-H`; a trailing odd byte is ignored.
     pub fn codes<'s>(&'s self, string: &'s [u8]) -> Box<dyn Iterator<Item = Code> + 's> {
@@ -146,6 +157,10 @@ impl Font {
                 missing,
                 widths,
             } => Box::new(string.iter().map(|byte| Code {
+                key: CodeKey {
+                    value: u32::from(*byte),
+                    len: 1,
+                },
                 glyph: glyphs.get(usize::from(*byte)).copied().flatten(),
                 missing: missing.get(usize::from(*byte)).copied().unwrap_or(false),
                 width: widths.get(usize::from(*byte)).copied().unwrap_or(0.0),
@@ -159,6 +174,10 @@ impl Font {
                         Some(map) => map.get(usize::from(cid)).copied(),
                     };
                     Code {
+                        key: CodeKey {
+                            value: u32::from(cid),
+                            len: 2,
+                        },
                         glyph: glyph.filter(|gid| *gid != 0 || cid == 0),
                         missing: false,
                         width: widths.width(u32::from(cid)),
@@ -380,7 +399,7 @@ fn simple<S: Source>(
     let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
         return substitute(file, font, &descriptor, encoding.as_ref(), budget);
     };
-    let (glyphs, missing, font_ref) = match format {
+    let (glyphs, missing, font_ref, names) = match format {
         Format::OpenType => {
             let default = if symbolic { None } else { Some(&STANDARD) };
             let names = encoding_names(file, encoding.as_ref(), default, budget)?;
@@ -388,16 +407,17 @@ fn simple<S: Source>(
                 return Ok(None);
             };
             let (glyphs, missing) = simple_glyphs(&font_ref, &names, encoding.is_some(), symbolic);
-            (glyphs, missing, Some(font_ref))
+            (glyphs, missing, Some(font_ref), names)
         }
         Format::Cff => {
             // Without a base encoding, the font's own (built-in) one applies.
-            let names = encoding_names(file, encoding.as_ref(), None, budget)?;
+            let mut names = encoding_names(file, encoding.as_ref(), None, budget)?;
             let Ok(cff) = CffFontRef::new_cff(&program, 0, None) else {
                 return Ok(None);
             };
-            let (glyphs, missing) = cff_glyphs(&cff, &names, budget)?;
-            (glyphs, missing, None)
+            // Codes left to the built-in encoding take their charset name.
+            let (glyphs, missing) = cff_glyphs(&cff, &mut names, budget)?;
+            (glyphs, missing, None, names)
         }
     };
     let widths = simple_widths(
@@ -419,6 +439,7 @@ fn simple<S: Source>(
             widths,
         },
         substituted: false,
+        text: TextMap::new(font, Some(&names)),
     }))
 }
 
@@ -490,6 +511,7 @@ fn substitute<S: Source>(
             widths,
         },
         substituted: true,
+        text: TextMap::new(font, Some(&names)),
     }))
 }
 
@@ -546,7 +568,13 @@ fn symbols<S: Source>(
     let charmap = font_ref.charmap();
     let mut glyphs = Box::new([None; 256]);
     let mut missing = Box::new([false; 256]);
-    for ((slot, lost), name) in glyphs.iter_mut().zip(missing.iter_mut()).zip(&names) {
+    let mut texts: Vec<Option<Box<str>>> = vec![None; 256];
+    for (((slot, lost), name), text) in glyphs
+        .iter_mut()
+        .zip(missing.iter_mut())
+        .zip(&names)
+        .zip(texts.iter_mut())
+    {
         let Some(name) = name.as_deref() else {
             continue;
         };
@@ -555,6 +583,10 @@ fn symbols<S: Source>(
             SymbolSet::Symbol => None,
         }
         .or_else(|| unicode(name));
+        *text = match code_point.and_then(char::from_u32) {
+            Some(c) => Some(c.to_string().into_boxed_str()),
+            None => name_text(name).map(String::into_boxed_str),
+        };
         let glyph = code_point
             .and_then(char::from_u32)
             .and_then(|c| charmap.map(c))
@@ -589,6 +621,7 @@ fn symbols<S: Source>(
             widths,
         },
         substituted: true,
+        text: TextMap::with_texts(font, texts),
     }))
 }
 
@@ -604,18 +637,21 @@ fn sorted_lookup<T: Copy>(table: &[(&str, T)], name: &[u8]) -> Option<T> {
 
 /// Glyph of each code of a simple CFF font: the name the encoding gives,
 /// looked up among the CFF charset names; a code without a name uses the
-/// CFF's built-in encoding. A name the font lacks is reported (`missing`).
+/// CFF's built-in encoding, and takes the charset name of its glyph in
+/// `names` (for its text). A name the font lacks is reported (`missing`).
 fn cff_glyphs(
     cff: &CffFontRef<'_>,
-    names: &[Option<Vec<u8>>],
+    names: &mut [Option<Vec<u8>>],
     budget: &mut Budget,
 ) -> Result<SimpleGlyphs, Error> {
     let mut by_name: BTreeMap<&[u8], u16> = BTreeMap::new();
+    let mut by_glyph: BTreeMap<u16, &[u8]> = BTreeMap::new();
     if let Some(charset) = cff.charset() {
         for (gid, sid) in charset.iter() {
             budget.charge_object()?;
             if let (Some(name), Ok(gid)) = (cff.string(sid), u16::try_from(gid.to_u32())) {
                 by_name.entry(name).or_insert(gid);
+                by_glyph.entry(gid).or_insert(name);
             }
         }
     }
@@ -623,8 +659,10 @@ fn cff_glyphs(
     let mut glyphs = Box::new([None; 256]);
     let mut missing = Box::new([false; 256]);
     for ((code, slot), lost) in (0_u8..=255).zip(glyphs.iter_mut()).zip(missing.iter_mut()) {
-        let name = names.get(usize::from(code)).and_then(Option::as_deref);
-        let glyph = match name {
+        let Some(name) = names.get_mut(usize::from(code)) else {
+            continue;
+        };
+        let glyph = match name.as_deref() {
             Some(name) => by_name.get(name).copied(),
             None => builtin
                 .as_ref()
@@ -633,7 +671,12 @@ fn cff_glyphs(
         }
         .filter(|gid| *gid != 0);
         *slot = glyph;
-        *lost = glyph.is_none() && name.is_some_and(|name| name != b".notdef");
+        *lost = glyph.is_none() && name.as_deref().is_some_and(|name| name != b".notdef");
+        if name.is_none()
+            && let Some(charset_name) = glyph.and_then(|gid| by_glyph.get(&gid))
+        {
+            *name = Some(charset_name.to_vec());
+        }
     }
     Ok((glyphs, missing))
 }
@@ -1006,6 +1049,7 @@ fn cid<S: Source>(
         units_per_em,
         mapping: Mapping::Cid { cid_to_gid, widths },
         substituted: false,
+        text: TextMap::new(font, None),
     }))
 }
 

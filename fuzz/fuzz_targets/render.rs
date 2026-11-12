@@ -8,16 +8,19 @@
 //! is the same bytes, so that glyphs run `d0`, `d1` and text in their own
 //! font, except `e`, an empty procedure), a shading, a pattern and a
 //! property list. The first byte chooses the scale (1 to 8, so up to
-//! 512 x 512 pixels); the rest is the content.
+//! 512 x 512 pixels); the rest is the content. The Type 3 font's
+//! `/ToUnicode` is the same bytes too, and the page's text is extracted
+//! (`page_text`, ADR-0006 tranche 3.3).
 //! Properties: no panic in the interpreter or the rasteriser, no unbounded
 //! work (operations and path work are limited), a successful rendering has
 //! exactly `width * height * 4` bytes, and `render_area` of an inner
-//! rectangle (off the cell grid) gives exactly the same pixels.
+//! rectangle (off the cell grid) gives exactly the same pixels; text
+//! extraction stays within `max_text_glyphs`.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use pdf_document::Document;
-use pdf_render::{PixelRect, RenderOptions, render_area, render_page};
+use pdf_render::{PixelRect, RenderLimits, RenderOptions, page_text, render_area, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resources << \
@@ -52,7 +55,7 @@ fn pdf(content: &[u8]) -> Vec<u8> {
     let type3 = format!(
         "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
          /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /g 11 0 R /e 12 0 R >> \
-         /Encoding << /Differences [32 {names} 101 /e] >> /FirstChar 32 /LastChar 32 /Widths [600] >>"
+         /Encoding << /Differences [32 {names} 101 /e] >> /FirstChar 32 /LastChar 32 /Widths [600] /ToUnicode 11 0 R >>"
     )
     .into_bytes();
     let mut glyph = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
@@ -145,5 +148,12 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
         }
+    }
+    let mut text_limits = RenderLimits::default();
+    text_limits.max_operations = 100_000;
+    text_limits.max_text_glyphs = 10_000;
+    let mut text_budget = Budget::new(limits, CancellationToken::new());
+    if let Ok(text) = page_text(document.file(), page, &text_limits, &mut text_budget) {
+        assert!(text.glyphs.len() <= 10_000);
     }
 });

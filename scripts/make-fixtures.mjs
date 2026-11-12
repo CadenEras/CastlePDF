@@ -268,6 +268,93 @@ function trueTypePage() {
   ], '1.4');
 }
 
+// A /ToUnicode CMap (ISO 32000-2, 9.10.3) over the codespace ranges
+// `codespace` with the mapping blocks `body`.
+const toUnicodeCMap = (codespace, body) => [
+  '/CIDInit /ProcSet findresource begin', '12 dict begin', 'begincmap',
+  '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+  '/CMapName /Adobe-Identity-UCS def', '/CMapType 2 def',
+  `1 begincodespacerange\n${codespace}\nendcodespacerange`, body, 'endcmap',
+  'CMapName currentdict /CMap defineresource pop', 'end', 'end',
+].join('\n');
+const hex4 = n => n.toString(16).toUpperCase().padStart(4, '0');
+
+// Text extraction (ADR-0006, tranche 3.3), in Arimo (TrueType) and
+// Helvetica. Page 1, every glyph's text known: a simple font whose
+// /ToUnicode maps a code to a ligature (F1), a Type 0 Identity-H font with
+// a /ToUnicode, one code to a surrogate pair (F2), a /ToUnicode written with
+// two-byte codes for a one-byte font (F3), and glyph names from /Differences:
+// AGL, uniXXXX and an underscore ligature (F4). Page 2: a Type 0 font
+// without /ToUnicode (unknown text, F5), a damaged /ToUnicode (glyph names
+// instead, F6) and invisible text (Tr 3).
+function textPage() {
+  const first = 32;
+  const last = 122;
+  const widths = [];
+  for (let code = first; code <= last; code += 1) {
+    const ch = String.fromCharCode(code);
+    widths.push(arimoGlyphs.glyphs[ch] ? arimoWidth(ch) : 0);
+  }
+  const gidOf = ch => arimoGlyphs.glyphs[ch][0];
+  const cidHex = text => [...text].map(ch => hex4(gidOf(ch))).join('');
+  const cidLine = 'Identity text';
+  const unknownLine = 'Unknown';
+  const usedGids = [...new Set([...cidLine, ...unknownLine].map(gidOf))].sort((a, b) => a - b);
+  const w = usedGids.map(g => {
+    const ch = Object.keys(arimoGlyphs.glyphs).find(c => arimoGlyphs.glyphs[c][0] === g);
+    return `${g} [${arimoWidth(ch)}]`;
+  }).join(' ');
+  const cidEntries = [...new Set(cidLine)]
+    .map(ch => `<${hex4(gidOf(ch))}> <${hex4(ch.codePointAt(0))}>`);
+  cidEntries.push('<00FF> <D835DC00>');
+  const page1 = [
+    'BT /F1 16 Tf 10 170 Td (ToUnicode $ne) Tj ET',
+    `BT /F2 16 Tf 10 140 Td <${cidHex(cidLine)}00FF> Tj ET`,
+    'BT /F3 16 Tf 10 110 Td (Other length) Tj ET',
+    "BT /F4 16 Tf 10 80 Td (Caf$ % &on ') Tj ET",
+  ].join('\n');
+  const page2 = [
+    `BT /F5 16 Tf 10 170 Td <${cidHex(unknownLine)}> Tj ET`,
+    'BT /F6 16 Tf 10 140 Td (Fallback) Tj ET',
+    'BT /F1 16 Tf 3 Tr 10 110 Td (Hidden) Tj ET',
+  ].join('\n');
+  const simple = toUnicode => `<< /Type /Font /Subtype /TrueType /BaseFont /CSTLEE+Arimo /FirstChar ${first} `
+    + `/LastChar ${last} /Widths [${widths.join(' ')}] /Encoding /WinAnsiEncoding `
+    + `/FontDescriptor 8 0 R /ToUnicode ${toUnicode} 0 R >>`;
+  const type0 = extra => '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLEE+Arimo /Encoding /Identity-H '
+    + `/DescendantFonts [10 0 R]${extra} >>`;
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] '
+      + '/Resources << /Font << /F1 7 0 R /F2 9 0 R /F3 11 0 R /F4 12 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] '
+      + '/Resources << /Font << /F1 7 0 R /F5 13 0 R /F6 14 0 R >> >> /Contents 6 0 R >>',
+    stream(page1),
+    stream(page2),
+    simple(16),
+    '<< /Type /FontDescriptor /FontName /CSTLEE+Arimo /Flags 32 /FontBBox [-544 -303 2700 1060] '
+      + '/ItalicAngle 0 /Ascent 905 /Descent -212 /CapHeight 716 /StemV 80 /FontFile2 15 0 R >>',
+    type0(' /ToUnicode 17 0 R'),
+    '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CSTLEE+Arimo '
+      + '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+      + `/FontDescriptor 8 0 R /CIDToGIDMap /Identity /DW 1000 /W [${w}] >>`,
+    simple(18),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica '
+      + '/Encoding << /Type /Encoding /Differences [36 /eacute /Euro /uni00E7 /f_i] >> >>',
+    type0(''),
+    simple(19),
+    stream(arimo.toString('latin1'), ` /Length1 ${arimo.length}`),
+    stream(toUnicodeCMap('<00> <FF>',
+      '1 beginbfrange\n<20> <7A> <0020>\nendbfrange\n1 beginbfchar\n<24> <00660069>\nendbfchar')),
+    stream(toUnicodeCMap('<0000> <FFFF>',
+      `${cidEntries.length} beginbfchar\n${cidEntries.join('\n')}\nendbfchar`)),
+    stream(toUnicodeCMap('<0000> <FFFF>', '1 beginbfrange\n<0020> <007A> <0020>\nendbfrange')),
+    // Damaged: a block never closed.
+    stream(toUnicodeCMap('<00> <FF>', '1 beginbfchar\n<46> <0058>')),
+  ], '1.4');
+}
+
 // CFF test fonts (SIL OFL 1.1, tests/fonts), built by
 // scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
 // an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
@@ -727,6 +814,8 @@ export const fixtures = {
   // A Type 3 font: uncoloured and coloured glyphs, font resources; see
   // type3Page.
   'type3.pdf': type3Page(),
+  // Text extraction: /ToUnicode, glyph names, unknown text; see textPage.
+  'text.pdf': textPage(),
   // The simple filters: ASCIIHex content, LZW, RunLength and ASCII85 +
   // Flate images; see filtersPage.
   'filters.pdf': filtersPage(),
