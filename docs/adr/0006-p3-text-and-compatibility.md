@@ -1,6 +1,6 @@
 # ADR-0006 — Texte et compatibilité (P3)
 
-Statut : proposé
+Statut : accepté le 2026-11-12
 Date : 2026-11-12
 Responsable : Mélissa Gries (maintenance du dépôt)
 
@@ -67,7 +67,7 @@ OpenJPEG ou jbig2dec par FFI sont exclus (code natif). Des décodeurs en Rust s�
 peut-être à cette date : à évaluer dans un ADR dédié au moment de leur tranche, avec licence,
 maintenance, fuzzing et oracle. CCITTFax (G3/G4) est plus petit et bien spécifié.
 
-## Décision (proposée)
+## Décision
 
 - **Extraction dans `pdf-render`**, option 2, module `text` consommateur de l'interpréteur.
 - **Unicode** dans l'ordre de la norme ; CMap prédéfinies **seulement si la mesure de la
@@ -104,5 +104,5 @@ Ordre en tranches vérifiables :
   pour départager un écart. Un oracle peut se tromper : chaque écart accepté est documenté.
 - Retour arrière : chaque tranche est une PR autonome ; une couche de texte défaillante peut
   être désactivée sans toucher au rendu.
-- Cet ADR reste « proposé » jusqu'à validation des points ouverts : ordre (texte avant
-  filtres), couche DOM, CMap prédéfinies décidées après mesure.
+- Accepté le 2026-11-12 : texte avant filtres, couche de texte DOM, CMap prédéfinies
+  décidées après la mesure de la tranche 3.1.

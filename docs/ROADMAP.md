@@ -15,10 +15,9 @@ pas un booléen « compatible PDF 2.0 ».
 | P6 — fonctions avancées séparées | OCR, édition de texte existant, chiffrement, signatures, caviardage | Étude et tests propres à chaque fonction ; aucune promesse de sécurité avant validation dédiée |
 | Stabilisation — diffusion | Packaging, signatures OS, mises à jour, guide utilisateur | Release depuis tag testé, corpus accepté, mesures et limites publiques, récupération après erreur |
 
-## P3 proposée
+## P3 en cours
 
-Découpage proposé par [ADR-0006](adr/0006-p3-text-and-compatibility.md), en attente de
-validation : 3.1 mesure du texte sur le corpus ; 3.2 lecteur de CMap ; 3.3 Unicode des
+Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus ; 3.2 lecteur de CMap ; 3.3 Unicode des
 glyphes et `castle-pdf text` ; 3.4 encodages composites ; 3.5 mise en page ; 3.6 couche de
 texte, sélection et copie ; 3.7 recherche ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
