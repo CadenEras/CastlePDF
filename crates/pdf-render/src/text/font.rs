@@ -13,9 +13,12 @@
 //! (9.6.5.2); CID fonts through `/CIDToGIDMap` or the charset of a
 //! CID-keyed CFF. A simple font whose program is not read (none embedded, a
 //! Type 1 program, a damaged one) is replaced (`standard`); Type 3 fonts are
-//! read by `type3`. Any other font, an encoding other than `Identity-H`, or
-//! a CID font whose program cannot be opened is `Unsupported`: its text is
-//! not drawn and the page reports `Text`.
+//! read by `type3`. A Type 0 font's encoding is `Identity-H`, `Identity-V`
+//! or an embedded CMap (ADR-0006, tranche 3.4a), whose `usecmap` chain is
+//! followed at most `MAX_USECMAP_DEPTH` deep; vertical fonts use `/W2` and
+//! `/DW2` (9.7.4.3). Any other font, another predefined CMap (tranche 3.7b),
+//! or a CID font whose program cannot be opened is `Unsupported`: its text
+//! is not drawn and the page reports `Text`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,7 +32,7 @@ use skrifa::raw::ps::cff::CffFontRef;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
-use super::cmap::Code as CodeKey;
+use super::cmap::{CMap, CMapError, Code as CodeKey};
 use super::encodings::{
     GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, SYMBOL, SYMBOL_WIDTHS, WIN_ANSI, ZAPF_DINGBATS,
     ZAPF_DINGBATS_LIST, ZAPF_DINGBATS_WIDTHS,
@@ -43,8 +46,10 @@ use crate::geometry::{Point, Segment};
 const MAX_W_ENTRIES: usize = 65_536;
 /// Most entries read from a `/Differences` array.
 const MAX_DIFFERENCES: usize = 4096;
-/// CIDs are two bytes (`Identity-H`): entries of `/CIDToGIDMap` beyond are unused.
+/// CIDs are at most 65 535 (annex C): entries of `/CIDToGIDMap` beyond are unused.
 const MAX_CIDS: usize = 65_536;
+/// Deepest chain of embedded CMaps followed through `usecmap` or `/UseCMap`.
+pub(crate) const MAX_USECMAP_DEPTH: usize = 4;
 
 /// A font ready to show text.
 #[derive(Debug)]
@@ -79,12 +84,75 @@ enum Mapping {
         missing: Box<[bool; 256]>,
         widths: Box<[f64; 256]>,
     },
-    /// Two bytes per code (`Identity-H`): the code is the CID.
+    /// A Type 0 font: codes through its encoding to CIDs.
     Cid {
+        codes: CidCodes,
         /// `None` for `/Identity`.
         cid_to_gid: Option<Vec<u16>>,
         widths: CidWidths,
+        /// `/W2` and `/DW2` for a vertical font (`Identity-V`, `/WMode 1`).
+        vertical: Option<VerticalMetrics>,
     },
+}
+
+/// How the codes of a Type 0 font's strings become CIDs.
+#[derive(Debug)]
+enum CidCodes {
+    /// `Identity-H` or `Identity-V`: two bytes per code, the code is the CID.
+    Identity,
+    /// An embedded CMap: codes split by its codespace, CIDs from its
+    /// `cidchar`/`cidrange`, else its notdef ranges, else CID 0 (9.7.6.3).
+    CMap(Arc<CMap>),
+}
+
+/// `/W2` and `/DW2` of a vertical CID font (9.7.4.3), in glyph space.
+#[derive(Debug)]
+struct VerticalMetrics {
+    /// Position vector y and vertical displacement of glyphs not listed.
+    default: (f64, f64),
+    /// Non-overlapping runs sorted by first CID: first, last, metrics
+    /// (displacement, position x, position y), one for a whole range or one
+    /// per CID.
+    runs: Vec<(u32, u32, Vec<[f64; 3]>)>,
+}
+
+impl VerticalMetrics {
+    /// Displacement and position vector of `cid`, whose horizontal width is
+    /// `width` (the default position x is half of it).
+    fn metric(&self, cid: u32, width: f64) -> Vertical {
+        let index = self.runs.partition_point(|(_, last, _)| *last < cid);
+        let listed = match self.runs.get(index) {
+            Some((first, _, metrics)) if *first <= cid => match metrics.as_slice() {
+                [single] => Some(*single),
+                list => usize::try_from(cid - first)
+                    .ok()
+                    .and_then(|i| list.get(i))
+                    .copied(),
+            },
+            _ => None,
+        };
+        match listed {
+            Some([displacement, x, y]) => Vertical {
+                displacement,
+                position: (x, y),
+            },
+            None => Vertical {
+                displacement: self.default.1,
+                position: (width / 2.0, self.default.0),
+            },
+        }
+    }
+}
+
+/// How a glyph of a vertical font is placed and advances (9.7.4.3), in
+/// glyph space (thousandths of text space).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Vertical {
+    /// Vertical displacement (usually negative: down).
+    pub displacement: f64,
+    /// Position vector: from the glyph's horizontal origin to its vertical
+    /// one, subtracted to place the glyph.
+    pub position: (f64, f64),
 }
 
 /// `/W` and `/DW` of a CID font.
@@ -125,6 +193,8 @@ pub(crate) struct Code {
     pub width: f64,
     /// A single-byte code 32: word spacing applies (9.3.3).
     pub is_space: bool,
+    /// Placement and displacement in a vertical font.
+    pub vertical: Option<Vertical>,
 }
 
 impl Font {
@@ -143,13 +213,25 @@ impl Font {
         self.substituted
     }
 
+    /// Writes vertically: `Identity-V` or a CMap with `/WMode 1`.
+    pub fn vertical(&self) -> bool {
+        matches!(
+            &self.mapping,
+            Mapping::Cid {
+                vertical: Some(_),
+                ..
+            }
+        )
+    }
+
     /// How the Unicode text of its codes is found.
     pub fn text(&self) -> &TextMap {
         &self.text
     }
 
     /// The codes of `string`: one byte each for a simple font, two bytes
-    /// (big-endian) for `Identity-H`; a trailing odd byte is ignored.
+    /// (big-endian) for `Identity-H` and `Identity-V` (a trailing odd byte is
+    /// ignored), as the codespace splits them for an embedded CMap.
     pub fn codes<'s>(&'s self, string: &'s [u8]) -> Box<dyn Iterator<Item = Code> + 's> {
         match &self.mapping {
             Mapping::Simple {
@@ -165,25 +247,49 @@ impl Font {
                 missing: missing.get(usize::from(*byte)).copied().unwrap_or(false),
                 width: widths.get(usize::from(*byte)).copied().unwrap_or(0.0),
                 is_space: *byte == b' ',
+                vertical: None,
             })),
-            Mapping::Cid { cid_to_gid, widths } => {
-                Box::new(string.as_chunks::<2>().0.iter().map(move |pair| {
-                    let cid = u16::from_be_bytes(*pair);
+            Mapping::Cid {
+                codes,
+                cid_to_gid,
+                widths,
+                vertical,
+            } => {
+                let code = move |key: CodeKey, cid: u32| {
                     let glyph = match cid_to_gid {
-                        None => Some(cid),
-                        Some(map) => map.get(usize::from(cid)).copied(),
+                        None => u16::try_from(cid).ok(),
+                        Some(map) => usize::try_from(cid)
+                            .ok()
+                            .and_then(|cid| map.get(cid))
+                            .copied(),
                     };
+                    let width = widths.width(cid);
                     Code {
-                        key: CodeKey {
-                            value: u32::from(cid),
-                            len: 2,
-                        },
+                        key,
                         glyph: glyph.filter(|gid| *gid != 0 || cid == 0),
                         missing: false,
-                        width: widths.width(u32::from(cid)),
-                        is_space: false,
+                        width,
+                        is_space: key.len == 1 && key.value == 32,
+                        vertical: vertical.as_ref().map(|metrics| metrics.metric(cid, width)),
                     }
-                }))
+                };
+                match codes {
+                    CidCodes::Identity => {
+                        Box::new(string.as_chunks::<2>().0.iter().map(move |pair| {
+                            let cid = u32::from(u16::from_be_bytes(*pair));
+                            code(CodeKey { value: cid, len: 2 }, cid)
+                        }))
+                    }
+                    CidCodes::CMap(cmap) => {
+                        let mut rest = string;
+                        Box::new(std::iter::from_fn(move || {
+                            let key = cmap.next_code(rest)?;
+                            rest = rest.get(usize::from(key.len)..).unwrap_or_default();
+                            let cid = cmap.cid(key).or_else(|| cmap.notdef(key)).unwrap_or(0);
+                            Some(code(key, cid))
+                        }))
+                    }
+                }
             }
         }
     }
@@ -965,9 +1071,9 @@ fn cid<S: Source>(
     font: &Dictionary,
     budget: &mut Budget,
 ) -> Result<Option<Font>, Error> {
-    if font.get(b"Encoding").and_then(Object::as_name) != Some(b"Identity-H") {
+    let Some((codes, vertical)) = cid_encoding(file, font, budget)? else {
         return Ok(None);
-    }
+    };
     let descendants = match font.get(b"DescendantFonts") {
         Some(object) => resolve(file, object, budget)?,
         None => None,
@@ -1043,14 +1149,210 @@ fn cid<S: Source>(
         }
     };
     let widths = cid_widths(file, &descendant, budget)?;
+    let vertical = if vertical {
+        Some(vertical_metrics(file, &descendant, budget)?)
+    } else {
+        None
+    };
     Ok(Some(Font {
         program,
         format,
         units_per_em,
-        mapping: Mapping::Cid { cid_to_gid, widths },
+        mapping: Mapping::Cid {
+            codes,
+            cid_to_gid,
+            widths,
+            vertical,
+        },
         substituted: false,
         text: TextMap::new(font, None),
     }))
+}
+
+/// The encoding of a Type 0 font (9.7.5) and whether it writes vertically:
+/// `Identity-H`, `Identity-V`, or an embedded CMap stream (`/WMode 1` in its
+/// data or dictionary for vertical). `Ok(None)` for another predefined CMap
+/// (tranche 3.7b), a damaged CMap or a `usecmap` chain that cannot be
+/// followed; limits and cancellation are errors.
+fn cid_encoding<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    budget: &mut Budget,
+) -> Result<Option<(CidCodes, bool)>, Error> {
+    match font.get(b"Encoding") {
+        Some(Object::Name(name)) => Ok(match name.as_slice() {
+            b"Identity-H" => Some((CidCodes::Identity, false)),
+            b"Identity-V" => Some((CidCodes::Identity, true)),
+            _ => None,
+        }),
+        Some(object @ Object::Reference(_)) => {
+            let Some((cmap, vertical)) = embedded_cmap(file, object, 0, budget)? else {
+                return Ok(None);
+            };
+            Ok(Some((CidCodes::CMap(Arc::new(cmap)), vertical)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The embedded CMap `object` refers to, with its parents merged under it:
+/// another embedded CMap (`/UseCMap` reference) or `Identity-H`/`-V` by
+/// name (`usecmap` or `/UseCMap`). `depth` counts the CMaps above it.
+fn embedded_cmap<S: Source>(
+    file: &PdfFile<S>,
+    object: &Object,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<Option<(CMap, bool)>, Error> {
+    if depth >= MAX_USECMAP_DEPTH {
+        return Ok(None);
+    }
+    let Some(dictionary) = resolve_dictionary(file, object, budget)? else {
+        return Ok(None);
+    };
+    let Some(data) = stream_bytes(file, object, budget)? else {
+        return Ok(None);
+    };
+    let mut cmap = match CMap::parse(&data, budget) {
+        Ok(cmap) => cmap,
+        Err(CMapError::Syntax(
+            pdf_syntax::Error::Malformed { .. }
+            | pdf_syntax::Error::Truncated { .. }
+            | pdf_syntax::Error::Unsupported(_),
+        ))
+        | Err(CMapError::Unterminated { .. }) => return Ok(None),
+        Err(CMapError::Syntax(other)) => return Err(Error::Syntax(other)),
+    };
+    let mut vertical =
+        cmap.is_vertical() || dictionary.get(b"WMode").and_then(Object::as_integer) == Some(1);
+    let parent = match (dictionary.get(b"UseCMap"), cmap.parent()) {
+        (Some(object @ Object::Reference(_)), _) => {
+            let Some((parent, parent_vertical)) = embedded_cmap(file, object, depth + 1, budget)?
+            else {
+                return Ok(None);
+            };
+            vertical |= parent_vertical;
+            Some(parent)
+        }
+        (Some(Object::Name(name)), _) => match identity(name, budget)? {
+            Some((parent, parent_vertical)) => {
+                vertical |= parent_vertical;
+                Some(parent)
+            }
+            None => return Ok(None),
+        },
+        (Some(_), _) => return Ok(None),
+        (None, Some(name)) => {
+            let name = name.to_vec();
+            match identity(&name, budget)? {
+                Some((parent, parent_vertical)) => {
+                    vertical |= parent_vertical;
+                    Some(parent)
+                }
+                None => return Ok(None),
+            }
+        }
+        (None, None) => None,
+    };
+    if let Some(parent) = parent {
+        match cmap.inherit(&parent, budget) {
+            Ok(()) => {}
+            Err(CMapError::Syntax(other)) => return Err(Error::Syntax(other)),
+            Err(CMapError::Unterminated { .. }) => return Ok(None),
+        }
+    }
+    Ok(Some((cmap, vertical)))
+}
+
+/// `Identity-H` or `Identity-V` as a CMap, for a `usecmap` parent; `None`
+/// for another predefined CMap.
+fn identity(name: &[u8], budget: &mut Budget) -> Result<Option<(CMap, bool)>, Error> {
+    let vertical = match name {
+        b"Identity-H" => false,
+        b"Identity-V" => true,
+        _ => return Ok(None),
+    };
+    let data: &[u8] =
+        b"begincodespacerange <0000> <FFFF> endcodespacerange begincidrange <0000> <FFFF> 0 endcidrange";
+    match CMap::parse(data, budget) {
+        Ok(cmap) => Ok(Some((cmap, vertical))),
+        Err(CMapError::Syntax(other)) => Err(Error::Syntax(other)),
+        Err(CMapError::Unterminated { .. }) => Ok(None),
+    }
+}
+
+/// `/DW2` (`[880 -1000]` by default) and `/W2` (9.7.4.3): `c [w1y vx vy …]`
+/// or `cfirst clast w1y vx vy`. Malformed entries end the array; ranges are
+/// sorted and later overlapping ones dropped.
+fn vertical_metrics<S: Source>(
+    file: &PdfFile<S>,
+    descendant: &Dictionary,
+    budget: &mut Budget,
+) -> Result<VerticalMetrics, Error> {
+    let default = match descendant.get(b"DW2") {
+        Some(object) => match resolve(file, object, budget)? {
+            Some(Object::Array(items)) => match items.as_slice() {
+                [y, displacement] => number(y).zip(number(displacement)),
+                _ => None,
+            },
+            _ => None,
+        },
+        None => None,
+    }
+    .unwrap_or((880.0, -1000.0));
+    let listed = match descendant.get(b"W2") {
+        Some(object) => resolve(file, object, budget)?,
+        None => None,
+    };
+    let mut runs = BTreeMap::new();
+    if let Some(Object::Array(items)) = listed {
+        let mut items = items.iter().take(MAX_W_ENTRIES).peekable();
+        while let Some(first) = items.next() {
+            budget.charge_object()?;
+            let Some(first) = number(first).and_then(|f| u32::try_from(f as i64).ok()) else {
+                break;
+            };
+            match items.next() {
+                Some(Object::Array(values)) => {
+                    let values: Vec<f64> = values.iter().map_while(number).collect();
+                    let metrics: Vec<[f64; 3]> = values.as_chunks::<3>().0.to_vec();
+                    let Some(count) = u32::try_from(metrics.len()).ok().filter(|c| *c > 0) else {
+                        continue;
+                    };
+                    let last = first.saturating_add(count - 1);
+                    runs.entry(first).or_insert((last, metrics));
+                }
+                Some(last) => {
+                    let (Some(last), Some(displacement), Some(x), Some(y)) = (
+                        number(last).and_then(|l| u32::try_from(l as i64).ok()),
+                        items.next().and_then(number),
+                        items.next().and_then(number),
+                        items.next().and_then(number),
+                    ) else {
+                        break;
+                    };
+                    if last >= first {
+                        runs.entry(first)
+                            .or_insert((last, vec![[displacement, x, y]]));
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+    let mut sorted: Vec<(u32, u32, Vec<[f64; 3]>)> = Vec::with_capacity(runs.len());
+    for (first, (last, metrics)) in runs {
+        if sorted
+            .last()
+            .is_none_or(|(_, previous, _)| *previous < first)
+        {
+            sorted.push((first, last, metrics));
+        }
+    }
+    Ok(VerticalMetrics {
+        default,
+        runs: sorted,
+    })
 }
 
 /// `/DW` (1000 by default) and `/W` (9.7.4.3): `c [w1 w2 …]` or

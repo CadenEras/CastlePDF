@@ -9,6 +9,19 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **encodages des polices Type 0 au-delà d'`Identity-H`** (ADR-0006, tranche
+  3.4a), pour le rendu comme pour le texte.
+  - `Identity-V` et toute CMap `/WMode 1` : écriture verticale avec `/W2` et `/DW2` (ISO 32000-2,
+    9.7.4.3), glyphes placés par leur vecteur de position, déplacement vers le bas, ajustement
+    `TJ` vertical.
+  - CMap incluses : codes découpés par leurs plages (un à quatre octets), CID par `cidchar` et
+    `cidrange`, sinon par les plages notdef, sinon CID 0. Le parent d'un `usecmap` ou
+    `/UseCMap` est fusionné : `Identity-H`/`-V` par nom, ou une autre CMap incluse, sur quatre
+    niveaux au plus (une boucle s'arrête là). Une autre CMap prédéfinie attend la tranche 3.7b.
+  - L'espacement des mots s'applique au code 32 d'un octet d'une police composite.
+  - Fixture `cmaps.pdf`, identique à `pdftoppm` (page 1) et à `pdftotext` ; la cible de
+    fuzzing `font` choisit aussi ces encodages.
+
 - `pdf-render` : **extraction du texte** (`page_text`, ADR-0006, tranche 3.3). Chaque glyphe
   montré par la page, formulaires compris, avec son texte Unicode et sa position en espace
   utilisateur. Le texte vient de la CMap `/ToUnicode` de la police (lue au premier besoin, jamais

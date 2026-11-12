@@ -1438,15 +1438,21 @@ impl<'a, S: Source> Interpreter<'a, S> {
             0.0,
             text.rise,
         );
+        let vertical = font.vertical();
         let mut path = Path::default();
         let mut shown: u64 = 0;
         for item in items {
             let string = match item {
                 Object::String(string) => string,
                 other => {
+                    // Down in vertical writing (9.4.3).
                     let adjust = number(other).unwrap_or(0.0);
-                    let tx = -adjust / 1000.0 * text.size * text.horizontal_scale;
-                    self.advance(tx, at)?;
+                    if vertical {
+                        self.advance_by(0.0, -adjust / 1000.0 * text.size, at)?;
+                    } else {
+                        let tx = -adjust / 1000.0 * text.size * text.horizontal_scale;
+                        self.advance(tx, at)?;
+                    }
                     continue;
                 }
             };
@@ -1481,7 +1487,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
                                     limit: self.limits.max_path_work,
                                 });
                             }
-                            let matrix = glyph_space.then(&self.text_matrix);
+                            // A vertical glyph is placed by its position
+                            // vector, from its vertical origin (9.7.4.3).
+                            let matrix = match code.vertical {
+                                Some(metric) => glyph_space
+                                    .then(&Matrix::new(
+                                        1.0,
+                                        0.0,
+                                        0.0,
+                                        1.0,
+                                        -metric.position.0 / 1000.0
+                                            * text.size
+                                            * text.horizontal_scale,
+                                        -metric.position.1 / 1000.0 * text.size,
+                                    ))
+                                    .then(&self.text_matrix),
+                                None => glyph_space.then(&self.text_matrix),
+                            };
                             append(&mut path, &outline, &matrix);
                         }
                         None => {
@@ -1495,8 +1517,18 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     } else {
                         0.0
                     };
-                let tx = (code.width / 1000.0 * text.size + spacing) * text.horizontal_scale;
-                self.advance(tx, at)?;
+                match code.vertical {
+                    // No horizontal scaling of a vertical displacement.
+                    Some(metric) => {
+                        let ty = metric.displacement / 1000.0 * text.size + spacing;
+                        self.advance_by(0.0, ty, at)?;
+                    }
+                    None => {
+                        let tx =
+                            (code.width / 1000.0 * text.size + spacing) * text.horizontal_scale;
+                        self.advance(tx, at)?;
+                    }
+                }
                 if recorded {
                     self.end_glyph();
                 }
@@ -1771,7 +1803,12 @@ impl<'a, S: Source> Interpreter<'a, S> {
     }
 
     fn advance(&mut self, tx: f64, at: u64) -> Result<(), Error> {
-        let matrix = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0).then(&self.text_matrix);
+        self.advance_by(tx, 0.0, at)
+    }
+
+    /// Moves the text position by (tx, ty) in text space.
+    fn advance_by(&mut self, tx: f64, ty: f64, at: u64) -> Result<(), Error> {
+        let matrix = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, ty).then(&self.text_matrix);
         if !matrix.is_finite() {
             return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
         }
