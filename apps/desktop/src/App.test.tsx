@@ -159,7 +159,7 @@ describe("App", () => {
     open({ sequence: 1, kind: "opening", name: "plan.pdf" });
     expect(screen.getByText("Ouverture de plan.pdf…")).toBeTruthy();
     open({ sequence: 2, kind: "opened", document: 1, pages: 4, name: "plan.pdf", repair: "none" });
-    expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Page 1 de plan.pdf" })).toBeTruthy();
     await act(async () => {
       await Promise.resolve();
     });
@@ -182,7 +182,7 @@ describe("App", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.getByRole("img", { name: "Page 1 de shapes.pdf" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Page 1 de shapes.pdf" })).toBeTruthy();
   });
 
   it("keeps the document shown when another file cannot be opened", async () => {
@@ -197,6 +197,6 @@ describe("App", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "Impossible d'ouvrir secret.pdf : document chiffré, non pris en charge pour l'instant.",
     );
-    expect(screen.getByRole("img", { name: "Page 1 de plan.pdf" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Page 1 de plan.pdf" })).toBeTruthy();
   });
 });

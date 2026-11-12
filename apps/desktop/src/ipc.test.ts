@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_LAYER_WORDS,
   ShellError,
   TILE_HEADER,
   describeCommandError,
@@ -9,6 +10,7 @@ import {
   parseJobEvent,
   parseJobId,
   parsePageSize,
+  parseTextLayer,
   parseTile,
   skippedLabels,
 } from "./ipc";
@@ -166,5 +168,32 @@ describe("documents and tiles", () => {
   it("labels skipped capabilities", () => {
     expect(skippedLabels(0)).toEqual([]);
     expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images", "autres éléments"]);
+  });
+
+  it("checks text layers and keeps their known fields only", () => {
+    const word = { text: "Café", x0: 1, y0: 2.5, x1: 30, y1: 2.5, size: 12 };
+    expect(
+      parseTextLayer({
+        lines: [[{ ...word, extra: "dropped" }], []],
+        truncated: false,
+        incomplete: true,
+      }),
+    ).toEqual({ lines: [[word], []], truncated: false, incomplete: true });
+    for (const value of [
+      null,
+      { lines: [], truncated: false },
+      { lines: {}, truncated: false, incomplete: false },
+      { lines: [[{ ...word, x1: Number.NaN }]], truncated: false, incomplete: false },
+      { lines: [[{ ...word, y0: Infinity }]], truncated: false, incomplete: false },
+      { lines: [[{ ...word, size: -1 }]], truncated: false, incomplete: false },
+      { lines: [[{ ...word, text: 5 }]], truncated: false, incomplete: false },
+      { lines: [word], truncated: false, incomplete: false },
+      { lines: [], truncated: "no", incomplete: false },
+    ]) {
+      expect(() => parseTextLayer(value)).toThrow();
+    }
+    // Beyond the bound of the shell's response: refused.
+    const many = Array.from({ length: MAX_LAYER_WORDS + 1 }, () => word);
+    expect(() => parseTextLayer({ lines: [many], truncated: false, incomplete: false })).toThrow();
   });
 });

@@ -142,6 +142,37 @@ button:focus-visible {
   height: 100%;
 }
 
+/* The page's text over its canvas (ADR-0006, tranche 3.6b): transparent,
+   but selectable and read by screen readers; the selection shows. */
+.text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  color: transparent;
+  cursor: text;
+  user-select: text;
+}
+
+.text-layer [data-word] {
+  position: absolute;
+  white-space: pre;
+  font-family: sans-serif;
+}
+
+/* Spaces and line breaks between words: in the text, out of the way. */
+.text-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 1px;
+}
+
+.text-layer ::selection {
+  background: rgb(0 90 200 / 30%);
+  color: transparent;
+}
+
 .measures {
   color: var(--muted);
   font-size: 0.875rem;
