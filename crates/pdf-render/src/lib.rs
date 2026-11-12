@@ -65,6 +65,9 @@ pub use fonts::{
     CidEncoding, FontKind, MAX_PAGE_FONTS, PageTextProfile, TextSource, page_font_kinds,
     page_text_profile,
 };
+pub use text::cmap::{
+    CMap, CMapError, Code, MAX_CID, MAX_CODE_BYTES, MAX_CODESPACES, MAX_DESTINATION_UNITS,
+};
 
 use geometry::Matrix;
 use interpret::Interpreter;

@@ -290,6 +290,14 @@ nommée 22 et 6, `Identity-V` 4 et 2, CMap incluse 5 et 0.
   texte sera signalé inconnu (3 et 26 pages), sauf repli signalé sur la table `cmap` de
   la police incluse.
 
+Lecteur de CMap (tranche 3.2, 2026-11-12) : 21 tests (exemple de la norme 9.10.3, plages de
+codes de 9.7.6.2, chevauchements, entrées et blocs invalides, bornes de CID, de destination et
+de plages de codes, `usecmap`, budget à la limite et à la limite moins un pour la lecture et la
+fusion, bloc d'un million de jetons arrêté par le budget, 65 536 recherches sous une plage large
+avec 50 000 exceptions, annulation). Fuzzing `cmap` : 2 269 700 exécutions, puis 2 521 311
+après la revue (10 min chacune, WSL), aucun crash. La revue a relevé une mémoire de blocs non
+imputée et une recherche linéaire par code (quadratique sur une page) : corrigées avant fusion.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

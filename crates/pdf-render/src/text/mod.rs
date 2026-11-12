@@ -1,5 +1,6 @@
 //! Text (ISO 32000-2, 9): text state, fonts and glyph outlines (ADR-0005).
 
+pub(crate) mod cmap;
 #[allow(
     dead_code,
     reason = "the Symbol and ZapfDingbats encodings serve the standard fonts (ADR-0005, step 5.3)"
