@@ -1,5 +1,6 @@
 //! `page_font_kinds`: the kinds of the fonts a page declares (ADR-0005,
-//! step 5.1), from font dictionaries and descriptors only.
+//! step 5.1), and `page_text_profile`: where their Unicode would come from
+//! (ADR-0006, tranche 3.1), from font dictionaries and descriptors only.
 
 #![allow(
     clippy::expect_used,
@@ -10,7 +11,9 @@
 use std::collections::BTreeSet;
 
 use pdf_document::Document;
-use pdf_render::{FontKind, page_font_kinds};
+use pdf_render::{
+    CidEncoding, FontKind, PageTextProfile, TextSource, page_font_kinds, page_text_profile,
+};
 use pdf_syntax::{Budget, CancellationToken, LimitKind, MemorySource, ResourceLimits};
 
 /// A one-page file whose `/Resources` are `<< /Font << fonts >> >>`; `more`
@@ -186,6 +189,164 @@ fn limits_stop_the_classification() {
     let mut short = Budget::new(limits, CancellationToken::new());
     assert!(matches!(
         kinds_with(&bytes, &mut short),
+        Err(pdf_render::Error::Syntax(
+            pdf_syntax::Error::LimitExceeded {
+                kind: LimitKind::ObjectsVisited,
+                ..
+            }
+        ))
+    ));
+}
+
+fn profile_with(bytes: &[u8], budget: &mut Budget) -> Result<PageTextProfile, pdf_render::Error> {
+    let source =
+        MemorySource::from_vec(bytes.to_vec(), &ResourceLimits::default()).expect("source");
+    let document = Document::open(source, &mut self::budget()).expect("document");
+    let page = document.page(0).expect("page");
+    page_text_profile(document.file(), page, budget)
+}
+
+fn profile(fonts: &str, more: &[&str]) -> PageTextProfile {
+    profile_with(&file(fonts, more), &mut budget()).expect("classified")
+}
+
+fn sources(fonts: &str, more: &[&str]) -> Vec<TextSource> {
+    profile(fonts, more).sources.into_iter().collect()
+}
+
+#[test]
+fn to_unicode_comes_first_whatever_the_font() {
+    for font in [
+        "<< /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 4 0 R >>",
+        "<< /Subtype /Type3 /ToUnicode 4 0 R >>",
+        "<< /Subtype /Type0 /Encoding /Identity-H /ToUnicode 4 0 R >>",
+    ] {
+        let stream = format!("<< {STREAM}");
+        assert_eq!(
+            sources(&format!("/F1 {font}"), &[&stream]),
+            [TextSource::ToUnicode],
+            "{font}"
+        );
+    }
+}
+
+#[test]
+fn simple_fonts_without_to_unicode() {
+    let more = [
+        "<< /Type /FontDescriptor /Flags 32 >>",
+        "<< /Type /FontDescriptor /Flags 4 /FontFile2 7 0 R >>",
+        "<< /Type /FontDescriptor /Flags 4 /FontFile 7 0 R >>",
+    ];
+    let stream = format!("<< {STREAM}");
+    let mut objects: Vec<&str> = more.to_vec();
+    objects.push(&stream);
+    for (font, source) in [
+        (
+            "<< /Subtype /Type1 /BaseFont /Helvetica >>",
+            TextSource::GlyphNames,
+        ),
+        (
+            "<< /Subtype /Type1 /BaseFont /Symbol >>",
+            TextSource::BuiltInEncoding,
+        ),
+        (
+            "<< /Subtype /TrueType /BaseFont /A /FontDescriptor 4 0 R >>",
+            TextSource::GlyphNames,
+        ),
+        (
+            "<< /Subtype /TrueType /BaseFont /B /FontDescriptor 5 0 R >>",
+            TextSource::SymbolicTrueType,
+        ),
+        (
+            "<< /Subtype /TrueType /BaseFont /B /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>",
+            TextSource::GlyphNames,
+        ),
+        (
+            "<< /Subtype /Type1 /BaseFont /C /FontDescriptor 6 0 R >>",
+            TextSource::BuiltInEncoding,
+        ),
+        (
+            "<< /Subtype /Type1 /BaseFont /C /FontDescriptor 6 0 R /Encoding << /Differences [65 /A] >> >>",
+            TextSource::GlyphNames,
+        ),
+        ("<< /Subtype /Type3 >>", TextSource::Type3),
+        (
+            "<< /Subtype /Type1 /FontDescriptor 99 0 R >>",
+            TextSource::Invalid,
+        ),
+        ("<< /Subtype /Type42 >>", TextSource::Invalid),
+    ] {
+        assert_eq!(
+            sources(&format!("/F1 {font}"), &objects),
+            [source],
+            "{font}"
+        );
+    }
+}
+
+#[test]
+fn cid_fonts_without_to_unicode_are_told_apart_by_their_collection() {
+    let cid = |registry: &str, ordering: &str| {
+        format!(
+            "/F1 << /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry ({registry}) /Ordering ({ordering}) /Supplement 0 >> >>] >>"
+        )
+    };
+    for ((registry, ordering), source) in [
+        (("Adobe", "Japan1"), TextSource::AdobeJapan1),
+        (("Adobe", "GB1"), TextSource::AdobeGb1),
+        (("Adobe", "CNS1"), TextSource::AdobeCns1),
+        (("Adobe", "Korea1"), TextSource::AdobeKorea1),
+        (("Adobe", "Identity"), TextSource::CidIdentity),
+        (("Acme", "Identity"), TextSource::CidIdentity),
+        (("Acme", "Glyphs"), TextSource::CidOther),
+    ] {
+        assert_eq!(
+            sources(&cid(registry, ordering), &[]),
+            [source],
+            "{ordering}"
+        );
+    }
+    assert_eq!(
+        sources(
+            "/F1 << /Subtype /Type0 /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>",
+            &[]
+        ),
+        [TextSource::Invalid]
+    );
+}
+
+#[test]
+fn composite_encodings_are_counted() {
+    let stream = format!("<< /Type /CMap {STREAM}");
+    let fonts = "/F1 << /Subtype /Type0 /Encoding /Identity-H /ToUnicode 4 0 R >>         /F2 << /Subtype /Type0 /Encoding /Identity-V /ToUnicode 4 0 R >>         /F3 << /Subtype /Type0 /Encoding /UniJIS-UCS2-H /ToUnicode 4 0 R >>         /F4 << /Subtype /Type0 /Encoding 4 0 R /ToUnicode 4 0 R >>         /F5 << /Subtype /Type0 /ToUnicode 4 0 R >>";
+    assert_eq!(
+        profile(fonts, &[&stream])
+            .cid_encodings
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [
+            CidEncoding::IdentityH,
+            CidEncoding::IdentityV,
+            CidEncoding::Predefined,
+            CidEncoding::Embedded,
+            CidEncoding::Invalid,
+        ]
+    );
+    assert!(
+        profile("/F1 << /Subtype /Type1 /BaseFont /Helvetica >>", &[])
+            .cid_encodings
+            .is_empty()
+    );
+}
+
+#[test]
+fn limits_stop_the_text_profile() {
+    let bytes = file("/F1 4 0 R", &["<< /Subtype /Type1 /BaseFont /Helvetica >>"]);
+    let mut limits = ResourceLimits::default();
+    limits.max_objects_visited = 1;
+    let mut short = Budget::new(limits, CancellationToken::new());
+    assert!(matches!(
+        profile_with(&bytes, &mut short),
         Err(pdf_render::Error::Syntax(
             pdf_syntax::Error::LimitExceeded {
                 kind: LimitKind::ObjectsVisited,

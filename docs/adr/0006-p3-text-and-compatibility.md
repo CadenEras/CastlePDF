@@ -80,11 +80,11 @@ Ordre en tranches vérifiables :
 
 | Tranche | Contenu | Preuve attendue |
 | --- | --- | --- |
-| 3.1 | Mesure : `survey` compte, par page, les polices avec et sans `/ToUnicode`, les encodages (`Identity-H/V`, CMap incluses, CMap prédéfinies) et le marquage `/ActualText` | Tableau dans `docs/QUALITY.md` ; décision sur les CMap prédéfinies |
+| 3.1 | Mesure : `survey` compte, par page, les polices avec et sans `/ToUnicode`, les encodages (`Identity-H/V`, CMap incluses, CMap prédéfinies) ; le marquage `/ActualText`, qui demande d'interpréter le contenu, est mesuré en 3.5 | Tableau dans `docs/QUALITY.md` ; décision sur les CMap prédéfinies |
 | 3.2 | Lecteur de CMap partagé (`codespacerange`, `bfchar`, `bfrange`, `cidchar`, `cidrange`, `usecmap` borné) pour `/ToUnicode` et les encodages | Vecteurs de la norme, cas invalides et limites, cible de fuzzing `cmap` |
 | 3.3 | Unicode de chaque glyphe et `castle-pdf text <fichier> [--page n]` dans l'ordre du contenu ; caractères inconnus signalés | Fixtures comparées à `pdftotext` ; part des glyphes résolus sur le corpus |
 | 3.4 | Encodages composites au-delà d'`Identity-H` : `Identity-V`, CMap incluses (et prédéfinies selon 3.1), pour le rendu comme pour le texte | Fixtures rendues identiques à `pdftoppm`, texte comparé à `pdftotext` |
-| 3.5 | Mise en page : mots, lignes, blocs, ordre de lecture, espaces déduits des écarts, `/ActualText`, texte tourné | Mesure mot à mot contre `pdftotext` sur fixtures et échantillon du corpus, tolérance documentée |
+| 3.5 | Mise en page : mots, lignes, blocs, ordre de lecture, espaces déduits des écarts, `/ActualText`, texte tourné | Mesure mot à mot contre `pdftotext` sur fixtures et échantillon du corpus, tolérance documentée ; part des pages marquées `/ActualText` |
 | 3.6 | Protocole worker : texte d'une page (lignes, caractères, boîtes) borné ; couche de texte DOM ; sélection, copie, lecteurs d'écran | Tests du worker et de l'UI ; copie vérifiée à la main sur chaque OS disponible |
 | 3.7 | Recherche dans le document, côté worker : résultats progressifs, annulation, surlignage, précédent et suivant au clavier | Tests de bout en bout sur fixtures ; temps mesuré sur un long document |
 | 3.8 | Type 1 inclus (`FontFile`) : lecture du programme (`eexec`, charstrings) ou dépendance, selon un amendement d'ADR-0005 | Fixture identique à `pdftoppm` ; fuzzing |
