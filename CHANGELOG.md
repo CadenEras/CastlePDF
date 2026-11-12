@@ -7,6 +7,19 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+### Ajouté
+
+- `pdf-render` : `page_text_profile` dit d'où viendrait l'Unicode du texte de chaque police
+  d'une page (`/ToUnicode`, noms de glyphes, encodage intégré, collection CID...) et quels
+  encodages ont ses polices Type 0, sans lire de CMap ni de programme de police (ADR-0006,
+  tranche 3.1). `castle-pdf probe` l'affiche (`text=`, `cmaps=`) et `survey` en fait le
+  décompte ; résultats sur le corpus dans `docs/QUALITY.md`.
+
+### Corrigé
+
+- `docs/QUALITY.md` : une partie du fichier avait été recopiée au milieu du tableau des
+  contrôles manuels (motif `` $` `` d'un remplacement de texte), depuis `v0.1.0-alpha.3`.
+
 ## [0.1.0-alpha.3] — 2026-11-11
 
 Fin de la phase P2 (lecteur utile). L'application desktop ouvre un PDF (glisser-déposer,

@@ -29,13 +29,17 @@ fn probe_prints_one_outcome_line() {
     let (code, out, err) = castle(&["probe".as_ref(), shapes.as_os_str()]);
     assert_eq!(
         (code, out.as_str(), err.as_str()),
-        (0, "open=ok pages=3 render=ok skipped=none fonts=none\n", "")
+        (
+            0,
+            "open=ok pages=3 render=ok skipped=none fonts=none text=none\n",
+            ""
+        )
     );
     let minimal = corpus().join("minimal.pdf");
     let (_, out, _) = castle(&["probe".as_ref(), minimal.as_os_str()]);
     assert_eq!(
         out,
-        "open=ok pages=1 render=ok skipped=FontSubstituted fonts=Standard14\n"
+        "open=ok pages=1 render=ok skipped=FontSubstituted fonts=Standard14 text=GlyphNames\n"
     );
     // A document error is an outcome, not a failure of the probe.
     let manifest = corpus().join("manifest.json");
@@ -59,6 +63,7 @@ fn survey_reports_aggregates_without_names() {
         "timeouts: 0\ncrashes: 0\n".to_owned(),
         "open failures:\n       1  malformed/InvalidHeader\n".to_owned(),
         "not rendered on rendered first pages:\n".to_owned(),
+        "first pages with a text source:\n".to_owned(),
     ] {
         assert!(out.contains(&expected), "{expected:?} in {out}");
     }

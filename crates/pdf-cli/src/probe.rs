@@ -8,7 +8,10 @@
 //!
 //! When the first page exists, `fonts=<kinds>` (or `fonts=none`) lists the
 //! kinds of the fonts its resources declare (ADR-0005, step 5.1), classified
-//! with a budget of their own; `fonts=<category>` if that fails.
+//! with a budget of their own; `fonts=<category>` if that fails. Then
+//! `text=<sources>` tells where their Unicode would come from and, if the
+//! page has Type 0 fonts, `cmaps=<encodings>` lists their encodings
+//! (ADR-0006, tranche 3.1); `text=<category>` if that fails.
 //!
 //! A file whose structure was repaired (ADR-0004) ends its line with
 //! `repaired=<category>`, the category of the strict reading error, prefixed
@@ -26,7 +29,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use pdf_document::Document;
-use pdf_render::{RenderOptions, page_font_kinds, render_page};
+use pdf_render::{RenderOptions, page_font_kinds, page_text_profile, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, RepairTrailer, ResourceLimits};
 
 /// Probes `path` and writes the outcome line to `out`.
@@ -80,6 +83,16 @@ pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
             }
             Err(e) => write!(out, " fonts={}", render_category(&e))?,
         }
+        let mut budget = Budget::new(limits, CancellationToken::new());
+        match page_text_profile(document.file(), page, &mut budget) {
+            Ok(profile) => {
+                write!(out, " text={}", list(profile.sources.iter()))?;
+                if !profile.cid_encodings.is_empty() {
+                    write!(out, " cmaps={}", list(profile.cid_encodings.iter()))?;
+                }
+            }
+            Err(e) => write!(out, " text={}", render_category(&e))?,
+        }
     }
     // Checked last: an object found by a scan during rendering also counts.
     if let Some(repair) = document.file().repair() {
@@ -92,6 +105,16 @@ pub fn run(path: &Path, out: &mut dyn Write) -> io::Result<u8> {
     }
     writeln!(out)?;
     Ok(0)
+}
+
+/// `items` as a comma-separated list of their `Debug` names, or `none`.
+fn list<T: std::fmt::Debug>(items: impl Iterator<Item = T>) -> String {
+    let names: Vec<String> = items.map(|item| format!("{item:?}")).collect();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join(",")
+    }
 }
 
 /// Reads the regular file at `path` within the input limit; the error is a

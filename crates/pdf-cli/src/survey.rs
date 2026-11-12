@@ -84,6 +84,10 @@ enum Status {
         repaired: Option<String>,
         /// Font kinds declared by the first page (empty if none or unknown).
         fonts: Vec<String>,
+        /// Where the Unicode of those fonts would come from (ADR-0006).
+        text: Vec<String>,
+        /// Encodings of their Type 0 fonts.
+        cmaps: Vec<String>,
     },
     /// Killed after the timeout.
     Timeout,
@@ -243,7 +247,7 @@ fn finished(child: &mut Child, status: ExitStatus) -> Status {
 fn parse_line(line: &str) -> Option<Status> {
     let line = line.strip_suffix('\n')?;
     let (mut open, mut render, mut skipped, mut repaired) = (None, None, Vec::new(), None);
-    let mut fonts = Vec::new();
+    let (mut fonts, mut text, mut cmaps) = (Vec::new(), Vec::new(), Vec::new());
     for token in line.split(' ') {
         let (key, value) = token.split_once('=')?;
         match key {
@@ -255,6 +259,9 @@ fn parse_line(line: &str) -> Option<Status> {
             "repaired" => repaired = Some(value.to_owned()),
             "fonts" if value != "none" => fonts = value.split(',').map(str::to_owned).collect(),
             "fonts" => {}
+            "text" if value != "none" => text = value.split(',').map(str::to_owned).collect(),
+            "text" => {}
+            "cmaps" => cmaps = value.split(',').map(str::to_owned).collect(),
             _ => return None,
         }
     }
@@ -268,6 +275,8 @@ fn parse_line(line: &str) -> Option<Status> {
         skipped,
         repaired,
         fonts,
+        text,
+        cmaps,
     })
 }
 
@@ -276,6 +285,8 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     let (mut opened, mut rendered, mut timeouts) = (0, 0, 0);
     let mut repairs = BTreeMap::new();
     let mut font_kinds = BTreeMap::new();
+    let mut text_sources = BTreeMap::new();
+    let mut cid_encodings = BTreeMap::new();
     let mut open_failures = BTreeMap::new();
     let mut render_failures = BTreeMap::new();
     let mut skipped = BTreeMap::new();
@@ -288,6 +299,8 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                 skipped: capabilities,
                 repaired,
                 fonts,
+                text,
+                cmaps,
             } => match render.as_deref() {
                 None => *open_failures.entry(open.clone()).or_insert(0) += 1,
                 Some(render) => {
@@ -297,6 +310,12 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
                     }
                     for kind in fonts {
                         *font_kinds.entry(kind.clone()).or_insert(0) += 1;
+                    }
+                    for source in text {
+                        *text_sources.entry(source.clone()).or_insert(0) += 1;
+                    }
+                    for encoding in cmaps {
+                        *cid_encodings.entry(encoding.clone()).or_insert(0) += 1;
                     }
                     if render == "ok" {
                         rendered += 1;
@@ -350,7 +369,9 @@ fn report(outcomes: &[Outcome], out: &mut dyn Write) -> io::Result<()> {
     section(out, "repaired, by strict error", &repairs)?;
     section(out, "first page failures", &render_failures)?;
     section(out, "not rendered on rendered first pages", &skipped)?;
-    section(out, "first pages declaring a font kind", &font_kinds)
+    section(out, "first pages declaring a font kind", &font_kinds)?;
+    section(out, "first pages with a text source", &text_sources)?;
+    section(out, "first pages with a Type 0 encoding", &cid_encodings)
 }
 
 /// Writes the counts of `title`, the most frequent first.
@@ -417,6 +438,8 @@ mod tests {
             skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
             repaired: None,
             fonts: Vec::new(),
+            text: Vec::new(),
+            cmaps: Vec::new(),
         }
     }
 
@@ -444,6 +467,13 @@ mod tests {
             panic!("a repaired file is a probe line");
         };
         assert_eq!(repaired.as_deref(), Some("malformed/MissingStartxref"));
+        let Some(Status::Probed { text, cmaps, .. }) = parse_line(
+            "open=ok pages=1 render=ok skipped=none fonts=CidTrueType text=ToUnicode,CidIdentity cmaps=IdentityH\n",
+        ) else {
+            panic!("text sources are part of a probe line");
+        };
+        assert_eq!(text, ["ToUnicode", "CidIdentity"]);
+        assert_eq!(cmaps, ["IdentityH"]);
         // Incomplete or foreign output is not a probe line.
         for line in [
             "open=truncated repaired=truncated\n",
@@ -484,6 +514,8 @@ mod tests {
                     skipped: Vec::new(),
                     repaired: Some("truncated".to_owned()),
                     fonts: vec!["Type1".to_owned(), "Standard14".to_owned()],
+                    text: vec!["ToUnicode".to_owned()],
+                    cmaps: vec!["IdentityH".to_owned()],
                 },
                 1,
             ),
@@ -503,6 +535,8 @@ mod tests {
             "median 10 ms, p95 500 ms, max 500 ms\n",
             "repaired, by strict error:\n       1  truncated\n",
             "first pages declaring a font kind:\n       1  Standard14\n       1  Type1\n",
+            "first pages with a text source:\n       1  ToUnicode\n",
+            "first pages with a Type 0 encoding:\n       1  IdentityH\n",
             "crashes:\n       1  panic\n",
             "open failures:\n       1  malformed/InvalidHeader\n",
             "first page failures:\n       1  content/UnknownOperator\n",

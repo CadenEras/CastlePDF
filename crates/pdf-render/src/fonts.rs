@@ -189,6 +189,226 @@ fn embedded<S: Source>(
     ))
 }
 
+/// Where the Unicode of a font's text would come from (ISO 32000-2,
+/// 9.10.2), to measure what text extraction needs (ADR-0006, tranche 3.1).
+/// Nothing here reads a CMap or a font program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum TextSource {
+    /// The font has a `/ToUnicode` CMap.
+    ToUnicode,
+    /// No `/ToUnicode`: a simple font whose codes name glyphs through its
+    /// `/Encoding` or the standard encoding (non-symbolic font).
+    GlyphNames,
+    /// No `/ToUnicode` nor `/Encoding`: a symbolic simple font whose names
+    /// come from its built-in encoding (Type 1 or CFF program, Symbol,
+    /// ZapfDingbats).
+    BuiltInEncoding,
+    /// No `/ToUnicode` nor `/Encoding`: a symbolic TrueType font, whose codes
+    /// select glyphs directly: no glyph name, no Unicode.
+    SymbolicTrueType,
+    /// No `/ToUnicode`: a Type 3 font.
+    Type3,
+    /// No `/ToUnicode`: a CID font of the `Adobe-Japan1` collection, mapped
+    /// to Unicode only by Adobe's predefined CMap (and so for the others).
+    AdobeJapan1,
+    AdobeGb1,
+    AdobeCns1,
+    AdobeKorea1,
+    /// No `/ToUnicode`: a CID font of the `Identity` ordering: no standard
+    /// correspondence to Unicode.
+    CidIdentity,
+    /// No `/ToUnicode`: a CID font of another collection.
+    CidOther,
+    /// A font dictionary that cannot be classified.
+    Invalid,
+}
+
+/// The `/Encoding` of a Type 0 font (ISO 32000-2, 9.7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum CidEncoding {
+    IdentityH,
+    IdentityV,
+    /// Another predefined CMap, by name (`UniJIS-UCS2-H`, `90ms-RKSJ-H`...).
+    Predefined,
+    /// A CMap embedded as a stream.
+    Embedded,
+    /// Missing, or neither a name nor a stream.
+    Invalid,
+}
+
+/// The text sources and composite encodings of a page's fonts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageTextProfile {
+    pub sources: BTreeSet<TextSource>,
+    /// Empty when the page has no Type 0 font.
+    pub cid_encodings: BTreeSet<CidEncoding>,
+}
+
+/// Font descriptor flag: the font uses symbols outside the standard Latin
+/// character set (ISO 32000-2, table 121, bit 3).
+const SYMBOLIC: i64 = 1 << 2;
+
+/// Text sources and composite encodings of the fonts named in the page's
+/// `/Resources /Font` dictionary, with the same scope and error handling
+/// as [`page_font_kinds`].
+pub fn page_text_profile<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    budget: &mut Budget,
+) -> Result<PageTextProfile, Error> {
+    let mut profile = PageTextProfile::default();
+    let Some(resources) = page.resources.as_deref() else {
+        return Ok(profile);
+    };
+    let Some(resources) = dictionary(file, resources, budget)? else {
+        return Ok(profile);
+    };
+    let Some(fonts) = resources.get(b"Font") else {
+        return Ok(profile);
+    };
+    let Some(fonts) = dictionary(file, fonts, budget)? else {
+        profile.sources.insert(TextSource::Invalid);
+        return Ok(profile);
+    };
+    for (_, font) in fonts.iter().take(MAX_PAGE_FONTS) {
+        budget.check_cancelled()?;
+        let Some(font) = dictionary(file, font, budget)? else {
+            profile.sources.insert(TextSource::Invalid);
+            continue;
+        };
+        let subtype = font.get(b"Subtype").and_then(Object::as_name);
+        if subtype == Some(b"Type0") {
+            profile
+                .cid_encodings
+                .insert(cid_encoding(file, &font, budget)?);
+        }
+        let source = if font.get(b"ToUnicode").is_some() {
+            TextSource::ToUnicode
+        } else {
+            match subtype {
+                Some(b"Type3") => TextSource::Type3,
+                Some(b"Type0") => cid_source(file, &font, budget)?,
+                Some(b"Type1" | b"MMType1" | b"TrueType") => simple_source(file, &font, budget)?,
+                _ => TextSource::Invalid,
+            }
+        };
+        profile.sources.insert(source);
+    }
+    Ok(profile)
+}
+
+fn cid_encoding<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    budget: &mut Budget,
+) -> Result<CidEncoding, Error> {
+    Ok(match font.get(b"Encoding") {
+        Some(Object::Name(name)) => match name.as_slice() {
+            b"Identity-H" => CidEncoding::IdentityH,
+            b"Identity-V" => CidEncoding::IdentityV,
+            _ => CidEncoding::Predefined,
+        },
+        Some(Object::Reference(id)) => match file.resolve(*id, budget) {
+            Ok(IndirectValue::Stream(_)) => CidEncoding::Embedded,
+            Ok(IndirectValue::Object(Object::Name(name))) => match name.as_slice() {
+                b"Identity-H" => CidEncoding::IdentityH,
+                b"Identity-V" => CidEncoding::IdentityV,
+                _ => CidEncoding::Predefined,
+            },
+            Ok(IndirectValue::Object(_)) => CidEncoding::Invalid,
+            Err(error) => tolerate(error).map(|_| CidEncoding::Invalid)?,
+        },
+        _ => CidEncoding::Invalid,
+    })
+}
+
+/// A Type 0 font without `/ToUnicode`: the `/CIDSystemInfo` of its CID font
+/// tells whether a predefined CMap could give the Unicode.
+fn cid_source<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    budget: &mut Budget,
+) -> Result<TextSource, Error> {
+    let descendants = match font.get(b"DescendantFonts") {
+        Some(Object::Reference(id)) => match file.resolve(*id, budget) {
+            Ok(IndirectValue::Object(object)) => object,
+            Ok(IndirectValue::Stream(_)) => return Ok(TextSource::Invalid),
+            Err(error) => return tolerate(error).map(|_| TextSource::Invalid),
+        },
+        Some(other) => other.clone(),
+        None => return Ok(TextSource::Invalid),
+    };
+    let Some([descendant]) = descendants.as_array() else {
+        return Ok(TextSource::Invalid);
+    };
+    let Some(descendant) = dictionary(file, descendant, budget)? else {
+        return Ok(TextSource::Invalid);
+    };
+    let Some(info) = descendant.get(b"CIDSystemInfo") else {
+        return Ok(TextSource::Invalid);
+    };
+    let Some(info) = dictionary(file, info, budget)? else {
+        return Ok(TextSource::Invalid);
+    };
+    let text = |key: &[u8]| match info.get(key) {
+        Some(Object::String(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let (Some(registry), Some(ordering)) = (text(b"Registry"), text(b"Ordering")) else {
+        return Ok(TextSource::Invalid);
+    };
+    Ok(match (registry.as_slice(), ordering.as_slice()) {
+        (b"Adobe", b"Japan1") => TextSource::AdobeJapan1,
+        (b"Adobe", b"GB1") => TextSource::AdobeGb1,
+        (b"Adobe", b"CNS1") => TextSource::AdobeCns1,
+        (b"Adobe", b"Korea1") => TextSource::AdobeKorea1,
+        (_, b"Identity") => TextSource::CidIdentity,
+        _ => TextSource::CidOther,
+    })
+}
+
+/// A simple font without `/ToUnicode`.
+fn simple_source<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    budget: &mut Budget,
+) -> Result<TextSource, Error> {
+    if font.get(b"Encoding").is_some() {
+        return Ok(TextSource::GlyphNames);
+    }
+    let descriptor = match font.get(b"FontDescriptor") {
+        Some(descriptor) => match dictionary(file, descriptor, budget)? {
+            Some(descriptor) => Some(descriptor),
+            None => return Ok(TextSource::Invalid),
+        },
+        None => None,
+    };
+    let Some(descriptor) = descriptor else {
+        // A standard font without descriptor: Symbol and ZapfDingbats have
+        // their own encodings, the others the standard one.
+        let name = font.get(b"BaseFont").and_then(Object::as_name);
+        return Ok(match name {
+            Some(b"Symbol" | b"ZapfDingbats") => TextSource::BuiltInEncoding,
+            _ => TextSource::GlyphNames,
+        });
+    };
+    let flags = match descriptor.get(b"Flags") {
+        Some(Object::Integer(flags)) => *flags,
+        _ => 0,
+    };
+    if flags & SYMBOLIC == 0 {
+        return Ok(TextSource::GlyphNames);
+    }
+    let truetype = font.get(b"Subtype").and_then(Object::as_name) == Some(b"TrueType");
+    Ok(if truetype && descriptor.get(b"FontFile2").is_some() {
+        TextSource::SymbolicTrueType
+    } else {
+        TextSource::BuiltInEncoding
+    })
+}
+
 /// `name` without a subset prefix (`ABCDEF+`) is a standard font name.
 fn is_standard_14(name: &[u8]) -> bool {
     let base = match name.get(6) {

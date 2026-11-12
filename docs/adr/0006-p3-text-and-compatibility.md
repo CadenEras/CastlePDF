@@ -70,8 +70,13 @@ maintenance, fuzzing et oracle. CCITTFax (G3/G4) est plus petit et bien spécifi
 ## Décision
 
 - **Extraction dans `pdf-render`**, option 2, module `text` consommateur de l'interpréteur.
-- **Unicode** dans l'ordre de la norme ; CMap prédéfinies **seulement si la mesure de la
-  tranche 3.1 le justifie** (décision consignée à ce moment).
+- **Unicode** dans l'ordre de la norme. **CMap prédéfinies** (décidé le 2026-11-12 d'après la
+  mesure de 3.1, `docs/QUALITY.md`) : intégrées en tranche 3.7b, après la sélection, la copie
+  et la recherche. Seulement les quatre CMap vers UCS-2 des collections Adobe CJK et les
+  encodages nommés rencontrés sur le corpus, générés en tables compactes depuis une version
+  figée d'Adobe `cmap-resources`, avec sa notice BSD-3-Clause ; taille ajoutée mesurée et
+  publiée dans la PR. Raison : elles servent l'Unicode d'au plus 1,7 % des premières pages
+  ouvertes, mais aussi le rendu de 22 et 6 pages dont le texte n'est pas dessiné du tout.
 - **Couche de texte DOM**, option (a).
 - **Texte d'abord, filtres ensuite** : le texte est ce qui manque au lecteur ; les filtres
   touchent 113 premières pages SafeDocs et 140 UNSAFE, déjà signalées.
@@ -80,13 +85,14 @@ Ordre en tranches vérifiables :
 
 | Tranche | Contenu | Preuve attendue |
 | --- | --- | --- |
-| 3.1 | Mesure : `survey` compte, par page, les polices avec et sans `/ToUnicode`, les encodages (`Identity-H/V`, CMap incluses, CMap prédéfinies) et le marquage `/ActualText` | Tableau dans `docs/QUALITY.md` ; décision sur les CMap prédéfinies |
+| 3.1 | Mesure : `survey` compte, par page, les polices avec et sans `/ToUnicode`, les encodages (`Identity-H/V`, CMap incluses, CMap prédéfinies) ; le marquage `/ActualText`, qui demande d'interpréter le contenu, est mesuré en 3.5 | Tableau dans `docs/QUALITY.md` ; décision sur les CMap prédéfinies |
 | 3.2 | Lecteur de CMap partagé (`codespacerange`, `bfchar`, `bfrange`, `cidchar`, `cidrange`, `usecmap` borné) pour `/ToUnicode` et les encodages | Vecteurs de la norme, cas invalides et limites, cible de fuzzing `cmap` |
 | 3.3 | Unicode de chaque glyphe et `castle-pdf text <fichier> [--page n]` dans l'ordre du contenu ; caractères inconnus signalés | Fixtures comparées à `pdftotext` ; part des glyphes résolus sur le corpus |
-| 3.4 | Encodages composites au-delà d'`Identity-H` : `Identity-V`, CMap incluses (et prédéfinies selon 3.1), pour le rendu comme pour le texte | Fixtures rendues identiques à `pdftoppm`, texte comparé à `pdftotext` |
-| 3.5 | Mise en page : mots, lignes, blocs, ordre de lecture, espaces déduits des écarts, `/ActualText`, texte tourné | Mesure mot à mot contre `pdftotext` sur fixtures et échantillon du corpus, tolérance documentée |
+| 3.4 | Encodages composites au-delà d'`Identity-H` : `Identity-V` et CMap incluses, pour le rendu comme pour le texte (CMap prédéfinies en 3.7b) | Fixtures rendues identiques à `pdftoppm`, texte comparé à `pdftotext` |
+| 3.5 | Mise en page : mots, lignes, blocs, ordre de lecture, espaces déduits des écarts, `/ActualText`, texte tourné | Mesure mot à mot contre `pdftotext` sur fixtures et échantillon du corpus, tolérance documentée ; part des pages marquées `/ActualText` |
 | 3.6 | Protocole worker : texte d'une page (lignes, caractères, boîtes) borné ; couche de texte DOM ; sélection, copie, lecteurs d'écran | Tests du worker et de l'UI ; copie vérifiée à la main sur chaque OS disponible |
 | 3.7 | Recherche dans le document, côté worker : résultats progressifs, annulation, surlignage, précédent et suivant au clavier | Tests de bout en bout sur fixtures ; temps mesuré sur un long document |
+| 3.7b | CMap prédéfinies d'Adobe : UCS-2 des quatre collections CJK et encodages nommés rencontrés, tables générées, notice BSD-3-Clause | Fixtures CJK rendues identiques à `pdftoppm` et texte comparé à `pdftotext` ; taille ajoutée publiée ; pages du corpus 3.1 de nouveau mesurées |
 | 3.8 | Type 1 inclus (`FontFile`) : lecture du programme (`eexec`, charstrings) ou dépendance, selon un amendement d'ADR-0005 | Fixture identique à `pdftoppm` ; fuzzing |
 | 3.9 | CCITTFaxDecode (G3 1D/2D, G4), décodeur du projet | Vecteurs, oracle `pdftoppm`, fuzzing |
 | 3.10 | JBIG2 et JPX selon un ADR dédié | Selon l'ADR |
@@ -105,4 +111,4 @@ Ordre en tranches vérifiables :
 - Retour arrière : chaque tranche est une PR autonome ; une couche de texte défaillante peut
   être désactivée sans toucher au rendu.
 - Accepté le 2026-11-12 : texte avant filtres, couche de texte DOM, CMap prédéfinies
-  décidées après la mesure de la tranche 3.1.
+  décidées après la mesure de la tranche 3.1 (même jour : intégrées en 3.7b).
