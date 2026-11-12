@@ -393,6 +393,30 @@ function layoutPage() {
   ], '1.5');
 }
 
+// Reading order (ADR-0006, tranche 3.5b), in Helvetica 12: a title over
+// two columns; two columns of three lines that the content shows
+// alternately, a left line then a right one; one line shown in two pieces,
+// right then left; a footer over both columns.
+function columnsPage() {
+  const line = (x, y, text) => `BT /F1 12 Tf ${x} ${y} Td (${text}) Tj ET`;
+  const content = [
+    'BT /F1 18 Tf 60 360 Td (A title over both columns) Tj ET',
+    line(40, 320, 'Left one'), line(220, 320, 'Right one'),
+    line(40, 305, 'Left two'), line(220, 305, 'Right two'),
+    line(40, 290, 'Left three'), line(220, 290, 'Right three'),
+    line(100, 250, 'second half'), line(40, 250, 'First half,'),
+    line(40, 40, 'Footer under both columns'),
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 5 0 R >> >> '
+      + '/Contents 4 0 R >>',
+    stream(content),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+  ], '1.4');
+}
+
 // Type 0 encodings beyond Identity-H (ADR-0006, tranche 3.4a), in Arimo
 // whose CIDs are glyph ids. Page 1: Identity-V, vertical text with the
 // default /DW2 (F1); an embedded CMap mixing one-byte codes and a two-byte
@@ -936,6 +960,8 @@ export const fixtures = {
   'cmaps.pdf': cmapsPage(),
   // Words, lines and /ActualText; see layoutPage.
   'layout.pdf': layoutPage(),
+  // Reading order: title, two columns, a line in pieces; see columnsPage.
+  'columns.pdf': columnsPage(),
   // The simple filters: ASCIIHex content, LZW, RunLength and ASCII85 +
   // Flate images; see filtersPage.
   'filters.pdf': filtersPage(),

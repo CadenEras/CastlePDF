@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **ordre de lecture** (`reading_lines`, ADR-0006, tranche 3.5b). Les morceaux
+  d'une ligne horizontale montrés à part sont recollés (même ligne de base, moins d'une taille
+  d'écart), puis les lignes sont ordonnées par découpes récursives le long des plus larges
+  bandes vides (XY-cut) : rangées de haut en bas, colonnes de gauche à droite, la bande la plus
+  large d'abord. Un titre sur deux colonnes passe avant elles, chaque colonne avant la suivante.
+  Au-delà de 10 000 lignes, simple tri de haut en bas. `text_lines` commence désormais une
+  ligne à tout saut de plus d'une taille (gouttière, cellule). `castle-pdf text` suit l'ordre
+  de lecture. Fixture `columns.pdf`.
+
 - `pdf-render` : **mots et lignes** (`text_lines`, ADR-0006, tranche 3.5a), dans l'ordre du
   contenu, en toute direction (horizontale, verticale, tournée). Un glyphe hors de la ligne de
   base, à contre-sens ou revenant en arrière de plus que sa taille commence une ligne ; une

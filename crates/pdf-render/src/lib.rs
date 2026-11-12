@@ -66,7 +66,7 @@ pub use fonts::{
     CidEncoding, FontKind, MAX_PAGE_FONTS, PageTextProfile, TextSource, page_font_kinds,
     page_text_profile,
 };
-pub use layout::{TextLine, TextWord, WORD_GAP, text_lines};
+pub use layout::{MAX_ORDERED_LINES, TextLine, TextWord, WORD_GAP, reading_lines, text_lines};
 pub use text::cmap::{
     CMap, CMapError, Code, MAX_CID, MAX_CODE_BYTES, MAX_CODESPACES, MAX_DESTINATION_UNITS,
 };

@@ -144,8 +144,7 @@ quand le rendu échoue ou que l'image ne peut pas être créée. Limites par dé
 `text` affiche le texte d'une page (numérotée à partir de 1) ou de toutes, séparées par un
 saut de page, dans l'ordre du contenu (ADR-0006, tranche 3.3) : c'est la seule commande qui
 affiche le contenu du document, à la demande. Elle affiche les lignes et les mots de
-`text_lines` (tranche 3.5a), `/ActualText` compris ; l'ordre de lecture entre colonnes viendra
-en 3.5b. Un glyphe dont le texte est
+`reading_lines` dans l'ordre de lecture (tranches 3.5a et 3.5b), `/ActualText` compris. Un glyphe dont le texte est
 inconnu s'affiche U+FFFD, comme tout caractère de contrôle venu du document (aucune séquence
 d'échappement n'atteint le terminal). Un résumé par page va sur la sortie d'erreur : glyphes,
 inconnus, lus par un code `/ToUnicode` d'une autre longueur, `/ToUnicode` illisibles. Codes

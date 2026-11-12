@@ -1,10 +1,8 @@
 //! `castle-pdf text <file> [--page <n>]`: prints the text of one page, or of
-//! every page separated by form feeds, in the order the content shows it
-//! (ADR-0006, tranche 3.3), as words and lines (`text_lines`, tranche
-//! 3.5a); reading order across columns comes with tranche 3.5b. An unknown
-//! glyph prints as U+FFFD. Control characters from the document are
-//! replaced by U+FFFD, and so are
-//! bidirectional controls and line or paragraph separators: the output never
+//! every page separated by form feeds (ADR-0006, tranche 3.3), as words and
+//! lines in reading order (`reading_lines`, tranches 3.5a and 3.5b). An
+//! unknown glyph prints as U+FFFD. Control characters from the document are
+//! replaced by U+FFFD, and so are bidirectional controls and line or paragraph separators: the output never
 //! carries escape sequences to a terminal, nor reorders what it shows.
 //!
 //! A summary per page goes to the error output: glyphs, unknown ones, ones
@@ -18,7 +16,8 @@ use std::path::Path;
 
 use pdf_document::Document;
 use pdf_render::{
-    PageText, RenderCache, RenderLimits, UnicodeSource, Unsupported, page_text_cached, text_lines,
+    PageText, RenderCache, RenderLimits, UnicodeSource, Unsupported, page_text_cached,
+    reading_lines,
 };
 use pdf_syntax::{Budget, CancellationToken, ResourceLimits};
 
@@ -101,11 +100,11 @@ pub fn run(request: &Request<'_>, out: &mut dyn Write, err: &mut dyn Write) -> i
     Ok(u8::from(failed))
 }
 
-/// The page's lines (`text_lines`), words separated by one space, each
+/// The page's lines in reading order (`reading_lines`), words separated by one space, each
 /// line ending with a line break.
 pub fn layout(text: &PageText) -> String {
     let mut out = String::new();
-    for line in text_lines(text) {
+    for line in reading_lines(text) {
         out.extend(line.text().chars().map(printable));
         out.push('\n');
     }
