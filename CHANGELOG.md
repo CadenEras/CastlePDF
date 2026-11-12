@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **lecteur de CMap** (`CMap`, ISO 32000-2, 9.7.5 et 9.10.3 ; ADR-0006,
+  tranche 3.2), commun à `/ToUnicode` et aux encodages des polices Type 0. Il lit les plages de
+  codes (comparées octet par octet), `bfchar`, `bfrange` (forme de base et tableau), `cidchar`,
+  `cidrange`, les plages notdef, `usecmap` (nommé ; fusion par `CMap::inherit`, profondeur à la
+  charge de l'appelant) et `/WMode`. Les codes sont cherchés avec leur longueur ; la dernière
+  définition l'emporte. Une entrée invalide est ignorée et comptée, jamais devinée ; un bloc non
+  fermé ou un jeton refusé est une erreur. Les plages ne sont jamais développées et chaque
+  entrée est imputée au budget. Nouvelle cible de fuzzing `cmap`. Pas encore branché sur le
+  texte ni le rendu (tranches 3.3 et 3.4).
 - `pdf-render` : `page_text_profile` dit d'où viendrait l'Unicode du texte de chaque police
   d'une page (`/ToUnicode`, noms de glyphes, encodage intégré, collection CID...) et quels
   encodages ont ses polices Type 0, sans lire de CMap ni de programme de police (ADR-0006,

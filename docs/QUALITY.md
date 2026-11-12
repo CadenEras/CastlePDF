@@ -290,6 +290,11 @@ nommée 22 et 6, `Identity-V` 4 et 2, CMap incluse 5 et 0.
   texte sera signalé inconnu (3 et 26 pages), sauf repli signalé sur la table `cmap` de
   la police incluse.
 
+Lecteur de CMap (tranche 3.2, 2026-11-12) : 13 tests (exemple de la norme 9.10.3, plages de
+codes de 9.7.6.2, chevauchements, entrées invalides, `usecmap`, budget à la limite et à la
+limite moins un, annulation) ; fuzzing `cmap` : 2 269 700 exécutions en 10 min (WSL), aucun
+crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

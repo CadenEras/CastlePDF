@@ -1,0 +1,5 @@
+/WMode 1 def /Base usecmap
+begincodespacerange <00> <80> <8140> <9FFC> <A0> <DF> <E040> <FBFC> endcodespacerange
+begincidrange <0020> <007E> 1 <8140> <817E> 633 endcidrange
+begincidchar <0041> 9999 endcidchar
+beginnotdefrange <0000> <001F> 1 endnotdefrange
