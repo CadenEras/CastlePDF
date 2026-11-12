@@ -243,6 +243,7 @@ dependencies = [
  "pdf-document",
  "pdf-render",
  "pdf-syntax",
+ "pdf-worker",
 ]
 
 [[package]]
@@ -261,6 +262,15 @@ name = "pdf-syntax"
 version = "0.1.0-alpha.3"
 dependencies = [
  "miniz_oxide",
+]
+
+[[package]]
+name = "pdf-worker"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "pdf-document",
+ "pdf-render",
+ "pdf-syntax",
 ]
 
 [[package]]

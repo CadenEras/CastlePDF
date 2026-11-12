@@ -13,7 +13,10 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, RunEvent, State, WindowEvent};
 
-use worker::{CommandError, DocumentInfo, JobEvent, PageSize, Pending, TileRequest, WorkerHandle};
+use worker::{
+    CommandError, DocumentInfo, JobEvent, PageSize, Pending, TextLayerDto, TileRequest,
+    WorkerHandle,
+};
 
 const JOB_EVENT: &str = "worker-job";
 const DOCUMENT_EVENT: &str = "document";
@@ -93,6 +96,19 @@ fn begin_view(worker: State<'_, WorkerHandle>) -> Result<u64, CommandError> {
     worker.begin_view()
 }
 
+/// The text layer of a page for view `generation` (ADR-0006, tranche 3.6a),
+/// as JSON: at most `MAX_TEXT_LAYER_BYTES` from the worker, a few times that
+/// in JSON, once per page shown.
+#[tauri::command]
+async fn page_text(
+    worker: State<'_, WorkerHandle>,
+    document: u32,
+    page: u32,
+    generation: u64,
+) -> Result<TextLayerDto, CommandError> {
+    reply(worker.page_text(document, page, generation), REPLY_TIMEOUT).await
+}
+
 /// Raw bytes, received as an `ArrayBuffer`: no JSON or base64 (ADR-0003).
 #[tauri::command]
 async fn render_tile(
@@ -169,7 +185,8 @@ fn main() -> ExitCode {
             current_document,
             begin_view,
             page_size,
-            render_tile
+            render_tile,
+            page_text
         ])
         .build(tauri::generate_context!());
 

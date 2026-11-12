@@ -1,5 +1,5 @@
 //! Documents held by the worker and the jobs that use them: open a file,
-//! size a page, render a tile. Each job runs under its own `Budget`; the
+//! size a page, render a tile, give a page's text layer. Each job runs under its own `Budget`; the
 //! documents themselves are immutable once opened and shared with the job
 //! thread. Each keeps the cache of its renders (`RenderCache`), which its
 //! tiles reuse.
@@ -12,12 +12,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use pdf_document::Document;
 use pdf_render::{
-    PixelRect, RenderCache, RenderOptions, Unsupported, page_size, render_area_cached,
+    PixelRect, RenderCache, RenderLimits, RenderOptions, TextWord, Unsupported, page_size,
+    page_text_cached, page_transform, reading_lines, render_area_cached,
 };
 use pdf_syntax::{Budget, MemorySource};
 
 use crate::protocol::{
-    ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Response, Skipped, TileRect,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, LayerLine, LayerWord, MAX_PATH_BYTES, MAX_TEXT_LAYER_BYTES,
+    MAX_TILE_SIDE, PAGE_TEXT_HEADER_LEN, Repair, Response, Skipped, TextLayer, TileRect, word_len,
 };
 
 /// Documents open at once; each holds its whole file in memory (ADR-0002).
@@ -147,6 +149,88 @@ pub fn tile(
         repair: repair(document),
         pixels: rendering.bitmap.into_data(),
     })
+}
+
+/// The text layer of `page` (ADR-0006, tranche 3.6a): its lines in reading
+/// order, each word placed on the page rendered at scale 1. Words past
+/// `MAX_TEXT_LAYER_BYTES` of response are left out (`truncated`). Fonts
+/// and CMaps come from, and stay in, the document's cache.
+pub fn page_text(
+    document: &Shared,
+    page: u32,
+    id: u64,
+    budget: &mut Budget,
+) -> Result<Response, ErrorCode> {
+    let page = page_of(document, page)?;
+    let transform = page_transform(page, &RenderOptions::default()).map_err(|e| render_code(&e))?;
+    let text = {
+        // As for tiles: one job at a time, a poisoned cache is usable.
+        let mut cache = document
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        page_text_cached(
+            document.file(),
+            page,
+            &RenderLimits::default(),
+            &mut cache,
+            budget,
+        )
+        .map_err(|e| render_code(&e))?
+    };
+    let mut layer = TextLayer {
+        incomplete: text.skipped.contains(&Unsupported::Text) || text.unread_bytes > 0,
+        ..TextLayer::default()
+    };
+    let mut size = PAGE_TEXT_HEADER_LEN;
+    'lines: for line in reading_lines(&text) {
+        size += 4;
+        if size > MAX_TEXT_LAYER_BYTES {
+            layer.truncated = true;
+            break;
+        }
+        let mut words = Vec::with_capacity(line.words.len());
+        for word in &line.words {
+            let mut word = layer_word(word, &transform);
+            // The protocol carries at most 65 535 bytes of a word.
+            if word.text.len() > usize::from(u16::MAX) {
+                let mut end = usize::from(u16::MAX);
+                while !word.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                word.text.truncate(end);
+                layer.truncated = true;
+            }
+            size += word_len(&word);
+            if size > MAX_TEXT_LAYER_BYTES {
+                layer.truncated = true;
+                if !words.is_empty() {
+                    layer.lines.push(LayerLine { words });
+                }
+                break 'lines;
+            }
+            words.push(word);
+        }
+        layer.lines.push(LayerLine { words });
+    }
+    Ok(Response::PageText { id, layer })
+}
+
+/// A word in layer units: its baseline through `transform` (user space to
+/// pixels at scale 1), its size scaled likewise. Coordinates out of the
+/// `i32` range are clamped (`as` saturates; a non-finite value gives 0).
+fn layer_word(word: &TextWord, transform: &[f64; 6]) -> LayerWord {
+    let [a, b, c, d, e, f] = *transform;
+    let point = |x: f64, y: f64| (a * x + c * y + e, b * x + d * y + f);
+    let [x0, y0, x1, y1] = word.baseline;
+    let (start, end) = (point(x0, y0), point(x1, y1));
+    let units = |value: f64| (value * LAYER_UNITS_PER_PIXEL).round() as i32;
+    let scale = (a * d - b * c).abs().sqrt();
+    LayerWord {
+        text: word.text.clone(),
+        baseline: [units(start.0), units(start.1), units(end.0), units(end.1)],
+        size: (word.size * scale * LAYER_UNITS_PER_PIXEL).round() as u32,
+    }
 }
 
 /// Whether the structure of `document` was reconstructed, so far.
@@ -372,5 +456,164 @@ mod tests {
         };
         // Helvetica is not embedded: drawn with a replacement font.
         assert_eq!(skipped, Skipped(Skipped::FONT_SUBSTITUTED));
+    }
+
+    fn layer(path: &str, page: u32) -> TextLayer {
+        let document = open(&fixture(path), &mut budget()).unwrap();
+        match page_text(&document, page, 3, &mut budget()) {
+            Ok(Response::PageText { id: 3, layer }) => layer,
+            other => panic!("text layer expected, got {other:?}"),
+        }
+    }
+
+    fn line_texts(layer: &TextLayer) -> Vec<String> {
+        layer
+            .lines
+            .iter()
+            .map(|line| {
+                line.words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_text_layer_is_in_reading_order_and_placed_on_the_rendering() {
+        let layer = layer("columns.pdf", 0);
+        assert!(!layer.truncated);
+        assert_eq!(
+            line_texts(&layer)[..3],
+            ["A title over both columns", "Left one", "Left two"]
+        );
+        // "A" at (60, 360) in 18 pt on a 400 pt page: pixels (60, 40), in
+        // units of 1/64 pixel.
+        let first = &layer.lines[0].words[0];
+        assert_eq!(first.text, "A");
+        assert_eq!(first.baseline[..2], [60 * 64, 40 * 64]);
+        assert_eq!(first.baseline[3], 40 * 64);
+        assert!(first.baseline[2] > first.baseline[0]);
+        assert_eq!(first.size, 18 * 64);
+    }
+
+    #[test]
+    fn the_text_layer_follows_the_page_rotation() {
+        // Page 1 is rotated by 90 degrees: horizontal text runs down.
+        let layer = layer("page-tree.pdf", 0);
+        let word = &layer.lines[0].words[0];
+        assert_eq!(word.baseline[0], word.baseline[2]);
+        assert!(word.baseline[3] > word.baseline[1]);
+    }
+
+    #[test]
+    fn a_large_text_layer_is_truncated_within_the_bound() {
+        // About 120 000 words: more than the response may hold.
+        let line = "(w w w w w w w w w w) Tj T* ".repeat(12_000);
+        let content = format!("BT /F1 1 Tf 1 TL 0 0 Td {line} ET");
+        let bodies = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in bodies.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        let path =
+            std::env::temp_dir().join(format!("castle-text-layer-{}.pdf", std::process::id()));
+        std::fs::write(&path, pdf).unwrap();
+        let document = open(&path.to_string_lossy(), &mut budget()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let response = page_text(&document, 0, 1, &mut budget());
+        let Ok(response @ Response::PageText { .. }) = response else {
+            panic!("text layer expected, got {response:?}");
+        };
+        let Response::PageText { layer, .. } = &response else {
+            unreachable!()
+        };
+        assert!(layer.truncated);
+        let encoded = response.encode().len();
+        assert!(encoded <= MAX_TEXT_LAYER_BYTES, "{encoded}");
+        assert!(encoded > MAX_TEXT_LAYER_BYTES - 64, "{encoded}");
+        assert_eq!(Response::decode(&response.encode()), Ok(response.clone()));
+    }
+
+    /// The text layer of a one-page document showing `content` with `/F1`
+    /// as `font`.
+    fn layer_of(content: &str, font: &str) -> TextLayer {
+        let bodies = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            font.to_owned(),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in bodies.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "castle-layer-{}-{}.pdf",
+            std::process::id(),
+            content.len()
+        ));
+        std::fs::write(&path, pdf).unwrap();
+        let document = open(&path.to_string_lossy(), &mut budget());
+        let _ = std::fs::remove_file(&path);
+        match page_text(&document.unwrap(), 0, 1, &mut budget()) {
+            Ok(Response::PageText { layer, .. }) => layer,
+            other => panic!("text layer expected, got {other:?}"),
+        }
+    }
+
+    const HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    #[test]
+    fn a_page_without_text_gives_an_empty_layer() {
+        let layer = layer_of("0 0 10 10 re f", HELVETICA);
+        assert_eq!(layer, TextLayer::default());
+    }
+
+    #[test]
+    fn a_word_longer_than_the_protocol_allows_is_cut_and_reported() {
+        // 70 000 letters without a space: one word, cut to 65 535 bytes.
+        let content = format!("BT /F1 1 Tf 0 0 Td ({}) Tj ET", "w".repeat(70_000));
+        let layer = layer_of(&content, HELVETICA);
+        assert!(layer.truncated);
+        assert_eq!(layer.lines[0].words[0].text.len(), usize::from(u16::MAX));
+    }
+
+    #[test]
+    fn missing_text_is_reported() {
+        // A predefined CMap other than Identity: the font is not read.
+        let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+        let layer = layer_of("BT /F1 10 Tf 0 0 Td <0041> Tj ET", font);
+        assert!(layer.incomplete && !layer.truncated);
+        assert!(layer.lines.is_empty());
+        assert!(!layer_of("BT /F1 10 Tf 0 0 Td (A) Tj ET", HELVETICA).incomplete);
     }
 }

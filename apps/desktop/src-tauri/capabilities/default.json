@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: listen to worker and document events, drive diagnostic jobs, size pages and fetch tiles of the document the shell opened. No file, dialog, shell or network permission: the UI never names a path.",
+  "description": "Main window: listen to worker and document events, drive diagnostic jobs, size pages, fetch tiles and text layers of the document the shell opened. No file, dialog, shell or network permission: the UI never names a path.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
@@ -11,6 +11,7 @@
     "allow-current-document",
     "allow-begin-view",
     "allow-page-size",
-    "allow-render-tile"
+    "allow-render-tile",
+    "allow-page-text"
   ]
 }

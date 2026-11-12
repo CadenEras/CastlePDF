@@ -20,7 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pdf_worker::client::{ClientError, WorkerProcess};
 use pdf_worker::protocol::{
-    ErrorCode, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response, TileRect,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response,
+    TextLayer, TileRect,
 };
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +125,61 @@ pub struct PageSize {
     pub height: u32,
 }
 
+/// The text layer of a page, for the UI (ADR-0006, tranche 3.6a): lines in
+/// reading order, each word placed on the page rendered at scale 1, in
+/// pixels (y down, rotation applied). The UI scales it with its rendering.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayerDto {
+    pub lines: Vec<Vec<WordDto>>,
+    /// Words were left out to keep the layer bounded.
+    pub truncated: bool,
+    /// Text the page shows is missing (a font or glyph not read).
+    pub incomplete: bool,
+}
+
+/// A word: its text and baseline (start and end) and font size, in pixels
+/// of the page at scale 1.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WordDto {
+    pub text: String,
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub size: f64,
+}
+
+impl From<TextLayer> for TextLayerDto {
+    fn from(layer: TextLayer) -> Self {
+        let pixels = |units: i32| f64::from(units) / LAYER_UNITS_PER_PIXEL;
+        Self {
+            lines: layer
+                .lines
+                .into_iter()
+                .map(|line| {
+                    line.words
+                        .into_iter()
+                        .map(|word| {
+                            let [x0, y0, x1, y1] = word.baseline;
+                            WordDto {
+                                text: word.text,
+                                x0: pixels(x0),
+                                y0: pixels(y0),
+                                x1: pixels(x1),
+                                y1: pixels(y1),
+                                size: f64::from(word.size) / LAYER_UNITS_PER_PIXEL,
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            truncated: layer.truncated,
+            incomplete: layer.incomplete,
+        }
+    }
+}
+
 /// Arguments of `render_tile`, as sent by the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -205,8 +261,26 @@ enum Job {
         generation: u64,
         reply: Reply<Arc<Vec<u8>>>,
     },
+    /// A text layer belongs to a view, as a tile does: dropped or cancelled
+    /// when a newer view starts, so that it never delays the current tiles.
+    Text {
+        document: u32,
+        page: u32,
+        generation: u64,
+        reply: Reply<TextLayerDto>,
+    },
     /// Opens the current document again in a restarted worker.
     Reopen { path: String },
+}
+
+impl Job {
+    /// The view a tile or a text layer belongs to.
+    fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Tile { generation, .. } | Self::Text { generation, .. } => Some(*generation),
+            _ => None,
+        }
+    }
 }
 
 enum Command {
@@ -389,6 +463,27 @@ impl WorkerHandle {
         }
     }
 
+    /// The text layer of `page` of the current document, for view
+    /// `generation` (as given by `begin_view`).
+    pub fn page_text(&self, document: u32, page: u32, generation: u64) -> Pending<TextLayerDto> {
+        if let Err(error) = self
+            .check_page(document, page)
+            .and_then(|()| self.check_generation(generation))
+        {
+            return Pending::Ready(Err(error));
+        }
+        let (reply, receiver) = channel();
+        match self.queue(Job::Text {
+            document,
+            page,
+            generation,
+            reply,
+        }) {
+            Ok(()) => Pending::Waiting(receiver),
+            Err(error) => Pending::Ready(Err(error)),
+        }
+    }
+
     /// Starts a new view (page, scale, document) and returns its generation:
     /// the queued tiles of older views are dropped at once, before the new
     /// view's requests.
@@ -406,6 +501,18 @@ impl WorkerHandle {
 
     /// The tile as sent to the UI: `TILE_HEADER` bytes, then RGBA pixels.
     /// Served from the cache when present.
+    /// A generation already given by `begin_view`.
+    fn check_generation(&self, generation: u64) -> Result<(), CommandError> {
+        let issued = self.shared.issued.load(Ordering::Relaxed);
+        if (1..=issued).contains(&generation) {
+            Ok(())
+        } else {
+            Err(CommandError::InvalidArgument {
+                field: "generation",
+            })
+        }
+    }
+
     pub fn tile(&self, request: TileRequest) -> Pending<Arc<Vec<u8>>> {
         let side = 1..=MAX_TILE_SIDE;
         let checked = validate_scale(request.scale)
@@ -417,16 +524,7 @@ impl WorkerHandle {
                 }
             })
             .and_then(|()| self.check_page(request.document, request.page))
-            .and_then(|()| {
-                let issued = self.shared.issued.load(Ordering::Relaxed);
-                if (1..=issued).contains(&request.generation) {
-                    Ok(())
-                } else {
-                    Err(CommandError::InvalidArgument {
-                        field: "generation",
-                    })
-                }
-            });
+            .and_then(|()| self.check_generation(request.generation));
         if let Err(error) = checked {
             return Pending::Ready(Err(error));
         }
@@ -596,13 +694,13 @@ impl Manager<'_> {
         let (stale, kept): (Vec<Job>, Vec<Job>) = self
             .queue
             .drain(..)
-            .partition(|job| matches!(job, Job::Tile { generation: g, .. } if *g < generation));
+            .partition(|job| job.generation().is_some_and(|g| g < generation));
         self.queue = kept.into();
         for job in stale {
             self.refuse(job, CommandError::Stale);
         }
-        if let Some((id, Job::Tile { generation: g, .. })) = &self.in_flight
-            && *g < generation
+        if let Some((id, job)) = &self.in_flight
+            && job.generation().is_some_and(|g| g < generation)
             && let Some(worker) = &self.worker
         {
             let _ = worker.send(&Request::Cancel { id: *id });
@@ -625,6 +723,9 @@ impl Manager<'_> {
                 let _ = reply.send(Err(error));
             }
             Job::Tile { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
+            Job::Text { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
             Job::Reopen { .. } => {}
@@ -659,16 +760,11 @@ impl Manager<'_> {
                 self.refuse(job, CommandError::WorkerUnavailable);
                 continue;
             };
-            if let Job::Tile {
-                key,
-                generation,
-                reply,
-            } = &job
-            {
-                if *generation < self.generation {
-                    let _ = reply.send(Err(CommandError::Stale));
-                    continue;
-                }
+            if job.generation().is_some_and(|g| g < self.generation) {
+                self.refuse(job, CommandError::Stale);
+                continue;
+            }
+            if let Job::Tile { key, reply, .. } = &job {
                 // Filled by an identical request meanwhile.
                 if let Some(tile) = lock(&self.shared.cache).get(key) {
                     let _ = reply.send(Ok(tile));
@@ -676,7 +772,7 @@ impl Manager<'_> {
                 }
             }
             let target = match &job {
-                Job::Size { document, .. } => Some(*document),
+                Job::Size { document, .. } | Job::Text { document, .. } => Some(*document),
                 Job::Tile { key, .. } => Some(key.document),
                 _ => None,
             };
@@ -719,6 +815,11 @@ impl Manager<'_> {
                     scale: key.scale(),
                     rect: key.rect(),
                 },
+                Job::Text { page, .. } => Request::PageText {
+                    id,
+                    document: worker_document,
+                    page: *page,
+                },
                 Job::Reopen { path } => Request::OpenDocument {
                     id,
                     path: path.clone(),
@@ -741,7 +842,8 @@ impl Manager<'_> {
             | Response::JobFailed { id, .. }
             | Response::DocumentOpened { id, .. }
             | Response::PageSize { id, .. }
-            | Response::Tile { id, .. } => *id,
+            | Response::Tile { id, .. }
+            | Response::PageText { id, .. } => *id,
             Response::HelloAck { .. } | Response::ProtocolError { .. } => {
                 eprintln!("castle-pdf: unexpected worker response: {response:?}");
                 self.lose_worker();
@@ -860,6 +962,9 @@ impl Manager<'_> {
             (Job::Size { reply, .. }, Response::PageSize { width, height, .. }) => {
                 let _ = reply.send(Ok(PageSize { width, height }));
             }
+            (Job::Text { reply, .. }, Response::PageText { layer, .. }) => {
+                let _ = reply.send(Ok(TextLayerDto::from(layer)));
+            }
             (
                 Job::Tile { key, reply, .. },
                 Response::Tile {
@@ -879,20 +984,16 @@ impl Manager<'_> {
                 lock(&self.shared.cache).insert(key, Arc::clone(&tile));
                 let _ = reply.send(Ok(tile));
             }
-            (
-                Job::Tile {
-                    generation, reply, ..
-                },
-                Response::JobFailed { code, .. },
-            ) => {
-                let error = if code == ErrorCode::Cancelled && generation < self.generation {
+            (job @ (Job::Tile { .. } | Job::Text { .. }), Response::JobFailed { code, .. }) => {
+                let stale = job.generation().is_some_and(|g| g < self.generation);
+                let error = if code == ErrorCode::Cancelled && stale {
                     CommandError::Stale
                 } else {
                     CommandError::Failed {
                         reason: reason(code),
                     }
                 };
-                let _ = reply.send(Err(error));
+                self.refuse(job, error);
             }
             (job, Response::JobFailed { code, .. }) => self.refuse(
                 job,
@@ -1313,6 +1414,68 @@ mod tests {
         assert_eq!(
             handle.open(&fixture("shapes.pdf")).wait(TIMEOUT),
             Err(CommandError::WorkerUnavailable)
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_page_gives_its_text_layer() {
+        let (handle, _events) = start();
+        assert_eq!(
+            handle.page_text(1, 0, 1).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "document" })
+        );
+        let info = handle.open(&fixture("columns.pdf")).wait(TIMEOUT).unwrap();
+        // Like a tile, a text layer names a view the shell started.
+        assert_eq!(
+            handle.page_text(info.document, 0, 1).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument {
+                field: "generation"
+            })
+        );
+        let generation = handle.begin_view().unwrap();
+        let layer = handle
+            .page_text(info.document, 0, generation)
+            .wait(TIMEOUT)
+            .unwrap();
+        assert!(!layer.truncated && !layer.incomplete);
+        let texts: Vec<String> = layer
+            .lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert_eq!(texts[1..4], ["Left one", "Left two", "Left three"]);
+        // In pixels of the page at scale 1: "A" at (60, 40), 18 px.
+        let first = &layer.lines[0][0];
+        assert_eq!((first.x0, first.y0, first.size), (60.0, 40.0, 18.0));
+        assert_eq!(
+            handle.page_text(info.document, 1, generation).wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "page" })
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_text_layer_of_an_older_view_is_dropped() {
+        let (handle, _events) = start();
+        let info = handle.open(&fixture("columns.pdf")).wait(TIMEOUT).unwrap();
+        let old = handle.begin_view().unwrap();
+        // A diagnostic job holds the worker: the text layer waits in the queue.
+        handle.run(20, 50).unwrap();
+        let pending = handle.page_text(info.document, 0, old);
+        let current = handle.begin_view().unwrap();
+        assert_eq!(pending.wait(TIMEOUT), Err(CommandError::Stale));
+        // The current view's text still comes.
+        assert!(
+            handle
+                .page_text(info.document, 0, current)
+                .wait(TIMEOUT)
+                .is_ok()
         );
         handle.stop();
     }

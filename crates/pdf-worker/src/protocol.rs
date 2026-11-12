@@ -15,6 +15,12 @@ use pdf_syntax::Error;
 pub const MAX_TILE_SIDE: u16 = 256;
 /// Longest path accepted by `OpenDocument`, in UTF-8 bytes.
 pub const MAX_PATH_BYTES: u16 = 4096;
+/// Largest encoded `PageText` response: the text layer stops at the word
+/// that would exceed it (`TextLayer::truncated`), leaving room in a default
+/// frame of 1 MiB.
+pub const MAX_TEXT_LAYER_BYTES: usize = 960 * 1024;
+/// Text layer coordinates are in 1/64 of a pixel of the page at scale 1.
+pub const LAYER_UNITS_PER_PIXEL: f64 = 64.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
@@ -59,6 +65,13 @@ pub enum Request {
     /// Forgets a document; not a job, never answered. Unknown ids are ignored.
     CloseDocument {
         document: u32,
+    },
+    /// The text of a page in reading order, placed for a text layer over its
+    /// rendering (ADR-0006, tranche 3.6a); answered by `PageText`.
+    PageText {
+        id: u64,
+        document: u32,
+        page: u32,
     },
 }
 
@@ -112,6 +125,43 @@ pub enum Response {
         repair: Repair,
         pixels: Vec<u8>,
     },
+    PageText {
+        id: u64,
+        layer: TextLayer,
+    },
+}
+
+/// The words of a page, lines in reading order, placed on its rendering at
+/// scale 1 (device pixels, y down, rotation applied), in units of
+/// `1 / LAYER_UNITS_PER_PIXEL` pixel.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextLayer {
+    pub lines: Vec<LayerLine>,
+    /// Words were left out, or a word longer than 65 535 bytes cut, to keep
+    /// the response within `MAX_TEXT_LAYER_BYTES`.
+    pub truncated: bool,
+    /// Text the page shows is missing: a font or glyph that could not be
+    /// read (`pdf_render::Unsupported::Text`).
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayerLine {
+    pub words: Vec<LayerWord>,
+}
+
+/// A word: its text, its baseline from the first glyph's origin to the last
+/// glyph's end (start x, start y, end x, end y), and its font size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerWord {
+    pub text: String,
+    pub baseline: [i32; 4],
+    pub size: u32,
+}
+
+/// Encoded bytes of a word: its text, four coordinates and its size.
+pub fn word_len(word: &LayerWord) -> usize {
+    2 + word.text.len().min(usize::from(u16::MAX)) + 16 + 4
 }
 
 /// Whether the structure of a document was reconstructed (ADR-0004), as
@@ -249,6 +299,7 @@ const OPEN_DOCUMENT: u8 = 0x05;
 const PAGE_SIZE: u8 = 0x06;
 const RENDER_TILE: u8 = 0x07;
 const CLOSE_DOCUMENT: u8 = 0x08;
+const PAGE_TEXT: u8 = 0x09;
 const HELLO_ACK: u8 = 0x81;
 const JOB_DONE: u8 = 0x82;
 const JOB_FAILED: u8 = 0x83;
@@ -256,6 +307,12 @@ const PROTOCOL_ERROR: u8 = 0x84;
 const DOCUMENT_OPENED: u8 = 0x85;
 const PAGE_SIZE_REPLY: u8 = 0x86;
 const TILE: u8 = 0x87;
+const PAGE_TEXT_REPLY: u8 = 0x88;
+/// Bytes of a `PageText` response before its lines: tag, id, flags, count.
+pub const PAGE_TEXT_HEADER_LEN: usize = 1 + 8 + 1 + 4;
+/// Least bytes of an encoded line (its word count) and word (empty text).
+const MIN_LINE_LEN: usize = 4;
+const MIN_WORD_LEN: usize = 2 + 16 + 4;
 
 /// Bytes of a `Tile` response before its pixels.
 pub const TILE_HEADER_LEN: usize = 1 + 8 + 2 + 2 + 2 + 1;
@@ -291,6 +348,11 @@ impl Writer {
 
     fn f64(self, value: f64) -> Self {
         self.u64(value.to_bits())
+    }
+
+    fn i32(mut self, value: i32) -> Self {
+        self.0.extend_from_slice(&value.to_le_bytes());
+        self
     }
 
     /// A string longer than `u16::MAX` bytes is cut at a character boundary;
@@ -355,6 +417,10 @@ impl Request {
                 .u16(rect.width)
                 .u16(rect.height),
             Self::CloseDocument { document } => Writer::new(CLOSE_DOCUMENT, 5).u32(*document),
+            Self::PageText { id, document, page } => Writer::new(PAGE_TEXT, 17)
+                .u64(*id)
+                .u32(*document)
+                .u32(*page),
         }
         .0
     }
@@ -393,6 +459,11 @@ impl Request {
                 },
             },
             CLOSE_DOCUMENT => Self::CloseDocument { document: r.u32()? },
+            PAGE_TEXT => Self::PageText {
+                id: r.u64()?,
+                document: r.u32()?,
+                page: r.u32()?,
+            },
             _ => return Err(DecodeError),
         };
         r.finish()?;
@@ -435,6 +506,27 @@ impl Response {
                 .u16(skipped.0)
                 .u8(*repair as u8)
                 .bytes(pixels),
+            Self::PageText { id, layer } => {
+                let flags = u8::from(layer.truncated) | u8::from(layer.incomplete) << 1;
+                let mut out = Writer::new(PAGE_TEXT_REPLY, PAGE_TEXT_HEADER_LEN)
+                    .u64(*id)
+                    .u8(flags)
+                    .u32(u32::try_from(layer.lines.len()).unwrap_or(u32::MAX));
+                for line in &layer.lines {
+                    out = out.u32(u32::try_from(line.words.len()).unwrap_or(u32::MAX));
+                    for word in &line.words {
+                        let [x0, y0, x1, y1] = word.baseline;
+                        out = out
+                            .str(&word.text)
+                            .i32(x0)
+                            .i32(y0)
+                            .i32(x1)
+                            .i32(y1)
+                            .u32(word.size);
+                    }
+                }
+                out
+            }
         }
         .0
     }
@@ -487,6 +579,35 @@ impl Response {
                     pixels,
                 }
             }
+            PAGE_TEXT_REPLY => {
+                let id = r.u64()?;
+                let flags = r.u8()?;
+                if flags > 0b11 {
+                    return Err(DecodeError);
+                }
+                // Counts are checked against the bytes left before allocating.
+                let lines = r.count(MIN_LINE_LEN)?;
+                let mut layer = TextLayer {
+                    lines: Vec::with_capacity(lines),
+                    truncated: flags & 1 != 0,
+                    incomplete: flags & 2 != 0,
+                };
+                for _ in 0..lines {
+                    let words = r.count(MIN_WORD_LEN)?;
+                    let mut line = LayerLine {
+                        words: Vec::with_capacity(words),
+                    };
+                    for _ in 0..words {
+                        line.words.push(LayerWord {
+                            text: r.str()?,
+                            baseline: [r.i32()?, r.i32()?, r.i32()?, r.i32()?],
+                            size: r.u32()?,
+                        });
+                    }
+                    layer.lines.push(line);
+                }
+                Self::PageText { id, layer }
+            }
             _ => return Err(DecodeError),
         };
         r.finish()?;
@@ -521,6 +642,20 @@ impl Reader<'_> {
 
     fn f64(&mut self) -> Result<f64, DecodeError> {
         self.u64().map(f64::from_bits)
+    }
+
+    fn i32(&mut self) -> Result<i32, DecodeError> {
+        self.take().map(i32::from_le_bytes)
+    }
+
+    /// A `u32` count of items of at least `least` bytes each, refused if
+    /// the bytes left cannot hold them.
+    fn count(&mut self, least: usize) -> Result<usize, DecodeError> {
+        let count = usize::try_from(self.u32()?).map_err(|_| DecodeError)?;
+        if count.saturating_mul(least) > self.0.len() {
+            return Err(DecodeError);
+        }
+        Ok(count)
     }
 
     fn str(&mut self) -> Result<String, DecodeError> {
@@ -584,6 +719,11 @@ mod tests {
                 },
             },
             Request::CloseDocument { document: 3 },
+            Request::PageText {
+                id: 11,
+                document: 2,
+                page: 7,
+            },
         ]
     }
 
@@ -617,7 +757,59 @@ mod tests {
                 repair: Repair::Repaired,
                 pixels: vec![1, 2, 3, 4, 5, 6, 7, 8],
             },
+            Response::PageText {
+                id: 7,
+                layer: TextLayer {
+                    lines: vec![
+                        LayerLine {
+                            words: vec![
+                                LayerWord {
+                                    text: "Café".to_owned(),
+                                    baseline: [640, -5, 2560, i32::MAX],
+                                    size: 768,
+                                },
+                                LayerWord {
+                                    text: String::new(),
+                                    baseline: [i32::MIN, 0, 0, 0],
+                                    size: 0,
+                                },
+                            ],
+                        },
+                        LayerLine { words: Vec::new() },
+                    ],
+                    truncated: true,
+                    incomplete: true,
+                },
+            },
+            Response::PageText {
+                id: 8,
+                layer: TextLayer::default(),
+            },
         ]
+    }
+
+    #[test]
+    fn text_layer_counts_are_checked_before_allocating() {
+        // A line count no remaining bytes can hold.
+        let mut bytes = vec![PAGE_TEXT_REPLY];
+        bytes.extend_from_slice(&7u64.to_le_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(Response::decode(&bytes), Err(DecodeError));
+        // One line announcing more words than its bytes.
+        let mut bytes = vec![PAGE_TEXT_REPLY];
+        bytes.extend_from_slice(&7u64.to_le_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; MIN_WORD_LEN]);
+        assert_eq!(Response::decode(&bytes), Err(DecodeError));
+        // A flag other than truncated (1) and incomplete (2).
+        let mut bytes = vec![PAGE_TEXT_REPLY];
+        bytes.extend_from_slice(&7u64.to_le_bytes());
+        bytes.push(4);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(Response::decode(&bytes), Err(DecodeError));
     }
 
     #[test]

@@ -18,7 +18,7 @@ décompression et codecs doivent échouer proprement. Les annulations interrompe
 étapes longues ; si un codec ne peut pas être interrompu, le worker doit pouvoir être
 tué sans bloquer l'application. Définir droits et limites de processus pour chaque OS.
 
-État du worker (protocole v3) :
+État du worker (protocole v5) :
 - le chemin d'un document est choisi par le shell, jamais transmis par l'UI ; le worker
   le lit sous `max_input_bytes`, refuse ce qui n'est pas un fichier régulier et ne
   reçoit pas plus de 4 096 octets de chemin en UTF-8 ;
@@ -98,6 +98,12 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   ignoré, jamais chargé ;
 - les commandes `page_size` et `render_tile` n'acceptent que le document courant, une page
   existante, une échelle finie dans ]0, 64] et une tuile d'au plus 256 × 256 ;
+- `page_text` n'accepte que le document courant, une page existante et une génération de vue
+  déjà attribuée ; une couche d'une vue périmée est écartée ou annulée comme une tuile, pour ne
+  jamais retarder les tuiles visibles ; la couche de texte
+  rendue est bornée (`MAX_TEXT_LAYER_BYTES`, 960 Kio, puis `truncated`) et le décodage de sa
+  réponse vérifie chaque nombre de lignes et de mots avant d'allouer (cible de fuzzing
+  `protocol`). Le texte reste une donnée : l'UI ne l'insère que comme texte ;
 - `current_document` ne rend que le dernier événement de document ;
 - `begin_view` numérote les vues côté shell : une tuile ne peut citer qu'une génération
   déjà attribuée ;

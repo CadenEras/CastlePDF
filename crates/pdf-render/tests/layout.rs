@@ -117,6 +117,10 @@ fn words_carry_their_glyphs_and_bounds() {
     let [left, bottom, right, top] = words[0].bounds;
     assert!((left - 20.0).abs() < 1e-9 && (bottom - 48.0).abs() < 1e-9);
     assert!((top - 58.0).abs() < 1e-9 && right > left);
+    // The baseline runs from the first glyph's origin to the last one's end.
+    let [x0, y0, x1, y1] = words[0].baseline;
+    assert_eq!((x0, y0, y1, words[0].size), (20.0, 50.0, 50.0, 10.0));
+    assert!((x1 - right).abs() < 1e-9);
 }
 
 #[test]

@@ -15,6 +15,7 @@ libfuzzer-sys = "0.4.13"
 pdf-document = { path = "../crates/pdf-document" }
 pdf-render = { path = "../crates/pdf-render" }
 pdf-syntax = { path = "../crates/pdf-syntax" }
+pdf-worker = { path = "../crates/pdf-worker" }
 
 [[bin]]
 name = "lexer"
@@ -84,6 +85,13 @@ bench = false
 [[bin]]
 name = "cmap"
 path = "fuzz_targets/cmap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol"
+path = "fuzz_targets/protocol.rs"
 test = false
 doc = false
 bench = false
