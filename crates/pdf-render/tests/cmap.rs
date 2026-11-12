@@ -9,7 +9,7 @@
     reason = "test code: a failed expectation is a test failure"
 )]
 
-use pdf_render::{CMap, CMapError, Code};
+use pdf_render::{CMap, CMapError, Code, MAX_CID, MAX_CODESPACES, MAX_DESTINATION_UNITS};
 use pdf_syntax::{Budget, CancellationToken, LimitKind, ResourceLimits};
 
 fn budget() -> Budget {
@@ -273,8 +273,135 @@ fn a_wide_range_is_not_expanded() {
     )
     .expect("CMap");
     assert!(measured.decoded_bytes() < 1024);
-    assert_eq!(cmap.cid(code(0x0001_0000, 4)), Some(0x0001_0000));
-    assert_eq!(cmap.cid(code(u32::MAX, 4)), Some(u32::MAX));
+    assert_eq!(cmap.cid(code(0x0000_FFFF, 4)), Some(MAX_CID));
+    // Past the highest CID (annex C): no CID.
+    assert_eq!(cmap.cid(code(0x0001_0000, 4)), None);
+    assert_eq!(cmap.cid(code(u32::MAX, 4)), None);
+}
+
+#[test]
+fn cids_above_the_highest_are_skipped() {
+    let cmap = parse(
+        "begincidchar <01> 65535 <02> 65536 endcidchar begincidrange <10> <1F> 70000 endcidrange",
+    );
+    assert_eq!(cmap.cid(code(0x01, 1)), Some(65_535));
+    assert_eq!(cmap.cid(code(0x02, 1)), None);
+    assert_eq!(cmap.cid(code(0x10, 1)), None);
+    assert_eq!(cmap.skipped_entries(), 2);
+}
+
+#[test]
+fn a_bfrange_adds_to_the_last_utf16_unit() {
+    // <00F0> + 0x10 = U+0100: the unit is incremented, not only its last byte.
+    let cmap = parse("beginbfrange <00> <1F> <00F0> endbfrange");
+    assert_eq!(unicode(&cmap, 0x10, 1).as_deref(), Some("\u{0100}"));
+    assert_eq!(unicode(&cmap, 0x1F, 1).as_deref(), Some("\u{010F}"));
+}
+
+#[test]
+fn a_misaligned_block_is_skipped_whole() {
+    // A missing destination would pair 02 with 03 and 03 with 0043.
+    let cmap = parse("beginbfchar <01> <0041> <02> <03> <0043> endbfchar");
+    for value in 1..=3 {
+        assert_eq!(unicode(&cmap, value, 1), None, "{value}");
+    }
+    assert_eq!(cmap.skipped_entries(), 3);
+    let cmap = parse("begincidrange <00> <0F> 1 <10> endcidrange");
+    assert_eq!(cmap.cid(code(0x01, 1)), None);
+    assert_eq!(cmap.skipped_entries(), 2);
+}
+
+#[test]
+fn a_destination_longer_than_the_limit_is_skipped() {
+    let longest = "0041".repeat(MAX_DESTINATION_UNITS);
+    let cmap = parse(&format!(
+        "beginbfchar <01> <{longest}> <02> <{longest}0041> endbfchar"
+    ));
+    assert_eq!(
+        unicode(&cmap, 0x01, 1).map(|text| text.len()),
+        Some(MAX_DESTINATION_UNITS)
+    );
+    assert_eq!(unicode(&cmap, 0x02, 1), None);
+    assert_eq!(cmap.skipped_entries(), 1);
+}
+
+#[test]
+fn codespaces_are_deduplicated_and_bounded() {
+    let many: String = (0..=MAX_CODESPACES)
+        .map(|n| format!("<{:04X}> <{:04X}> <00> <FF> ", n, n))
+        .collect();
+    let cmap = parse(&format!("begincodespacerange {many} endcodespacerange"));
+    // 1 one-byte range (repeated, kept once) and MAX_CODESPACES + 1
+    // two-byte ranges: 258 distinct, the last 2 over the bound.
+    assert_eq!(cmap.skipped_entries(), 2);
+    assert_eq!(cmap.next_code(b"\x41"), Some(code(0x41, 1)));
+}
+
+#[test]
+fn a_block_of_tokens_is_charged_before_it_grows() {
+    let data = format!("beginbfchar {} endbfchar", "[".repeat(1_000_000));
+    let mut limits = ResourceLimits::default();
+    limits.max_decoded_bytes = 1 << 20;
+    let mut short = Budget::new(limits, CancellationToken::new());
+    assert!(matches!(
+        CMap::parse(data.as_bytes(), &mut short),
+        Err(CMapError::Syntax(pdf_syntax::Error::LimitExceeded {
+            kind: LimitKind::DecodedBytes,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn lookups_stay_fast_under_a_wide_range_with_many_exceptions() {
+    // Identity plus exceptions: every lookup above the exceptions used to
+    // walk all of them.
+    let exceptions: String = (0..50_000u32)
+        .map(|n| format!("<{:04X}> {}\n", n * 2, n))
+        .collect();
+    let cmap = parse(&format!(
+        "begincidrange <0000> <FFFF> 0 endcidrange begincidchar\n{exceptions}endcidchar"
+    ));
+    let start = std::time::Instant::now();
+    for value in 0..=0xFFFFu32 {
+        let expected = if value % 2 == 0 && value < 100_000 {
+            value / 2
+        } else {
+            value
+        };
+        assert_eq!(cmap.cid(code(value, 2)), Some(expected), "{value}");
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn inherit_is_charged_to_the_budget() {
+    let mut child = parse("begincidchar <41> 500 endcidchar");
+    let parent = parse(SPEC_TO_UNICODE);
+    let mut measured = budget();
+    child
+        .clone()
+        .inherit(&parent, &mut measured)
+        .expect("merged");
+    let used = measured.decoded_bytes();
+    assert!(used > 0);
+    let mut limits = ResourceLimits::default();
+    limits.max_decoded_bytes = used - 1;
+    let mut short = Budget::new(limits, CancellationToken::new());
+    assert!(matches!(
+        child.clone().inherit(&parent, &mut short),
+        Err(CMapError::Syntax(pdf_syntax::Error::LimitExceeded { .. }))
+    ));
+    limits.max_decoded_bytes = used;
+    let mut exact = Budget::new(limits, CancellationToken::new());
+    child
+        .inherit(&parent, &mut exact)
+        .expect("merged at the limit");
+    assert_eq!(unicode(&child, 0x0021, 2).as_deref(), Some("A"));
 }
 
 #[test]

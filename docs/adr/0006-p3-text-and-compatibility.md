@@ -87,7 +87,7 @@ Ordre en tranches vérifiables :
 | --- | --- | --- |
 | 3.1 | Mesure : `survey` compte, par page, les polices avec et sans `/ToUnicode`, les encodages (`Identity-H/V`, CMap incluses, CMap prédéfinies) ; le marquage `/ActualText`, qui demande d'interpréter le contenu, est mesuré en 3.5 | Tableau dans `docs/QUALITY.md` ; décision sur les CMap prédéfinies |
 | 3.2 | Lecteur de CMap partagé (`codespacerange`, `bfchar`, `bfrange`, `cidchar`, `cidrange`, `usecmap` borné) pour `/ToUnicode` et les encodages | Vecteurs de la norme, cas invalides et limites, cible de fuzzing `cmap` |
-| 3.3 | Unicode de chaque glyphe et `castle-pdf text <fichier> [--page n]` dans l'ordre du contenu ; caractères inconnus signalés | Fixtures comparées à `pdftotext` ; part des glyphes résolus sur le corpus |
+| 3.3 | Unicode de chaque glyphe et `castle-pdf text <fichier> [--page n]` dans l'ordre du contenu ; caractères inconnus signalés ; repli explicite et signalé quand la longueur des codes de `/ToUnicode` diffère de celle de la police | Fixtures comparées à `pdftotext` ; part des glyphes résolus sur le corpus |
 | 3.4 | Encodages composites au-delà d'`Identity-H` : `Identity-V` et CMap incluses, pour le rendu comme pour le texte (CMap prédéfinies en 3.7b) | Fixtures rendues identiques à `pdftoppm`, texte comparé à `pdftotext` |
 | 3.5 | Mise en page : mots, lignes, blocs, ordre de lecture, espaces déduits des écarts, `/ActualText`, texte tourné | Mesure mot à mot contre `pdftotext` sur fixtures et échantillon du corpus, tolérance documentée ; part des pages marquées `/ActualText` |
 | 3.6 | Protocole worker : texte d'une page (lignes, caractères, boîtes) borné ; couche de texte DOM ; sélection, copie, lecteurs d'écran | Tests du worker et de l'UI ; copie vérifiée à la main sur chaque OS disponible |
@@ -103,8 +103,10 @@ Ordre en tranches vérifiables :
 
 - Le protocole du worker change en 3.6 (nouvelle requête et nouvelle réponse, version
   incrémentée) ; les autres tranches ne touchent pas l'IPC.
-- Nouveaux budgets dans `ResourceLimits` : caractères par page, octets de CMap, profondeur
-  de `usecmap`. Chacun testé à la limite et à la limite + 1.
+- Budgets : la mémoire d'une CMap (jetons de ses blocs, entrées, structures de recherche)
+  est imputée à `max_decoded_bytes`, sans limite séparée (tranche 3.2). La profondeur de
+  `usecmap` est bornée là où la chaîne est résolue (3.4), et le nombre de caractères par page
+  en 3.3. Chaque borne est testée à la limite et à la limite + 1.
 - Oracles : `pdftotext` (Poppler) pour le texte, `pdftoppm` pour le rendu ; un second oracle
   (MuPDF `mutool draw -F txt`, AGPL, utilisé seulement comme outil de test hors du dépôt)
   pour départager un écart. Un oracle peut se tromper : chaque écart accepté est documenté.

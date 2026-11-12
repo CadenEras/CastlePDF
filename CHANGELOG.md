@@ -14,9 +14,12 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   codes (comparées octet par octet), `bfchar`, `bfrange` (forme de base et tableau), `cidchar`,
   `cidrange`, les plages notdef, `usecmap` (nommé ; fusion par `CMap::inherit`, profondeur à la
   charge de l'appelant) et `/WMode`. Les codes sont cherchés avec leur longueur ; la dernière
-  définition l'emporte. Une entrée invalide est ignorée et comptée, jamais devinée ; un bloc non
-  fermé ou un jeton refusé est une erreur. Les plages ne sont jamais développées et chaque
-  entrée est imputée au budget. Nouvelle cible de fuzzing `cmap`. Pas encore branché sur le
+  définition l'emporte, en temps logarithmique (plages aplaties en segments disjoints). Une
+  entrée invalide est ignorée et comptée, jamais devinée : CID au-delà de 65 535, destination
+  de plus de 512 octets, plus de 256 plages de codes ; un bloc dont les opérandes ne forment
+  pas des entrées entières est ignoré en entier. Un bloc non fermé ou un jeton refusé est une
+  erreur. Les plages ne sont jamais développées ; jetons des blocs, entrées et structures de
+  recherche sont imputés au budget. Nouvelle cible de fuzzing `cmap`. Pas encore branché sur le
   texte ni le rendu (tranches 3.3 et 3.4).
 - `pdf-render` : `page_text_profile` dit d'où viendrait l'Unicode du texte de chaque police
   d'une page (`/ToUnicode`, noms de glyphes, encodage intégré, collection CID...) et quels
