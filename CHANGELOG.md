@@ -9,6 +9,19 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- `pdf-render` : **mots et lignes** (`text_lines`, ADR-0006, tranche 3.5a), dans l'ordre du
+  contenu, en toute direction (horizontale, verticale, tournée). Un glyphe hors de la ligne de
+  base, à contre-sens ou revenant en arrière de plus que sa taille commence une ligne ; une
+  espace ou un écart de plus de 0,15 fois la taille sépare deux mots. Chaque mot donne ses
+  glyphes et ses bornes. Ordre de lecture entre colonnes : tranche 3.5b.
+- `pdf-render` : **`/ActualText`** (ISO 32000-2, 14.9.4) des séquences marquées, propriétés en
+  ligne ou ressource `/Properties`, à travers les formulaires ; une plage imbriquée cède à la
+  plage extérieure, une plage sans glyphe (une image de texte) est un mot à elle. Chaînes de
+  texte décodées (UTF-16BE, UTF-8, PDFDocEncoding). Les plages comptent dans
+  `max_text_glyphs`.
+- CLI : `castle-pdf text` affiche ces mots et ces lignes. Fixture `layout.pdf` ; l'oracle
+  `pdftotext` compare aussi les mots ; test ignoré `layout_corpus` pour un corpus local.
+
 - `pdf-render` : **police « texte seulement »** (ADR-0006, tranche 3.4b). En extraction de texte,
   une police que le rendu ne dessine pas (non incluse et non remplacée, programme Type 1
   symbolique, programme endommagé) est lue sans programme : codes, largeurs (`/Widths`, `/W`,

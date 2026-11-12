@@ -39,6 +39,7 @@ mod fonts;
 mod geometry;
 mod image;
 mod interpret;
+mod layout;
 mod raster;
 mod text;
 
@@ -65,6 +66,7 @@ pub use fonts::{
     CidEncoding, FontKind, MAX_PAGE_FONTS, PageTextProfile, TextSource, page_font_kinds,
     page_text_profile,
 };
+pub use layout::{TextLine, TextWord, WORD_GAP, text_lines};
 pub use text::cmap::{
     CMap, CMapError, Code, MAX_CID, MAX_CODE_BYTES, MAX_CODESPACES, MAX_DESTINATION_UNITS,
 };
@@ -288,6 +290,16 @@ pub struct TextGlyph {
     pub size: f64,
 }
 
+/// Replacement text for a span of glyphs (`/ActualText` of a marked-content
+/// sequence, ISO 32000-2, 14.9.4): it stands for the glyphs `glyphs` of
+/// `PageText::glyphs`, which may be none (for instance an image of text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ActualText {
+    pub text: String,
+    pub glyphs: std::ops::Range<usize>,
+}
+
 /// The text of a page, in the order its content shows it (`page_text`).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -295,6 +307,9 @@ pub struct PageText {
     /// Every glyph shown, in content order, forms included, invisible text
     /// (rendering mode 3) too.
     pub glyphs: Vec<TextGlyph>,
+    /// `/ActualText` spans, in content order, never nested: an outer span
+    /// replaces everything inside it.
+    pub actual_texts: Vec<ActualText>,
     /// `Text` when a font could not be read even for its text (its glyphs
     /// are absent from `glyphs`, counted in `unread_bytes`), and what the
     /// interpreter met
@@ -374,9 +389,10 @@ pub fn page_text_cached<S: Source>(
     );
     let (result, caches) = interpreter.run_text(&content, budget);
     cache.caches = caches;
-    let (glyphs, skipped, unreadable_to_unicode, unread_bytes) = result?;
+    let (glyphs, actual_texts, skipped, unreadable_to_unicode, unread_bytes) = result?;
     Ok(PageText {
         glyphs,
+        actual_texts,
         skipped,
         unreadable_to_unicode,
         unread_bytes,

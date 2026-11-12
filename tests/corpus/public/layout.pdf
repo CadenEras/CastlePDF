@@ -1,0 +1,43 @@
+%PDF-1.5
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> /Properties << /P0 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 591 >>
+stream
+BT /F1 14 Tf 20 260 Td /Span << /ActualText (fi) >> BDC (f) Tj EMC (ne print) Tj ET
+BT /F1 14 Tf 20 230 Td /Span /P0 BDC (Reeding) Tj EMC ( order) Tj ET
+BT /F1 14 Tf 20 200 Td /Span << /ActualText (Outer) >> BDC /Span << /ActualText (Inner) >> BDC (xx) Tj EMC (yy) Tj EMC ET
+/Span << /ActualText <FEFF004C006F0067006F> >> BDC q 40 0 0 20 200 195 cm 0.5 g 0 0 1 1 re f Q EMC
+BT /F1 14 Tf 20 170 Td [(Gap) -400 (Words) -20 (Kern)] TJ ET
+BT /F1 14 Tf 20 140 Td (One) Tj ET BT /F1 14 Tf 60 140 Td (by) Tj ET BT /F1 14 Tf 82 140 Td (one) Tj ET
+BT /F1 14 Tf 0 1 -1 0 270 40 Tm (Rotated text) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /ActualText (Reading) >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000275 00000 n 
+0000000917 00000 n 
+0000001014 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1057
+%%EOF

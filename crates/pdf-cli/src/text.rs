@@ -1,9 +1,9 @@
 //! `castle-pdf text <file> [--page <n>]`: prints the text of one page, or of
 //! every page separated by form feeds, in the order the content shows it
-//! (ADR-0006, tranche 3.3). A line break separates glyphs on different
-//! baselines and a space separates glyphs set apart; reading order and
-//! layout come with tranche 3.5. An unknown glyph prints as U+FFFD. Control
-//! characters from the document are replaced by U+FFFD, and so are
+//! (ADR-0006, tranche 3.3), as words and lines (`text_lines`, tranche
+//! 3.5a); reading order across columns comes with tranche 3.5b. An unknown
+//! glyph prints as U+FFFD. Control characters from the document are
+//! replaced by U+FFFD, and so are
 //! bidirectional controls and line or paragraph separators: the output never
 //! carries escape sequences to a terminal, nor reorders what it shows.
 //!
@@ -18,7 +18,7 @@ use std::path::Path;
 
 use pdf_document::Document;
 use pdf_render::{
-    PageText, RenderCache, RenderLimits, TextGlyph, UnicodeSource, Unsupported, page_text_cached,
+    PageText, RenderCache, RenderLimits, UnicodeSource, Unsupported, page_text_cached, text_lines,
 };
 use pdf_syntax::{Budget, CancellationToken, ResourceLimits};
 
@@ -89,7 +89,7 @@ pub fn run(request: &Request<'_>, out: &mut dyn Write, err: &mut dyn Write) -> i
         let limits = RenderLimits::default();
         match page_text_cached(document.file(), page, &limits, &mut cache, &mut budget) {
             Ok(text) => {
-                out.write_all(layout(&text.glyphs).as_bytes())?;
+                out.write_all(layout(&text).as_bytes())?;
                 summary(*index, &text, err)?;
             }
             Err(e) => {
@@ -101,33 +101,15 @@ pub fn run(request: &Request<'_>, out: &mut dyn Write, err: &mut dyn Write) -> i
     Ok(u8::from(failed))
 }
 
-/// The glyphs as lines of text: a line break where the next glyph does not
-/// start on the baseline where the previous one ended (by more than half its
-/// size), a space where it starts further than a fifth of its size from
-/// there. Each line ends with a line break.
-pub fn layout(glyphs: &[TextGlyph]) -> String {
-    let mut text = String::new();
-    let mut previous: Option<&TextGlyph> = None;
-    for glyph in glyphs {
-        if let Some(previous) = previous {
-            let size = previous.size.max(glyph.size).max(f64::MIN_POSITIVE);
-            let (dx, dy) = (glyph.x - previous.end_x, glyph.y - previous.end_y);
-            if dy.abs() > size / 2.0 {
-                text.push('\n');
-            } else if dx.abs() > size / 5.0 {
-                text.push(' ');
-            }
-        }
-        match &glyph.text {
-            Some(glyph_text) => text.extend(glyph_text.chars().map(printable)),
-            None => text.push(char::REPLACEMENT_CHARACTER),
-        }
-        previous = Some(glyph);
+/// The page's lines (`text_lines`), words separated by one space, each
+/// line ending with a line break.
+pub fn layout(text: &PageText) -> String {
+    let mut out = String::new();
+    for line in text_lines(text) {
+        out.extend(line.text().chars().map(printable));
+        out.push('\n');
     }
-    if !text.is_empty() {
-        text.push('\n');
-    }
-    text
+    out
 }
 
 /// A character of the document as printed: control characters (C0, C1,
