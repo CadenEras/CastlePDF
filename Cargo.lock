@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "castle-pdf-desktop"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pdf-worker",
  "serde",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-cli"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pdf-document",
  "pdf-render",
@@ -2280,14 +2280,14 @@ dependencies = [
 
 [[package]]
 name = "pdf-document"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pdf-syntax",
 ]
 
 [[package]]
 name = "pdf-render"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pdf-document",
  "pdf-syntax",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-syntax"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "miniz_oxide 0.9.1",
  "proptest",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-worker"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pdf-document",
  "pdf-render",

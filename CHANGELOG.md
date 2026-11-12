@@ -7,6 +7,37 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+## [0.1.0-alpha.3] — 2026-11-11
+
+Fin de la phase P2 (lecteur utile). L'application desktop ouvre un PDF (glisser-déposer,
+ligne de commande, Finder sous macOS) et l'affiche en défilement continu, rendu en tuiles
+par le moteur du projet dans un worker séparé. Le moteur lit les fichiers PDF 1.5+
+(flux xref et d'objets, Flate et filtres simples), reconstruit l'index d'un fichier abîmé,
+et dessine chemins, texte des polices incluses ou remplacées, images, formulaires et
+polices Type 3. Sur le corpus de mesure, la première page est rendue pour 1 920 fichiers
+sur 2 000 (SafeDocs) et 2 229 sur 2 636 (UNSAFE), sans crash ni timeout. Toujours **aucun
+binaire distribué** : version de développement, à construire depuis les sources.
+
+### Limites connues
+
+- Rendu partiel, signalé page par page dans l'application : dégradés, motifs, masques
+  adoucis, transparence de forme, modes de fusion, découpe par le texte, fonctions de
+  transfert, contenu optionnel et certains espaces de couleur ne sont pas dessinés. Les polices non incluses sont remplacées
+  par des polices libres aux mêmes largeurs, pas par la police d'origine.
+- Images en CCITTFax, JBIG2 ou JPX signalées, pas dessinées ; une page dont les images
+  décodées dépassent 256 Mio est refusée (`limit/DecodedBytes`). Reportés en P3.
+- Pas de texte sélectionnable, de recherche ni de copie (P3) ; pas d'écriture (P4).
+- Fichiers chiffrés refusés avec une erreur de capacité explicite.
+- Chaque tuile réinterprète le contenu de sa page ; une page très lourde peut prendre
+  plusieurs secondes (maximum observé : 8 s). Reporté en P3, à mesurer.
+- Vérifié à la main sous Windows seulement : temps par tuile côté WebView, mémoire en
+  défilement, glisser-déposer. Sous macOS et Linux, l'affichage et l'ouverture depuis le
+  Finder sont vus sur des captures CI, la mémoire est mesurée par le CI, mais aucun geste
+  n'a été fait à la main.
+- L'ouverture depuis le Finder n'existe que dans un `.app` empaqueté ; le packaging (worker
+  inclus, signature) arrive avec la phase de diffusion.
+- Mémoire mesurée sur runners CI partagés : ordres de grandeur, pas des seuils.
+
 ### Ajouté
 
 - Shell : **ouverture depuis le Finder** (macOS) : « Ouvrir avec », double-clic ou dépôt

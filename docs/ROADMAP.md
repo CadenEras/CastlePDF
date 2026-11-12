@@ -15,7 +15,7 @@ pas un booléen « compatible PDF 2.0 ».
 | P6 — fonctions avancées séparées | OCR, édition de texte existant, chiffrement, signatures, caviardage | Étude et tests propres à chaque fonction ; aucune promesse de sécurité avant validation dédiée |
 | Stabilisation — diffusion | Packaging, signatures OS, mises à jour, guide utilisateur | Release depuis tag testé, corpus accepté, mesures et limites publiques, récupération après erreur |
 
-## P2 en cours
+## P2 terminée (`v0.1.0-alpha.3`)
 
 Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objets ;
 3. interpréteur minimal ; 4. tuiles, cache et IPC jusqu'à la première page (fait) ;
@@ -27,11 +27,12 @@ XObjects image, fait ; 5.4b images en ligne, fait ; 5.4c XObjects de formulaire 
 de transparence, fait) ;
 5.5 polices Type 3, fait.
 
-### Limites ouvertes à lever avant la fin de P2
+### Limites ouvertes à la fin de P2
 
 Constatées à la tranche 4 (`docs/perf/2026-11-08-p2-first-page.md`). Chacune est soit
 levée par une tranche, soit reportée explicitement avec sa raison ; aucune ne disparaît
-de cette liste sans preuve.
+de cette liste sans preuve. Celles qui restent demandent une machine macOS ou Linux : elles
+sont publiées comme limites connues de `v0.1.0-alpha.3` et restent à lever.
 
 | Limite | Pourquoi elle compte | Sortie attendue |
 | --- | --- | --- |

@@ -20,9 +20,9 @@ sans interface. Priorités : exactitude, sécurité face aux documents non fiabl
 mémoire bornée, réactivité et maintenabilité.
 
 > [!WARNING]
-> Projet en phase de fondations. **CastlePDF ne lit pas encore de PDF** : la phase
-> P0 livre l'architecture, le worker, les budgets de ressources et la CI ; la lecture
-> structurée arrive en P1. Aucune version n'est destinée à un usage réel.
+> Projet expérimental. CastlePDF **affiche** des PDF (P2), avec un rendu encore partiel
+> signalé dans l'application ; il ne permet ni de sélectionner du texte ni d'écrire.
+> Aucun binaire n'est distribué et aucune version n'est destinée à un usage réel.
 
 ## État
 
@@ -30,7 +30,7 @@ mémoire bornée, réactivité et maintenabilité.
 | --- | --- | --- |
 | P0 — fondations | Workspace, UI vide, protocole worker, budgets, corpus, CI trois OS | Terminée (`v0.1.0-alpha.1`) |
 | P1 — lecture structurée | Tokenizer, objets, xref classique, pages, CLI de diagnostic | Terminée (`v0.1.0-alpha.2`) : xref classique, pages, CLI `inspect` |
-| P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | En cours ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) : Flate, flux xref et d'objets, interpréteur graphique, première page affichée en tuiles faits ; polices et images à venir |
+| P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | Terminée (`v0.1.0-alpha.3`) : PDF 1.5+, réparation, texte, images, formulaires, Type 3, défilement continu ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) |
 | P3 et suivantes | Texte, écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
 
 Le support PDF sera publié sous forme de matrice de capacités. Toute capacité absente
