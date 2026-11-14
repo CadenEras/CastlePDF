@@ -19,6 +19,12 @@
 //! wide is then darker in poppler (0.28 % of `truetype.pdf` measured); at
 //! 216 dpi the difference falls to 0.010 %. An erased glyph stays detected.
 //!
+//! `ccitt.pdf` is not compared here: pdftoppm 22.02 draws a 1-bit DeviceGray
+//! image placed one image pixel per device pixel with some columns and
+//! rows shifted by one (2 937 of the 18 000 pixels of its first image
+//! differ from the image data; ours, none). Its decoding is compared with
+//! `pdfimages` instead (`tests/pdfimages_oracle.rs` in `pdf-syntax`).
+//!
 //! DeviceCMYK is not compared (page 3 of `shapes.pdf`): without colour
 //! management, CastlePDF applies the conversion of ISO 32000-2, 10.4.2.4
 //! (cyan is (0, 255, 255)) and poppler approximates a press profile (cyan is

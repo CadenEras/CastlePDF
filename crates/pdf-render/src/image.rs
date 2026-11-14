@@ -9,7 +9,7 @@
 //! component; `/Decode`; stencil masks (`/ImageMask`); `/SMask` and stencil
 //! `/Mask` (resampled to the image if their size differs); colour-key
 //! `/Mask`; `/Matte` (soft masks of premultiplied images). Anything else is
-//! reported, never drawn as if exact: another filter (JPX, JBIG2, CCITT...)
+//! reported, never drawn as if exact: another filter (JPX, JBIG2...)
 //! as `Image`, another colour space (Lab, Separation, DeviceN) as
 //! `ColorSpace`, a mask that cannot be applied as `SoftMask`.
 //!
@@ -324,6 +324,22 @@ fn samples<S: Source>(
         }
         Err(other) => return Err(Error::Syntax(other)),
     };
+    let data = match ccitt_white(dictionary) {
+        // CCITT data that ends before the image does (its end of block
+        // came early): the rows left are white, as Poppler and pdf.js draw
+        // them, rather than read as 0, which is black there.
+        Some(white) => {
+            let row = (width as usize).div_ceil(8);
+            let needed = row.saturating_mul(height as usize);
+            let mut data = data;
+            if data.len() < needed {
+                budget.charge_decoded_bytes((needed - data.len()) as u64)?;
+                data.resize(needed, white);
+            }
+            data
+        }
+        None => data,
+    };
     Ok(Some(Samples {
         width,
         height,
@@ -331,6 +347,24 @@ fn samples<S: Source>(
         data,
         jpeg: None,
     }))
+}
+
+/// The byte of eight white pixels when the last filter is
+/// `CCITTFaxDecode`: 0xFF, or 0 with `/BlackIs1`.
+fn ccitt_white(dictionary: &Dictionary) -> Option<u8> {
+    if last_filter(dictionary) != Some(b"CCITTFaxDecode".as_slice()) {
+        return None;
+    }
+    let params = match dictionary.get(b"DecodeParms") {
+        Some(Object::Dictionary(params)) => Some(params),
+        Some(Object::Array(items)) => match items.last() {
+            Some(Object::Dictionary(params)) => Some(params),
+            _ => None,
+        },
+        _ => None,
+    };
+    let black_is_1 = params.and_then(|p| p.get(b"BlackIs1")) == Some(&Object::Boolean(true));
+    Some(if black_is_1 { 0x00 } else { 0xFF })
 }
 
 /// An image of this size may be decoded (`max_image_pixels`).

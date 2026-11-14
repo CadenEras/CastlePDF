@@ -453,9 +453,9 @@ fn inline_jpeg_images_are_decoded() {
 #[test]
 fn inline_images_not_drawn_are_reported() {
     for (entries, data, expected) in [
-        // A filter not decoded yet (CCITT), a missing colour space, a missing size.
+        // A filter not decoded (JPX), a missing colour space, a missing size.
         (
-            "/W 1 /H 1 /BPC 8 /CS /G /F /CCF",
+            "/W 1 /H 1 /BPC 8 /CS /G /F /JPXDecode",
             &b"00>"[..],
             Unsupported::Image,
         ),
@@ -528,4 +528,66 @@ fn images_and_content_in_the_simple_filters_are_drawn() {
     assert_eq!(at(&page, 75, 25), [0, 0, 0]);
     // The ASCIIHex content's own path.
     assert_eq!(at(&page, 150, 50), [0, 0, 255]);
+}
+
+/// The pattern `scripts/make-fixtures.mjs` draws in `ccitt.pdf`
+/// (`ccittPattern`): true for black.
+fn ccitt_pattern(width: i64, height: i64, seed: i64, x: i64, y: i64) -> bool {
+    if y == height / 2 {
+        return true;
+    }
+    if y == height / 3 {
+        return false;
+    }
+    if x < 2 || y < 2 || x >= width - 2 || y >= height - 2 {
+        return true;
+    }
+    let dx = x as f64 - width as f64 * 0.7;
+    let dy = y as f64 - height as f64 * 0.5;
+    if dx * dx + dy * dy < (height as f64 * 0.3).powi(2) {
+        return (x + y) % 5 != 0;
+    }
+    (x * 3 + y * (seed + 2)) % (37 + seed * 11) < 9 + seed
+}
+
+#[test]
+fn ccitt_images_are_decoded_and_drawn_pixel_for_pixel() {
+    // Tranche 3.9: Group 4 (A, 180 x 100 at (10, 190)), Group 3 2D with
+    // EOLs (B, 150 x 90 at (220, 195)) and a Group 4 stencil mask painted
+    // red (C, 120 x 70 at (10, 100)), one image pixel per point, on a page
+    // 300 high: each pixel is the pattern's.
+    let rendering = render(fixture("ccitt.pdf"), 0);
+    assert!(skipped(&rendering).is_empty(), "{:?}", skipped(&rendering));
+    for (width, height, seed, left, bottom, ink) in [
+        (180, 100, 0, 10, 190, [0, 0, 0]),
+        (150, 90, 1, 220, 195, [0, 0, 0]),
+        (120, 70, 2, 10, 100, [255, 0, 0]),
+    ] {
+        let mut differing = 0;
+        for y in 0..height {
+            for x in 0..width {
+                let device_x = u32::try_from(left + x).expect("x");
+                let device_y = u32::try_from(300 - (bottom + height) + y).expect("y");
+                let [r, g, b, _] = rendering.bitmap.pixel(device_x, device_y).expect("inside");
+                let black = ccitt_pattern(width, height, seed, x, y);
+                let expected = if black { ink } else { [255, 255, 255] };
+                differing += usize::from([r, g, b] != expected);
+            }
+        }
+        assert_eq!(differing, 0, "seed {seed}");
+    }
+    // Page 2: Group 3 1D, 2600 columns, BlackIs1 with /Decode [1 0].
+    let rendering = render(fixture("ccitt.pdf"), 1);
+    assert!(skipped(&rendering).is_empty());
+    let mut differing = 0;
+    for y in 0..30 {
+        for x in 0..2600 {
+            let [r, ..] = rendering
+                .bitmap
+                .pixel(10 + x as u32, (40 - 35 + y) as u32)
+                .expect("inside");
+            differing += usize::from((r < 128) != ccitt_pattern(2600, 30, 4, x, y));
+        }
+    }
+    assert_eq!(differing, 0);
 }

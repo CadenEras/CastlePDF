@@ -89,6 +89,12 @@ jobs:
           cargo test -p pdf-render --locked --test pdftoppm_oracle -- --nocapture 2>&1 | tee oracle.log
           grep -q "fixtures: rendering matches pdftoppm" oracle.log
           grep -q "cjk fixture: rendering matches pdftoppm" oracle.log
+      - name: Compare CCITT decoding with pdfimages
+        run: |
+          set -o pipefail
+          export CASTLE_PDFIMAGES="$(command -v pdfimages)"
+          cargo test -p pdf-syntax --locked --test pdfimages_oracle -- --nocapture 2>&1 | tee images-oracle.log
+          grep -q "ccitt images match pdfimages" images-oracle.log
       - name: Compare text with pdftotext
         run: |
           set -o pipefail

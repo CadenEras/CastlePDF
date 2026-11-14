@@ -1,6 +1,6 @@
 //! Stream filters (ISO 32000-2:2020, 7.4): `FlateDecode` and `LZWDecode`
 //! with their predictors, `ASCIIHexDecode`, `ASCII85Decode` and
-//! `RunLengthDecode`.
+//! `RunLengthDecode`, and `CCITTFaxDecode` (`ccitt`).
 //!
 //! Every filter and parameter is validated before any byte is decoded.
 //! Decoding is incremental: inflate writes into a fixed 64 KiB window, and each
@@ -13,8 +13,10 @@
 //! The other decoders write through `emit`, which charges each piece before
 //! it is kept: RunLength and LZW expand their input (a 2-byte run is 128
 //! bytes), so their output is bounded by the budget, not by the input.
-//! Other filters (CCITT, JBIG2, DCT, JPX, Crypt) are reported as unsupported,
+//! Other filters (JBIG2, DCT, JPX, Crypt) are reported as unsupported,
 //! never passed through undecoded.
+
+mod ccitt;
 
 use std::io;
 
@@ -43,6 +45,7 @@ enum Stage {
     AsciiHex,
     Ascii85,
     RunLength,
+    CcittFax(ccitt::Params),
 }
 
 /// Decodes the data of a stream whose `dictionary` is given, applying every
@@ -74,6 +77,7 @@ pub fn decode_stream(
             Stage::AsciiHex => (ascii_hex(input, data_offset, budget)?, None),
             Stage::Ascii85 => (ascii85(input, data_offset, budget)?, None),
             Stage::RunLength => (run_length(input, data_offset, budget)?, None),
+            Stage::CcittFax(params) => (ccitt::decode(input, params, data_offset, budget)?, None),
         };
         if let Some(predictor) = predictor {
             predictor.apply_in_place(&mut decoded, data_offset, budget)?;
@@ -132,6 +136,7 @@ fn plan(dictionary: &Dictionary, offset: u64) -> Result<Vec<Stage>, Error> {
             b"ASCIIHexDecode" => Ok(Stage::AsciiHex),
             b"ASCII85Decode" => Ok(Stage::Ascii85),
             b"RunLengthDecode" => Ok(Stage::RunLength),
+            b"CCITTFaxDecode" => ccitt::Params::from(params, offset).map(Stage::CcittFax),
             _ => Err(Error::Unsupported(Capability::StreamFilter)),
         })
         .collect()
