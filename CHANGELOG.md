@@ -19,6 +19,16 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- UI : **recherche dans le document** (ADR-0006, tranche 3.7). Champ de recherche (Ctrl+F),
+  options « Respecter la casse » et « Respecter les accents », recherche après une pause de
+  frappe ou sur Entrée, page par page depuis la page affichée, avec la progression puis
+  « Résultat n sur m » ; Entrée et Maj+Entrée, F3 et Maj+F3 passent d'une occurrence à l'autre,
+  en boucle ; Échap efface. Les occurrences sont marquées dans la couche de texte, l'occurrence
+  courante amenée au centre de la vue et entourée. Une recherche remplacée ignore ses pages
+  tardives ; au-delà de 10 000 occurrences elle s'arrête et le dit ; une page dont le texte n'a
+  pu être lu ou cherché en entier est signalée (« Recherche partielle »). La couche de texte
+  passe en `overflow: clip` : elle ne peut plus défiler hors de son dessin.
+
 - Moteur, CLI, worker et shell : **recherche dans le texte** (ADR-0006, tranche 3.7a).
   `pdf_render::search` trouve une requête dans les lignes d'une page, dans l'ordre de lecture,
   y compris d'une ligne à la suivante. La casse et les accents des lettres latines sont
