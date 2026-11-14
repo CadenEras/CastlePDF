@@ -15,7 +15,7 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   boîte où les mots et de vraies espaces se suivent, à leur longueur sur la page par
   l'espacement des lettres, et un élément non sélectionnable, sous les lignes pendant une
   sélection, suit la ligne de son extrémité mobile (comme pdf.js). Le Narrateur lit ligne par
-  ligne au lieu de mot par mot.
+  ligne au lieu de mot par mot, et en continu d'une ligne à l'autre.
 
 ### Ajouté
 

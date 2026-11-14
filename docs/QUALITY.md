@@ -435,7 +435,7 @@ document privé ni fixture (titre et deux colonnes, une colonne en Times, une pa
 
 | OS | Date | Points 7 à 12 |
 | --- | --- | --- |
-| Windows | 2026-11-14 | Première passe : la sélection sautait à la ligne du dessus sur tout vide (7, 9, 10) et le Narrateur lisait mot par mot (11). Après correction (une boîte par ligne, vrais espaces, élément de fin de contenu) : OK pour 7 à 10 et 12 ; 11 le Narrateur lit ligne par ligne, et s'arrête en fin de ligne même au milieu d'une phrase (limite ouverte, voir `docs/ROADMAP.md`). Une copie arrêtée au bout d'une ligne n'a pas d'espace final : le PDF n'en contient pas |
+| Windows | 2026-11-14 | Première passe : la sélection sautait à la ligne du dessus sur tout vide (7, 9, 10) et le Narrateur lisait mot par mot (11). Après correction (une boîte par ligne, vrais espaces, élément de fin de contenu) : OK pour 7 à 10 et 12 ; 11 le Narrateur lit en continu d'une ligne à l'autre avec Verr. Maj + R (un clic sur un mot lit seulement sa ligne, comme tout élément cliqué). Une copie arrêtée au bout d'une ligne n'a pas d'espace final : le PDF n'en contient pas |
 | macOS | à faire (pas de machine pour l'instant) | |
 | Linux | à faire (pas de machine pour l'instant) | |
 

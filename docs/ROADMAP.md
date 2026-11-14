@@ -33,8 +33,6 @@ Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée ave
 | Police CID `Identity` sans `/ToUnicode`, TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
 | `usecmap` d'une `/ToUnicode` non fusionné (celui des CMap d'encodage l'est depuis 3.4a, sur quatre niveaux) | Parent ignoré | Même résolution bornée que les encodages, si la mesure en trouve |
 | Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |
-| La couche de texte n'a pas de paragraphes : chaque ligne est un bloc, et le Narrateur s'arrête en fin de ligne au milieu d'une phrase (Windows, 2026-11-14) | Lecture continue d'un lecteur d'écran hachée | Regroupement des lignes en paragraphes dans la mise en page, puis un conteneur par paragraphe dans la couche, vérifié au Narrateur ; VoiceOver et Orca à vérifier |
-
 ## P2 terminée (`v0.1.0-alpha.3`)
 
 Ordre (ADR-0003, amendé par ADR-0004) : 1. Flate ; 2. flux xref et flux d'objets ;
