@@ -30,7 +30,14 @@ tué sans bloquer l'application. Définir droits et limites de processus pour ch
   taille correspond exactement à ses dimensions ;
 - le worker n'a encore aucune restriction de droits propre à l'OS.
 
-Polices (ADR-0005) : le programme d'une police incluse est lu par `skrifa` (TrueType,
+Polices (ADR-0005) : un programme Type 1 (`/FontFile`, tranche 3.8) est lu par
+`read-fonts::ps::type1` (même crate et version que le CFF, sans `unsafe`). Avant lecture, un
+examen borne le travail de la crate, qui cherche chaque nom d'encodage parmi tous les glyphes
+sans budget ni annulation (`MAX_TYPE1_LOOKUPS`, sinon police remplacée), et facture à
+`max_decoded_bytes` le programme et une entrée d'index par glyphe possible ; lu une fois, il est
+gardé avec la police (programme, copie déchiffrée et index comptés dans le cache), ses charstrings bornés par la crate (profondeur des sous-routines, un million
+d'opérations) et ses contours par `max_glyph_segments`.
+Le programme d'une police incluse est lu par `skrifa` (TrueType,
 OpenType) ou `read-fonts` (`ps::cff`, CFF nu), en Rust sans `unsafe`. La lecture du jeu de
 caractères CFF est facturée au budget d'objets, glyphe par glyphe. Il est décodé sous `max_decoded_bytes`. Chaque contour de glyphe est
 limité à `max_glyph_segments` segments et facturé au budget d'objets. Chacun de ses segments

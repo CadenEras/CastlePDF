@@ -19,6 +19,14 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **polices Type 1 incluses** (`/FontFile`, tranche 3.8, amendement
+  d'ADR-0005). Lues par le lecteur Type 1 de `read-fonts`, déjà verrouillé avec `skrifa` :
+  `eexec` binaire ou hexadécimal, PFB, sous-routines, `seac`, encodage intégré ou du PDF.
+  Elles étaient dessinées avec une police de remplacement ; elles le sont désormais avec leurs
+  propres glyphes, et les codes de leur encodage intégré donnent leur texte. Un programme
+  illisible reste remplacé et signalé. Fixture `type1.pdf` (police Type 1 synthétique),
+  identique à `pdftoppm` et `pdftotext` ; cible de fuzzing `font` étendue.
+
 - Moteur : **CMap prédéfinies d'Adobe** (ADR-0006, tranche 3.7b). Les encodages CJK rencontrés
   sur le corpus (`UniJIS-UCS2`, `UniJIS-UTF16`, `90ms-RKSJ`, `UniGB-UCS2`, `UniCNS-UCS2`,
   `UniKS-UCS2`, horizontaux et verticaux) découpent les codes d'une police Type 0 en CID, pour

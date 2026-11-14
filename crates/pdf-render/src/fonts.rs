@@ -13,8 +13,8 @@ use crate::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum FontKind {
-    /// Simple font with an embedded Type 1 program (`/FontFile`), which
-    /// `skrifa` does not read.
+    /// Simple font with an embedded Type 1 program (`/FontFile`), read by
+    /// `read-fonts` since tranche 3.8 (ADR-0005, amended).
     Type1,
     /// Simple font with an embedded bare CFF program (`/FontFile3 /Type1C`).
     Type1C,

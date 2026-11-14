@@ -443,6 +443,30 @@ CMap prédéfinies d'Adobe (tranche 3.7b, 2026-11-14) :
   quatre tests de mise en page (`tests/layout.rs`) échouent faute de `standard-fonts`, comme sur
   `main` avant cette tranche.
 
+Workflow `oracle` de la PR #75 (2026-11-14, poppler-data 0.4.12) : `cjk.pdf` identique à `pdftoppm`
+à 216 dpi (0,000 % de pixels hors du voisinage) et à `pdftotext -raw`.
+
+Type 1 inclus (tranche 3.8, 2026-11-14) :
+- `type1.pdf` (police Type 1 synthétique : `eexec` binaire et hexadécimal, sous-routine,
+  `seac`, encodage intégré, `/Differences`) identique à `pdftoppm` à 216 dpi (0,000 %) et à
+  `pdftotext -raw` (WSL, Poppler 22.02) ; un programme illisible reste remplacé
+  (`FontSubstituted`) ;
+- `survey` (même protocole, avant et après sur la même machine, `main` dans un worktree) :
+  premières pages qui déclarent une police Type 1 incluse 29 (SafeDocs) et 30 (UNSAFE) ;
+  premières pages avec une police remplacée 666 → 661 et 934 → 922 (ces pages ont souvent
+  aussi des polices non incluses) ; glyphes inconnus 25 156 → 16 393 (0,82 % → 0,53 %) et
+  20 074 → 18 542 (0,57 % → 0,53 %) : les codes de l'encodage intégré d'une police Type 1 ont
+  désormais un nom de glyphe ; taux, crashs et timeouts inchangés ;
+- fuzzing `font` étendu au Type 1 (graine `simple-type1`) : 98 873 exécutions en 10 min (WSL),
+  aucun crash ;
+- après la revue : lecture bornée avant d'appeler `read-fonts` (noms d'encodage × glyphes au
+  plus 10^8 comparaisons, la crate cherchant chaque nom linéairement, sans budget ni annulation ;
+  testé à la borne et au-delà), mémoire de l'index des glyphes facturée et comptée au cache,
+  largeurs du programme quand `/Widths` manque (régression évitée : la police de remplacement
+  les donnait), programme Type 1 sous une police CID refusé avant lecture, code de l'encodage
+  intégré sans glyphe non signalé (comme CFF) ; variante de `type1.pdf` à `/FontMatrix` inclinée
+  de 2000 unités, toujours identique à `pdftoppm` et `pdftotext`.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

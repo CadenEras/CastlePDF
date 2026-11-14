@@ -92,7 +92,7 @@ Contraintes :
 | Lecteur de polices | `skrifa = "=0.44.0"` (même version que celle déjà verrouillée ; amendée en 0.49.0, voir plus bas), sans fonctions par défaut sauf `std`. Utilisé seulement dans `pdf-render`, dans un module `text`. Un CFF nu (`/Type1C`, `/CIDFontType0C`) est lu par `read-fonts` comme table `CFF`. Si `skrifa` exige une police OpenType complète, on l'enveloppe dans un conteneur OpenType minimal construit en mémoire ; à valider au prototype |
 | Rendu des glyphes | Option (b) : les contours sont convertis en chemins `kurbo` (crate déjà présente). Positions selon ISO 32000-2, 9.4 : matrice de texte, `Tc`, `Tw`, `Tz`, `TL`, `Ts`, et largeurs `/Widths`, `/W` ou métriques AFM des polices standard. Modes `Tr` : 0 à 2 et 7 rendus, 4 à 6 (découpe) toujours signalés par `TextClip`, 3 (invisible) rien. Pas de hinting. La fonction `text` de `vello_cpu` reste désactivée |
 | Encodages | `/Encoding` (Standard, WinAnsi, MacRoman, MacExpert, `/Differences`), noms de glyphes vers Unicode via l'Adobe Glyph List (BSD-3-Clause), tables `cmap` des polices TrueType, y compris symboliques (3,0) et (1,0). Type 0 : `Identity-H`, `Identity-V` et CMap incluses. Les CMap prédéfinies non Identity (CJK) sont `Unsupported`, signalées |
-| Type 1 inclus (`FontFile`) | Non lu par `skrifa`. En P2, la police est remplacée comme une police non incluse, et la page porte un nouveau bit `Skipped` (`FontSubstituted`). La première étape de la tranche ajoute à `survey` le décompte des types de police rencontrés. Un lecteur Type 1 maison (déchiffrement `eexec`, charstrings) fera l'objet d'une décision mesurée |
+| Type 1 inclus (`FontFile`) | Lu par `read-fonts` depuis la tranche 3.8 (amendement du 2026-11-14, plus bas). Avant : non lu par `skrifa`. En P2, la police est remplacée comme une police non incluse, et la page porte un nouveau bit `Skipped` (`FontSubstituted`). La première étape de la tranche ajoute à `survey` le décompte des types de police rencontrés. Un lecteur Type 1 maison (déchiffrement `eexec`, charstrings) fera l'objet d'une décision mesurée |
 | Polices non incluses | Jeu OFL 1.1 de pdf.js : Arimo (Regular, Bold), Tinos (Regular, Bold, Italic, BoldItalic), Liberation Mono (Regular, Bold), Noto Sans Symbols et Symbols 2. Les obliques de Helvetica et Courier sont obtenues en inclinant la police droite, comme l'original. Une police nommée mais absente (Arial, Calibri…) est remplacée selon son nom et les drapeaux de `/FontDescriptor` (serif, chasse fixe, gras, italique), et signalée `FontSubstituted`. Les positions viennent toujours des largeurs du PDF ; seul le dessin du glyphe est remplacé |
 | Livraison des polices | Fichiers réduits aux glyphes des encodages standard (Latin, Symbol, Dingbats) par un script reproductible (`fonttools` à version épinglée, lancé hors CI). Objectif : 1,5 Mo au plus, mesuré. Ils sont commités dans `crates/pdf-render/fonts/` avec leurs licences, sources et sha256, et inclus par `include_bytes!` derrière une fonction `standard-fonts`, active par défaut. Sans elle, un usage sans interface fournit ses propres polices ou obtient `FontSubstituted` sans dessin. Ces fichiers sont recensés dans un inventaire tiers séparé, car `cargo-deny` ne voit pas les fichiers de données |
 | Type 3 | Les procédures de glyphe sont exécutées par l'interpréteur existant, avec une profondeur limitée (pas de Type 3 dans un Type 3) et le budget de la page. Étape après les polices incluses ; signalé `Text` d'ici là |
@@ -203,3 +203,24 @@ Contraintes :
     3. polices non incluses ;
     4. images ;
     5. Type 3.
+- **Amendement du 2026-11-14 (tranche 3.8 d'ADR-0006), accepté le même jour :**
+  - **Constat.** `read-fonts` 0.46.0, déjà verrouillé comme dépendance de `skrifa` 0.49.0,
+    contient un lecteur Type 1 (`ps::type1::Type1Font`) : formats PFB, `eexec` binaire et
+    hexadécimal, sous-routines, `seac`, encodage intégré, noms de glyphes. Même crate, même
+    version, Apache-2.0 OU MIT, `#![forbid(unsafe_code)]`, maintenue par Google (fontations,
+    Chrome). Son évaluateur de charstrings borne la profondeur des sous-routines et le nombre
+    d'opérations (1 000 000).
+  - **Décision.** Lire `/FontFile` des polices simples avec ce lecteur, au lieu d'un
+    lecteur maison : aucune dépendance nouvelle, aucun code natif, beaucoup moins de code à
+    maintenir. Le contour passe par le même `Pen` borné que TrueType et CFF
+    (`max_glyph_segments`). Le programme lu est gardé avec la police ; il compte deux fois sa
+    taille dans le cache des polices et est facturé à `max_decoded_bytes` avant lecture. Un
+    programme illisible reste remplacé et signalé `FontSubstituted`, comme avant.
+  - **Hors périmètre.** Un programme Type 1 sous une police CID (`/FontFile` d'un
+    `CIDFontType0`, rare) n'est pas lu ; les polices multiple master sont dessinées dans leur
+    instance par défaut.
+  - **Preuves.** Fixture synthétique `type1.pdf` (police Type 1 propre au projet : `eexec`
+    binaire et hexadécimal, sous-routine, `seac`, encodage intégré et `/Differences`) identique
+    à `pdftoppm` et à `pdftotext` ; cible de fuzzing `font` étendue au Type 1 ; mesure sur le
+    corpus (`docs/QUALITY.md`). Le module Type 1 de `read-fonts` est plus récent que son CFF :
+    les mises à jour de `skrifa` restent verrouillées et relues.

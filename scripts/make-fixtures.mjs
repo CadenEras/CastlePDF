@@ -605,6 +605,138 @@ function cjkPage() {
   ], '1.4');
 }
 
+// A synthetic Type 1 font (Adobe Type 1 Font Format), project-owned: the
+// charstring operators used below, encrypted as the format says (charstring
+// key 4330, then eexec key 55665, four leading bytes each).
+const T1 = { hsbw: [13], rmoveto: [21], rlineto: [5], rrcurveto: [8], closepath: [9],
+  callsubr: [10], return: [11], endchar: [14], seac: [12, 6] };
+function t1Charstring(...items) {
+  const bytes = [];
+  for (const item of items) {
+    if (typeof item === 'string') {
+      bytes.push(...T1[item]);
+    } else if (item >= -107 && item <= 107) {
+      bytes.push(item + 139);
+    } else if (item >= 108 && item <= 1131) {
+      bytes.push(((item - 108) >> 8) + 247, (item - 108) & 255);
+    } else if (item >= -1131 && item <= -108) {
+      bytes.push(((-item - 108) >> 8) + 251, (-item - 108) & 255);
+    } else {
+      bytes.push(255, (item >>> 24) & 255, (item >>> 16) & 255, (item >>> 8) & 255, item & 255);
+    }
+  }
+  return Buffer.from(bytes);
+}
+function t1Encrypt(plain, key) {
+  let r = key;
+  const out = Buffer.alloc(plain.length + 4);
+  Buffer.concat([Buffer.alloc(4), plain]).forEach((p, i) => {
+    const c = p ^ (r >> 8);
+    out[i] = c;
+    r = ((c + r) * 52845 + 22719) & 0xffff;
+  });
+  return out;
+}
+// The three parts of the program (/Length1, /Length2, /Length3): cleartext,
+// eexec part (binary, or hexadecimal with `hex`), trailer. Glyphs: A a
+// triangle, B a box with a curved side, O four curves, C drawn by a
+// subroutine, Aacute a `seac` composite of A and acute, space empty.
+function type1Program(hex, matrix = '0.001 0 0 0.001 0 0') {
+  const rd = (name, data) => Buffer.concat([
+    Buffer.from(`/${name} ${data.length + 4} RD `, 'latin1'), t1Encrypt(data, 4330), Buffer.from(' ND\n')]);
+  const glyphs = [
+    ['.notdef', t1Charstring(0, 500, 'hsbw', 'endchar')],
+    ['space', t1Charstring(0, 250, 'hsbw', 'endchar')],
+    ['A', t1Charstring(0, 600, 'hsbw', 50, 0, 'rmoveto', 250, 650, 'rlineto', 250, -650, 'rlineto',
+      'closepath', 'endchar')],
+    ['B', t1Charstring(0, 620, 'hsbw', 60, 0, 'rmoveto', 300, 0, 'rlineto', 180, 0, 0, 650, -180, 0,
+      'rrcurveto', -300, 0, 'rlineto', 'closepath', 'endchar')],
+    ['O', t1Charstring(0, 700, 'hsbw', 350, 0, 'rmoveto', 170, 0, 130, 150, 0, 175, 'rrcurveto',
+      0, 175, -130, 150, -170, 0, 'rrcurveto', -170, 0, -130, -150, 0, -175, 'rrcurveto',
+      0, -175, 130, -150, 170, 0, 'rrcurveto', 'closepath', 'endchar')],
+    ['C', t1Charstring(0, 560, 'hsbw', 0, 'callsubr', 'endchar')],
+    ['acute', t1Charstring(0, 300, 'hsbw', 100, 700, 'rmoveto', 100, 120, 'rlineto', 60, -40, 'rlineto',
+      'closepath', 'endchar')],
+    // asb adx ady bchar achar seac: A (65) with acute (194) shifted by 150.
+    ['Aacute', t1Charstring(0, 600, 'hsbw', 0, 150, 0, 65, 194, 'seac')],
+  ];
+  const subr = t1Charstring(60, 0, 'rmoveto', 440, 0, 'rlineto', 0, 120, 'rlineto', -320, 0, 'rlineto',
+    0, 410, 'rlineto', 320, 0, 'rlineto', 0, 120, 'rlineto', -440, 0, 'rlineto', 'closepath', 'return');
+  const cleartext = Buffer.from([
+    '%!PS-AdobeFont-1.0: CastleType1 001.000',
+    '11 dict begin',
+    '/FontInfo 2 dict dup begin /FullName (Castle Type1) readonly def /FamilyName (Castle) readonly def end readonly def',
+    '/FontName /CastleType1 def', '/PaintType 0 def', '/FontType 1 def',
+    `/FontMatrix [${matrix}] readonly def`, '/FontBBox {0 0 700 830} readonly def',
+    '/Encoding 256 array', '0 1 255 {1 index exch /.notdef put} for',
+    'dup 32 /space put', 'dup 65 /A put', 'dup 66 /B put', 'dup 67 /C put', 'dup 79 /O put',
+    'dup 193 /Aacute put', 'dup 194 /acute put',
+    'readonly def', 'currentdict end', 'currentfile eexec', '',
+  ].join('\n'), 'latin1');
+  const privatePart = Buffer.concat([
+    Buffer.from('dup /Private 8 dict dup begin\n/RD{string currentfile exch readstring pop}executeonly def\n'
+      + '/ND{noaccess def}executeonly def\n/NP{noaccess put}executeonly def\n/lenIV 4 def\n'
+      + '/BlueValues [] ND\n/MinFeature{16 16}ND\n/password 5839 def\n/Subrs 1 array\n', 'latin1'),
+    Buffer.from(`dup 0 ${subr.length + 4} RD `, 'latin1'), t1Encrypt(subr, 4330), Buffer.from(' NP\nND\n'),
+    Buffer.from(`2 index /CharStrings ${glyphs.length} dict dup begin\n`, 'latin1'),
+    ...glyphs.map(([name, data]) => rd(name, data)),
+    Buffer.from('end\nend\nreadonly put\nnoaccess put\ndup/FontName get exch definefont pop\n'
+      + 'mark currentfile closefile\n', 'latin1'),
+  ]);
+  const encrypted = t1Encrypt(privatePart, 55665);
+  const eexec = hex
+    ? Buffer.from((encrypted.toString('hex').match(/.{1,64}/g) ?? []).join('\n') + '\n', 'latin1')
+    : encrypted;
+  const trailer = Buffer.from(`${'0'.repeat(64)}\n`.repeat(8) + 'cleartomark\n', 'latin1');
+  return { cleartext, eexec, trailer };
+}
+
+// Embedded Type 1 fonts (ADR-0005 amended, tranche 3.8): the synthetic font
+// with its built-in encoding (F1, symbolic), with a PDF encoding whose
+// /Differences put its glyphs on lowercase codes (F2), and the same program
+// with a hexadecimal eexec part (F3), and with a skewed /FontMatrix of half
+// the usual scale, 2000 units per em (F4).
+function type1EmbeddedPage() {
+  const widths = { 32: 250, 65: 600, 66: 620, 67: 560, 79: 700, 193: 600, 194: 300 };
+  const widthList = (first, last, map) => Array.from({ length: last - first + 1 },
+    (_, i) => map[first + i] ?? 0).join(' ');
+  const program = (hex, matrix) => {
+    const { cleartext, eexec, trailer } = type1Program(hex, matrix);
+    const data = Buffer.concat([cleartext, eexec, trailer]).toString('latin1');
+    return stream(data, ` /Length1 ${cleartext.length} /Length2 ${eexec.length} /Length3 ${trailer.length}`);
+  };
+  const descriptor = (flags, file) => '<< /Type /FontDescriptor /FontName /CastleType1 '
+    + `/Flags ${flags} /FontBBox [0 0 700 830] /ItalicAngle 0 /Ascent 830 /Descent 0 `
+    + `/CapHeight 650 /StemV 80 /FontFile ${file} 0 R >>`;
+  const lower = { 32: 250, 97: 600, 98: 620, 99: 560, 111: 700 };
+  const content = [
+    'BT /F1 40 Tf 10 130 Td (ABC O \\301) Tj ET',
+    'BT /F2 40 Tf 10 75 Td (abc o) Tj ET',
+    'BT /F3 40 Tf 10 20 Td (BOA \\301C) Tj ET',
+    'BT /F4 60 Tf 220 120 Td (ABO) Tj ET',
+  ].join('\n');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 360 180] '
+      + '/Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /F4 13 0 R >> >> /Contents 4 0 R >>',
+    stream(content),
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CastleType1 /FirstChar 32 /LastChar 194 /Widths [${widthList(32, 194, widths)}] /FontDescriptor 8 0 R >>`,
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CastleType1 /FirstChar 32 /LastChar 111 /Widths [${widthList(32, 111, lower)}] `
+      + '/Encoding << /Type /Encoding /Differences [97 /A /B /C 111 /O] >> /FontDescriptor 9 0 R >>',
+    `<< /Type /Font /Subtype /Type1 /BaseFont /CastleType1 /FirstChar 32 /LastChar 194 /Widths [${widthList(32, 194, widths)}] /FontDescriptor 10 0 R >>`,
+    descriptor(4, 11),
+    descriptor(32, 11),
+    descriptor(4, 12),
+    program(false),
+    program(true),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /CastleType1 /FirstChar 65 /LastChar 79 '
+      + `/Widths [${widthList(65, 79, { 65: 300, 66: 310, 79: 350 })}] /FontDescriptor 14 0 R >>`,
+    descriptor(4, 15),
+    program(false, '0.0005 0 0.0001 0.0005 0 0'),
+  ], '1.4');
+}
+
 // CFF test fonts (SIL OFL 1.1, tests/fonts), built by
 // scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
 // an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
@@ -1070,6 +1202,9 @@ export const fixtures = {
   'cmaps.pdf': cmapsPage(),
   // Adobe's predefined CJK CMaps and collections; see cjkPage.
   'cjk.pdf': cjkPage(),
+  // Embedded Type 1 fonts: built-in encoding, /Differences, hex eexec,
+  // subroutine and seac; see type1EmbeddedPage.
+  'type1.pdf': type1EmbeddedPage(),
   // Words, lines and /ActualText; see layoutPage.
   'layout.pdf': layoutPage(),
   // Reading order: title, two columns, a line in pieces; see columnsPage.
