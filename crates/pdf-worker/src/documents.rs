@@ -11,15 +11,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use pdf_document::Document;
+use pdf_render::search::{Query, SearchOptions, TextPosition, find_words};
 use pdf_render::{
-    PixelRect, RenderCache, RenderLimits, RenderOptions, TextWord, Unsupported, page_size,
-    page_text_cached, page_transform, reading_lines, render_area_cached,
+    PageText, PixelRect, RenderCache, RenderLimits, RenderOptions, TextWord, Unsupported,
+    page_size, page_text_cached, page_transform, reading_lines, render_area_cached,
 };
 use pdf_syntax::{Budget, MemorySource};
 
 use crate::protocol::{
-    ErrorCode, LAYER_UNITS_PER_PIXEL, LayerLine, LayerWord, MAX_PATH_BYTES, MAX_TEXT_LAYER_BYTES,
-    MAX_TILE_SIDE, PAGE_TEXT_HEADER_LEN, Repair, Response, Skipped, TextLayer, TileRect, word_len,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, LayerLine, LayerWord, MAX_PAGE_HITS, MAX_PATH_BYTES,
+    MAX_QUERY_BYTES, MAX_TEXT_LAYER_BYTES, MAX_TILE_SIDE, PAGE_TEXT_HEADER_LEN, PageHit, Repair,
+    Response, Skipped, TextLayer, TileRect, word_len,
 };
 
 /// Documents open at once; each holds its whole file in memory (ADR-0002).
@@ -161,25 +163,17 @@ pub fn page_text(
     id: u64,
     budget: &mut Budget,
 ) -> Result<Response, ErrorCode> {
+    let layer = text_layer(document, page, budget)?;
+    Ok(Response::PageText { id, layer })
+}
+
+/// The text layer of `page`, as `page_text` sends it.
+fn text_layer(document: &Shared, page: u32, budget: &mut Budget) -> Result<TextLayer, ErrorCode> {
     let page = page_of(document, page)?;
     let transform = page_transform(page, &RenderOptions::default()).map_err(|e| render_code(&e))?;
-    let text = {
-        // As for tiles: one job at a time, a poisoned cache is usable.
-        let mut cache = document
-            .cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        page_text_cached(
-            document.file(),
-            page,
-            &RenderLimits::default(),
-            &mut cache,
-            budget,
-        )
-        .map_err(|e| render_code(&e))?
-    };
+    let text = read_text(document, page, budget)?;
     let mut layer = TextLayer {
-        incomplete: text.skipped.contains(&Unsupported::Text) || text.unread_bytes > 0,
+        incomplete: missing_text(&text),
         ..TextLayer::default()
     };
     let mut size = PAGE_TEXT_HEADER_LEN;
@@ -213,7 +207,84 @@ pub fn page_text(
         }
         layer.lines.push(LayerLine { words });
     }
-    Ok(Response::PageText { id, layer })
+    Ok(layer)
+}
+
+/// The text of `page`, through the document's cache.
+fn read_text(
+    document: &Shared,
+    page: &pdf_document::Page,
+    budget: &mut Budget,
+) -> Result<PageText, ErrorCode> {
+    // As for tiles: one job at a time, a poisoned cache is usable.
+    let mut cache = document
+        .cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    page_text_cached(
+        document.file(),
+        page,
+        &RenderLimits::default(),
+        &mut cache,
+        budget,
+    )
+    .map_err(|e| render_code(&e))
+}
+
+/// Text the page shows is missing: a font or glyph that could not be read.
+fn missing_text(text: &PageText) -> bool {
+    text.skipped.contains(&Unsupported::Text) || text.unread_bytes > 0
+}
+
+/// The occurrences of `query` in page `page`, searched in the words of its
+/// text layer as `page_text` sends it, so that each occurrence names words
+/// the UI has: text the layer leaves out (`truncated`) is not searched, and
+/// the result is `truncated` too. A query that is empty once folded, or too
+/// long, is an `InvalidRequest`.
+pub fn search_page(
+    document: &Shared,
+    page: u32,
+    query: &str,
+    options: SearchOptions,
+    id: u64,
+    budget: &mut Budget,
+) -> Result<Response, ErrorCode> {
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    let query = Query::new(query, options).map_err(|_| ErrorCode::InvalidRequest)?;
+    let layer = text_layer(document, page, budget)?;
+    let found = find_words(
+        layer
+            .lines
+            .iter()
+            .map(|line| line.words.iter().map(|word| word.text.as_str())),
+        &query,
+        MAX_PAGE_HITS,
+    );
+    let place = |position: TextPosition| -> Option<[u32; 3]> {
+        Some([
+            u32::try_from(position.line).ok()?,
+            u32::try_from(position.word).ok()?,
+            u32::try_from(position.char).ok()?,
+        ])
+    };
+    let hits = found
+        .hits
+        .iter()
+        .filter_map(|hit| {
+            Some(PageHit {
+                start: place(hit.start)?,
+                end: place(hit.end)?,
+            })
+        })
+        .collect();
+    Ok(Response::SearchHits {
+        id,
+        hits,
+        truncated: found.truncated || layer.truncated,
+        incomplete: layer.incomplete,
+    })
 }
 
 /// A word in layer units: its baseline through `transform` (user space to
@@ -550,6 +621,31 @@ mod tests {
         assert!(encoded <= MAX_TEXT_LAYER_BYTES, "{encoded}");
         assert!(encoded > MAX_TEXT_LAYER_BYTES - 64, "{encoded}");
         assert_eq!(Response::decode(&response.encode()), Ok(response.clone()));
+
+        // A search covers the layer only, and says so.
+        let search = |query: &str| match search_page(
+            &document,
+            0,
+            query,
+            SearchOptions::default(),
+            2,
+            &mut budget(),
+        ) {
+            Ok(Response::SearchHits {
+                hits, truncated, ..
+            }) => (hits, truncated),
+            other => panic!("hits expected, got {other:?}"),
+        };
+        let (hits, truncated) = search("W");
+        assert_eq!(hits.len(), MAX_PAGE_HITS);
+        assert!(truncated);
+        for hit in &hits {
+            let [line, word, char] = hit.start.map(|index| index as usize);
+            assert_eq!(layer.lines[line].words[word].text, "w");
+            assert_eq!((char, hit.end), (0, [hit.start[0], hit.start[1], 1]));
+        }
+        let (hits, truncated) = search("absent");
+        assert!(hits.is_empty() && truncated);
     }
 
     /// The text layer of a one-page document showing `content` with `/F1`

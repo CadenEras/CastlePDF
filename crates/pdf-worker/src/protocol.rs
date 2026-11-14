@@ -21,6 +21,12 @@ pub const MAX_PATH_BYTES: u16 = 4096;
 pub const MAX_TEXT_LAYER_BYTES: usize = 960 * 1024;
 /// Text layer coordinates are in 1/64 of a pixel of the page at scale 1.
 pub const LAYER_UNITS_PER_PIXEL: f64 = 64.0;
+/// Longest `SearchPage` query, in UTF-8 bytes (and at most
+/// `pdf_render::search::MAX_QUERY_CHARS` characters once folded).
+pub const MAX_QUERY_BYTES: usize = 1024;
+/// Most occurrences a `SearchHits` response carries for a page; the others
+/// are left out (`truncated`).
+pub const MAX_PAGE_HITS: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
@@ -72,6 +78,18 @@ pub enum Request {
         id: u64,
         document: u32,
         page: u32,
+    },
+    /// The occurrences of `query` in the text of a page, placed in its text
+    /// layer (ADR-0006, tranche 3.7, protocol version 6); answered by
+    /// `SearchHits`. The shell searches a document one page at a time, so
+    /// that tiles are never kept waiting behind a whole search.
+    SearchPage {
+        id: u64,
+        document: u32,
+        page: u32,
+        query: String,
+        match_case: bool,
+        match_diacritics: bool,
     },
 }
 
@@ -129,6 +147,24 @@ pub enum Response {
         id: u64,
         layer: TextLayer,
     },
+    SearchHits {
+        id: u64,
+        hits: Vec<PageHit>,
+        /// More than `MAX_PAGE_HITS` occurrences: the others are left out.
+        truncated: bool,
+        /// Text the page shows is missing, as for `TextLayer::incomplete`:
+        /// an occurrence there cannot be found.
+        incomplete: bool,
+    },
+}
+
+/// An occurrence on a page, from its first character to the one after its
+/// last: line, word and character indices in the page's text layer
+/// (`PageText`), characters counted in Unicode scalar values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageHit {
+    pub start: [u32; 3],
+    pub end: [u32; 3],
 }
 
 /// The words of a page, lines in reading order, placed on its rendering at
@@ -300,6 +336,7 @@ const PAGE_SIZE: u8 = 0x06;
 const RENDER_TILE: u8 = 0x07;
 const CLOSE_DOCUMENT: u8 = 0x08;
 const PAGE_TEXT: u8 = 0x09;
+const SEARCH_PAGE: u8 = 0x0A;
 const HELLO_ACK: u8 = 0x81;
 const JOB_DONE: u8 = 0x82;
 const JOB_FAILED: u8 = 0x83;
@@ -308,6 +345,9 @@ const DOCUMENT_OPENED: u8 = 0x85;
 const PAGE_SIZE_REPLY: u8 = 0x86;
 const TILE: u8 = 0x87;
 const PAGE_TEXT_REPLY: u8 = 0x88;
+const SEARCH_HITS: u8 = 0x89;
+/// Encoded bytes of a `PageHit`.
+const HIT_LEN: usize = 24;
 /// Bytes of a `PageText` response before its lines: tag, id, flags, count.
 pub const PAGE_TEXT_HEADER_LEN: usize = 1 + 8 + 1 + 4;
 /// Least bytes of an encoded line (its word count) and word (empty text).
@@ -421,6 +461,19 @@ impl Request {
                 .u64(*id)
                 .u32(*document)
                 .u32(*page),
+            Self::SearchPage {
+                id,
+                document,
+                page,
+                query,
+                match_case,
+                match_diacritics,
+            } => Writer::new(SEARCH_PAGE, 20 + query.len())
+                .u64(*id)
+                .u32(*document)
+                .u32(*page)
+                .u8(u8::from(*match_case) | u8::from(*match_diacritics) << 1)
+                .str(query),
         }
         .0
     }
@@ -464,6 +517,21 @@ impl Request {
                 document: r.u32()?,
                 page: r.u32()?,
             },
+            SEARCH_PAGE => {
+                let (id, document, page) = (r.u64()?, r.u32()?, r.u32()?);
+                let flags = r.u8()?;
+                if flags > 0b11 {
+                    return Err(DecodeError);
+                }
+                Self::SearchPage {
+                    id,
+                    document,
+                    page,
+                    query: r.str()?,
+                    match_case: flags & 1 != 0,
+                    match_diacritics: flags & 2 != 0,
+                }
+            }
             _ => return Err(DecodeError),
         };
         r.finish()?;
@@ -523,6 +591,24 @@ impl Response {
                             .i32(x1)
                             .i32(y1)
                             .u32(word.size);
+                    }
+                }
+                out
+            }
+            Self::SearchHits {
+                id,
+                hits,
+                truncated,
+                incomplete,
+            } => {
+                let flags = u8::from(*truncated) | u8::from(*incomplete) << 1;
+                let mut out = Writer::new(SEARCH_HITS, 14 + hits.len() * HIT_LEN)
+                    .u64(*id)
+                    .u8(flags)
+                    .u32(u32::try_from(hits.len()).unwrap_or(u32::MAX));
+                for hit in hits {
+                    for value in hit.start.iter().chain(&hit.end) {
+                        out = out.u32(*value);
                     }
                 }
                 out
@@ -607,6 +693,30 @@ impl Response {
                     layer.lines.push(line);
                 }
                 Self::PageText { id, layer }
+            }
+            SEARCH_HITS => {
+                let id = r.u64()?;
+                let flags = r.u8()?;
+                if flags > 0b11 {
+                    return Err(DecodeError);
+                }
+                let count = r.count(HIT_LEN)?;
+                if count > MAX_PAGE_HITS {
+                    return Err(DecodeError);
+                }
+                let mut hits = Vec::with_capacity(count);
+                for _ in 0..count {
+                    hits.push(PageHit {
+                        start: [r.u32()?, r.u32()?, r.u32()?],
+                        end: [r.u32()?, r.u32()?, r.u32()?],
+                    });
+                }
+                Self::SearchHits {
+                    id,
+                    hits,
+                    truncated: flags & 1 != 0,
+                    incomplete: flags & 2 != 0,
+                }
             }
             _ => return Err(DecodeError),
         };
@@ -724,6 +834,22 @@ mod tests {
                 document: 2,
                 page: 7,
             },
+            Request::SearchPage {
+                id: 12,
+                document: 2,
+                page: 3,
+                query: "château fort".to_owned(),
+                match_case: false,
+                match_diacritics: true,
+            },
+            Request::SearchPage {
+                id: 13,
+                document: 2,
+                page: 0,
+                query: String::new(),
+                match_case: true,
+                match_diacritics: false,
+            },
         ]
     }
 
@@ -785,6 +911,27 @@ mod tests {
                 id: 8,
                 layer: TextLayer::default(),
             },
+            Response::SearchHits {
+                id: 9,
+                hits: vec![
+                    PageHit {
+                        start: [0, 1, 2],
+                        end: [0, 1, 9],
+                    },
+                    PageHit {
+                        start: [3, 0, 0],
+                        end: [u32::MAX, 2, 1],
+                    },
+                ],
+                truncated: true,
+                incomplete: false,
+            },
+            Response::SearchHits {
+                id: 10,
+                hits: Vec::new(),
+                truncated: false,
+                incomplete: true,
+            },
         ]
     }
 
@@ -810,6 +957,42 @@ mod tests {
         bytes.push(4);
         bytes.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(Response::decode(&bytes), Err(DecodeError));
+    }
+
+    #[test]
+    fn search_messages_are_bounded() {
+        let hits = |flags: u8, count: u32, bytes: usize| {
+            let mut out = vec![SEARCH_HITS];
+            out.extend_from_slice(&1u64.to_le_bytes());
+            out.push(flags);
+            out.extend_from_slice(&count.to_le_bytes());
+            out.resize(out.len() + bytes, 0);
+            Response::decode(&out)
+        };
+        assert!(hits(0, 1, HIT_LEN).is_ok());
+        // A count the bytes left cannot hold, checked before allocating.
+        assert_eq!(hits(0, u32::MAX, HIT_LEN), Err(DecodeError));
+        // At most MAX_PAGE_HITS occurrences, and only two flags.
+        let most = u32::try_from(MAX_PAGE_HITS).unwrap_or(u32::MAX);
+        assert!(hits(3, most, MAX_PAGE_HITS * HIT_LEN).is_ok());
+        assert_eq!(
+            hits(0, most + 1, (MAX_PAGE_HITS + 1) * HIT_LEN),
+            Err(DecodeError)
+        );
+        assert_eq!(hits(4, 0, 0), Err(DecodeError));
+        let mut search = Request::SearchPage {
+            id: 1,
+            document: 1,
+            page: 0,
+            query: "q".to_owned(),
+            match_case: false,
+            match_diacritics: false,
+        }
+        .encode();
+        if let Some(flags) = search.get_mut(17) {
+            *flags = 4;
+        }
+        assert_eq!(Request::decode(&search), Err(DecodeError));
     }
 
     #[test]

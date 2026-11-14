@@ -41,6 +41,7 @@ mod image;
 mod interpret;
 mod layout;
 mod raster;
+pub mod search;
 mod text;
 
 use std::collections::BTreeSet;
