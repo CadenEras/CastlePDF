@@ -10,7 +10,9 @@ node --test scripts/tests/hooks.test.mjs
 ```
 
 Node 22+ suffit, sans installation npm. La fixture PDF synthétique se régénère avec
-`node scripts/make-fixtures.mjs` et se vérifie avec `node --test scripts/tests/fixtures.test.mjs`.
+`node scripts/make-fixtures.mjs` (les CMap d'Adobe embarquées viennent de
+`node scripts/make-cmaps.mjs <cmap-resources> <mapping-resources-pdf>`, vérifiées par `--check`,
+voir `crates/pdf-render/cmaps/README.md`) et se vérifie avec `node --test scripts/tests/fixtures.test.mjs`.
 `node --test scripts/tests/readme.test.mjs` vérifie que les badges de versions du README
 correspondent aux versions fixées (toolchain Rust, Node de la CI, `package.json`, crate Tauri).
 Le plancher mémoire de l'application release se mesure avec `node scripts/measure-memory.mjs`

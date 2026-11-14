@@ -268,3 +268,23 @@ fn pages_match_pdftoppm() {
     );
     eprintln!("fixtures: rendering matches pdftoppm");
 }
+
+/// Adobe's predefined CMaps (tranche 3.7b): Poppler reads them from
+/// poppler-data, so this case runs only when `CASTLE_POPPLER_DATA` is set
+/// too (the `oracle` workflow installs it).
+#[test]
+fn cjk_page_matches_pdftoppm() {
+    let (Some(executable), Some(_)) = (
+        std::env::var_os("CASTLE_PDFTOPPM"),
+        std::env::var_os("CASTLE_POPPLER_DATA"),
+    ) else {
+        eprintln!("pdftoppm CJK oracle skipped: CASTLE_PDFTOPPM or CASTLE_POPPLER_DATA is not set");
+        return;
+    };
+    let ratio = mismatch_ratio(&PathBuf::from(executable), "cjk.pdf", 0, 3.0);
+    assert!(
+        ratio <= MAX_TEXT_MISMATCHES,
+        "cjk.pdf differs from pdftoppm"
+    );
+    eprintln!("cjk fixture: rendering matches pdftoppm");
+}

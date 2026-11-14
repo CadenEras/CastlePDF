@@ -223,7 +223,8 @@ fn usecmap_chains_are_bounded_and_cycles_stopped() {
 }
 
 #[test]
-fn identity_parents_are_built_in_and_other_predefined_ones_unsupported() {
+#[cfg(feature = "cjk-cmaps")]
+fn named_parents_are_identity_or_an_embedded_predefined_cmap() {
     let override_one = |parent: &str| {
         let cmap = format!(
             "/{parent} usecmap begincodespacerange <0000> <FFFF> endcodespacerange begincidchar <0001> 16 endcidchar"
@@ -236,8 +237,10 @@ fn identity_parents_are_built_in_and_other_predefined_ones_unsupported() {
         )
     };
     assert_eq!(text(override_one("Identity-H"), 0).glyphs.len(), 2);
-    // A predefined CJK parent comes with tranche 3.7b.
-    let unsupported = text(override_one("UniJIS-UCS2-H"), 0);
+    // A predefined CMap this build embeds (tranche 3.7b, `cjk-cmaps`).
+    assert_eq!(text(override_one("UniJIS-UCS2-H"), 0).glyphs.len(), 2);
+    // Another one is not read, and says so.
+    let unsupported = text(override_one("UniJIS-UCS2-HW-H"), 0);
     assert!(unsupported.glyphs.is_empty());
     assert!(unsupported.skipped.contains(&Unsupported::Text));
 }
@@ -261,4 +264,34 @@ fn the_fixture_renders_without_skipping_text() {
             rendering.skipped
         );
     }
+}
+
+#[test]
+#[cfg(feature = "cjk-cmaps")]
+fn predefined_cjk_cmaps_render_and_give_their_text() {
+    // Tranche 3.7b: Adobe's predefined encodings and collections, without
+    // /ToUnicode (scripts/make-fixtures.mjs, `cjkPage`).
+    let bytes = std::fs::read(repo("tests/corpus/public/cjk.pdf")).expect("fixture");
+    let document = document(bytes.clone());
+    let rendering = render_page(
+        document.file(),
+        document.page(0).expect("page"),
+        &RenderOptions::default(),
+        &mut budget(),
+    )
+    .expect("rendered");
+    assert!(rendering.skipped.is_empty(), "{:?}", rendering.skipped);
+    let page = text(bytes, 0);
+    assert_eq!(page.unread_bytes, 0);
+    let all: String = page
+        .glyphs
+        .iter()
+        .filter_map(|g| g.text.as_deref())
+        .collect();
+    // The one-byte space of 90ms-RKSJ-H is a half-width CID that
+    // Adobe-Japan1-UCS2 maps to an en space.
+    assert_eq!(
+        all,
+        "Nihon あいあいNihon あいNihon あいNihon あいGB 中文CNS 中文KS 한글"
+    );
 }

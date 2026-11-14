@@ -7,6 +7,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { committed as committedCMap } from './make-cmaps.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'tests', 'corpus', 'public');
 const damagedDir = path.join(root, 'tests', 'corpus', 'damaged');
@@ -495,6 +497,114 @@ function cmapsPage() {
   ], '1.4');
 }
 
+// The CID of `code` (hex, its bytes) in Adobe's predefined CMap `name` as
+// committed (crates/pdf-render/cmaps), its `usecmap` parent included.
+function predefinedCid(name, code) {
+  const text = committedCMap(name).toString('latin1');
+  const value = parseInt(code, 16);
+  for (const [, kind, body] of text.matchAll(/begincid(range|char)([\s\S]*?)endcid\1/g)) {
+    const pattern = kind === 'range'
+      ? /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(\d+)/g
+      : /<([0-9a-fA-F]+)>\s*(\d+)/g;
+    for (const m of body.matchAll(pattern)) {
+      if (m[1].length !== code.length) continue;
+      const low = parseInt(m[1], 16);
+      const high = kind === 'range' ? parseInt(m[2], 16) : low;
+      const cid = Number(kind === 'range' ? m[3] : m[2]);
+      if (low <= value && value <= high) return cid + value - low;
+    }
+  }
+  const parent = /\/(\S+)\s+usecmap/.exec(text);
+  if (parent) return predefinedCid(parent[1], code);
+  throw new Error(`no CID for <${code}> in ${name}`);
+}
+
+// Adobe's predefined CMaps and CJK collections (ADR-0006, tranche 3.7b),
+// without /ToUnicode: each font is Arimo as a CIDFontType2 whose
+// /CIDToGIDMap draws the CIDs of its collection with Latin glyphs (a CJK
+// character with a stand-in letter), so that pdftoppm, with poppler-data,
+// draws the same. Japan1: UniJIS-UCS2-H (F1), UniJIS-UCS2-V vertical (F2),
+// 90ms-RKSJ-H with one-byte Latin and two-byte kana (F3), UniJIS-UTF16-H
+// (F4), and Identity-H whose descendant names Adobe-Japan1, its codes being
+// CIDs (F5); then UniGB-UCS2-H (F6), UniCNS-UCS2-H (F7), UniKS-UCS2-H (F8).
+// The text comes from each collection's UCS2 CMap.
+function cjkPage() {
+  const stand = { 'あ': 'Q', 'い': 'W', '中': 'Q', '文': 'W', '한': 'Q', '글': 'W' };
+  const glyphOf = ch => arimoGlyphs.glyphs[stand[ch] ?? ch];
+  const sjis = { 'あ': '82A0', 'い': '82A2' };
+  const byte = ch => ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0');
+  const lines = [
+    ['F1', 'UniJIS-UCS2-H', 'Japan1', 'Nihon あい'],
+    ['F2', 'UniJIS-UCS2-V', 'Japan1', 'あい'],
+    ['F3', '90ms-RKSJ-H', 'Japan1', 'Nihon あい'],
+    ['F4', 'UniJIS-UTF16-H', 'Japan1', 'Nihon あい'],
+    ['F5', 'Identity-H', 'Japan1', 'Nihon あい'],
+    ['F6', 'UniGB-UCS2-H', 'GB1', 'GB 中文'],
+    ['F7', 'UniCNS-UCS2-H', 'CNS1', 'CNS 中文'],
+    ['F8', 'UniKS-UCS2-H', 'Korea1', 'KS 한글'],
+  ].map(([font, encoding, collection, text]) => {
+    // The codes shown, and each character's CID.
+    const chars = [...text];
+    let codes;
+    let cids;
+    if (encoding === '90ms-RKSJ-H') {
+      codes = chars.map(ch => sjis[ch] ?? byte(ch));
+      cids = codes.map(code => predefinedCid(encoding, code));
+    } else if (encoding === 'Identity-H') {
+      cids = chars.map(ch => predefinedCid('UniJIS-UCS2-H', hex4(ch.codePointAt(0))));
+      codes = cids.map(hex4);
+    } else {
+      codes = chars.map(ch => hex4(ch.codePointAt(0)));
+      cids = codes.map(code => predefinedCid(encoding, code));
+    }
+    return { font, encoding, collection, chars, shown: codes.join(''), cids };
+  });
+  // One CIDFontType2 per collection: CID to glyph, and widths.
+  const collections = ['Japan1', 'GB1', 'CNS1', 'Korea1'];
+  const descendants = collections.map(collection => {
+    const glyphs = new Map();
+    for (const line of lines.filter(l => l.collection === collection)) {
+      line.chars.forEach((ch, at) => glyphs.set(line.cids[at], glyphOf(ch)));
+    }
+    const last = Math.max(...glyphs.keys());
+    const map = Buffer.alloc(2 * (last + 1));
+    for (const [cid, [gid]] of glyphs) map.writeUInt16BE(gid, 2 * cid);
+    const w = [...glyphs].sort((a, b) => a[0] - b[0])
+      .map(([cid, [, advance]]) => `${cid} [${Math.round(advance * 1000 / arimoGlyphs.unitsPerEm)}]`)
+      .join(' ');
+    return { collection, map, w };
+  });
+  let y = 270;
+  const content = lines.map(({ font, shown }) => {
+    if (font === 'F2') {
+      return `BT /${font} 20 Tf 370 270 Td <${shown}> Tj ET`;
+    }
+    const line = `BT /${font} 18 Tf 10 ${y} Td <${shown}> Tj ET`;
+    y -= 34;
+    return line;
+  }).join('\n');
+  // Objects: 1 catalog, 2 pages, 3 page, 4 content, 5 descriptor, 6 Arimo,
+  // 7-14 the fonts, 15-18 the descendants, 19-22 their CIDToGIDMaps.
+  const fonts = lines.map(({ font }, index) => `/${font} ${7 + index} 0 R`).join(' ');
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] '
+      + `/Resources << /Font << ${fonts} >> >> /Contents 4 0 R >>`,
+    stream(content),
+    '<< /Type /FontDescriptor /FontName /CSTLGG+Arimo /Flags 32 /FontBBox [-544 -303 2700 1060] '
+      + '/ItalicAngle 0 /Ascent 905 /Descent -212 /CapHeight 716 /StemV 80 /FontFile2 6 0 R >>',
+    stream(arimo.toString('latin1'), ` /Length1 ${arimo.length}`),
+    ...lines.map(({ encoding, collection }) => '<< /Type /Font /Subtype /Type0 /BaseFont /CSTLGG+Arimo '
+      + `/Encoding /${encoding} /DescendantFonts [${15 + collections.indexOf(collection)} 0 R] >>`),
+    ...descendants.map(({ collection, w }, index) => '<< /Type /Font /Subtype /CIDFontType2 '
+      + '/BaseFont /CSTLGG+Arimo '
+      + `/CIDSystemInfo << /Registry (Adobe) /Ordering (${collection}) /Supplement 0 >> `
+      + `/FontDescriptor 5 0 R /CIDToGIDMap ${19 + index} 0 R /DW 1000 /W [${w}] >>`),
+    ...descendants.map(({ map }) => stream(map.toString('latin1'))),
+  ], '1.4');
+}
+
 // CFF test fonts (SIL OFL 1.1, tests/fonts), built by
 // scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
 // an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
@@ -958,6 +1068,8 @@ export const fixtures = {
   'text.pdf': textPage(),
   // Type 0 encodings: Identity-V, embedded CMaps, usecmap; see cmapsPage.
   'cmaps.pdf': cmapsPage(),
+  // Adobe's predefined CJK CMaps and collections; see cjkPage.
+  'cjk.pdf': cjkPage(),
   // Words, lines and /ActualText; see layoutPage.
   'layout.pdf': layoutPage(),
   // Reading order: title, two columns, a line in pieces; see columnsPage.

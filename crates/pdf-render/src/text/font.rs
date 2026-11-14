@@ -37,6 +37,7 @@ use super::encodings::{
     GLYPH_LIST, MAC_EXPERT, MAC_ROMAN, STANDARD, SYMBOL, SYMBOL_WIDTHS, WIN_ANSI, ZAPF_DINGBATS,
     ZAPF_DINGBATS_LIST, ZAPF_DINGBATS_WIDTHS,
 };
+use super::predefined;
 use super::unicode::{TextMap, name_text};
 use super::{resolve, resolve_dictionary, standard, stream_bytes};
 use crate::Error;
@@ -100,8 +101,9 @@ enum Mapping {
 enum CidCodes {
     /// `Identity-H` or `Identity-V`: two bytes per code, the code is the CID.
     Identity,
-    /// An embedded CMap: codes split by its codespace, CIDs from its
-    /// `cidchar`/`cidrange`, else its notdef ranges, else CID 0 (9.7.6.3).
+    /// An embedded or predefined CMap: codes split by its codespace, CIDs
+    /// from its `cidchar`/`cidrange`, else its notdef ranges, else CID 0
+    /// (9.7.6.3).
     CMap(Arc<CMap>),
 }
 
@@ -195,12 +197,29 @@ pub(crate) struct Code {
     pub is_space: bool,
     /// Placement and displacement in a vertical font.
     pub vertical: Option<Vertical>,
+    /// The CID the encoding maps the code to, for a Type 0 font: `None`
+    /// for a code that only a notdef range covers, whose glyph is drawn but
+    /// whose text is not the notdef CID's.
+    pub cid: Option<u32>,
 }
 
 impl Font {
     /// Bytes of the program, counted when the font is cached.
     pub fn program_len(&self) -> usize {
         self.program.len()
+    }
+
+    /// Bytes of the encoding CMap tables the font holds alone, counted when
+    /// the font is cached: none for `Identity` or a shared predefined
+    /// CMap, all of them for an embedded one (with the parents it copied).
+    pub fn tables_len(&self) -> u64 {
+        match &self.mapping {
+            Mapping::Cid {
+                codes: CidCodes::CMap(cmap),
+                ..
+            } if !predefined::is_shared(cmap) => cmap.tables_bytes(),
+            _ => 0,
+        }
     }
 
     pub fn units_per_em(&self) -> f64 {
@@ -254,6 +273,7 @@ impl Font {
                 width: widths.get(usize::from(*byte)).copied().unwrap_or(0.0),
                 is_space: *byte == b' ',
                 vertical: None,
+                cid: None,
             })),
             Mapping::Cid {
                 codes,
@@ -261,7 +281,7 @@ impl Font {
                 widths,
                 vertical,
             } => {
-                let code = move |key: CodeKey, cid: u32| {
+                let code = move |key: CodeKey, cid: u32, mapped: bool| {
                     let glyph = match cid_to_gid {
                         None => u16::try_from(cid).ok(),
                         Some(map) => usize::try_from(cid)
@@ -277,13 +297,14 @@ impl Font {
                         width,
                         is_space: key.len == 1 && key.value == 32,
                         vertical: vertical.as_ref().map(|metrics| metrics.metric(cid, width)),
+                        cid: mapped.then_some(cid),
                     }
                 };
                 match codes {
                     CidCodes::Identity => {
                         Box::new(string.as_chunks::<2>().0.iter().map(move |pair| {
                             let cid = u32::from(u16::from_be_bytes(*pair));
-                            code(CodeKey { value: cid, len: 2 }, cid)
+                            code(CodeKey { value: cid, len: 2 }, cid, true)
                         }))
                     }
                     CidCodes::CMap(cmap) => {
@@ -291,8 +312,10 @@ impl Font {
                         Box::new(std::iter::from_fn(move || {
                             let key = cmap.next_code(rest)?;
                             rest = rest.get(usize::from(key.len)..).unwrap_or_default();
-                            let cid = cmap.cid(key).or_else(|| cmap.notdef(key)).unwrap_or(0);
-                            Some(code(key, cid))
+                            Some(match cmap.cid(key) {
+                                Some(cid) => code(key, cid, true),
+                                None => code(key, cmap.notdef(key).unwrap_or(0), false),
+                            })
                         }))
                     }
                 }
@@ -444,7 +467,7 @@ pub(crate) fn load_text_only<S: Source>(
     font: &Dictionary,
     budget: &mut Budget,
 ) -> Result<Option<Font>, Error> {
-    let mapping = match font.get(b"Subtype").and_then(Object::as_name) {
+    match font.get(b"Subtype").and_then(Object::as_name) {
         Some(b"TrueType" | b"Type1" | b"MMType1") => {
             let descriptor = match font.get(b"FontDescriptor") {
                 Some(object) => match resolve_dictionary(file, object, budget)? {
@@ -469,7 +492,7 @@ pub(crate) fn load_text_only<S: Source>(
             let names = encoding_names(file, encoding.as_ref(), default, budget)?;
             let glyphs = Box::new([None; 256]);
             let widths = simple_widths(file, font, &descriptor, None, &glyphs, 1000.0, budget)?;
-            return Ok(Some(Font {
+            Ok(Some(Font {
                 program: Arc::from(Vec::new()),
                 format: Format::OpenType,
                 units_per_em: 1000.0,
@@ -480,7 +503,7 @@ pub(crate) fn load_text_only<S: Source>(
                 },
                 substituted: false,
                 text: TextMap::new(font, Some(&names)),
-            }));
+            }))
         }
         Some(b"Type0") => {
             let Some((codes, vertical)) = cid_encoding(file, font, budget)? else {
@@ -505,24 +528,24 @@ pub(crate) fn load_text_only<S: Source>(
             } else {
                 None
             };
-            Mapping::Cid {
-                codes,
-                // No program: no glyph either way.
-                cid_to_gid: Some(Vec::new()),
-                widths,
-                vertical,
-            }
+            let collection = collection_of(file, font, &descendant, budget)?;
+            Ok(Some(Font {
+                program: Arc::from(Vec::new()),
+                format: Format::OpenType,
+                units_per_em: 1000.0,
+                mapping: Mapping::Cid {
+                    codes,
+                    // No program: no glyph either way.
+                    cid_to_gid: Some(Vec::new()),
+                    widths,
+                    vertical,
+                },
+                substituted: false,
+                text: TextMap::new(font, None).with_collection(collection),
+            }))
         }
-        _ => return Ok(None),
-    };
-    Ok(Some(Font {
-        program: Arc::from(Vec::new()),
-        format: Format::OpenType,
-        units_per_em: 1000.0,
-        mapping,
-        substituted: false,
-        text: TextMap::new(font, None),
-    }))
+        _ => Ok(None),
+    }
 }
 
 /// Glyph of each code of a simple font, and the codes whose glyph name
@@ -1254,6 +1277,7 @@ fn cid<S: Source>(
     } else {
         None
     };
+    let collection = collection_of(file, font, &descendant, budget)?;
     Ok(Some(Font {
         program,
         format,
@@ -1265,15 +1289,16 @@ fn cid<S: Source>(
             vertical,
         },
         substituted: false,
-        text: TextMap::new(font, None),
+        text: TextMap::new(font, None).with_collection(collection),
     }))
 }
 
 /// The encoding of a Type 0 font (9.7.5) and whether it writes vertically:
-/// `Identity-H`, `Identity-V`, or an embedded CMap stream (`/WMode 1` in its
-/// data or dictionary for vertical). `Ok(None)` for another predefined CMap
-/// (tranche 3.7b), a damaged CMap or a `usecmap` chain that cannot be
-/// followed; limits and cancellation are errors.
+/// `Identity-H`, `Identity-V`, one of Adobe's predefined CMaps this build
+/// embeds (`predefined`, tranche 3.7b), or an embedded CMap stream
+/// (`/WMode 1` in its data or dictionary for vertical). `Ok(None)` for
+/// another predefined CMap, a damaged CMap or a `usecmap` chain that cannot
+/// be followed; limits and cancellation are errors.
 fn cid_encoding<S: Source>(
     file: &PdfFile<S>,
     font: &Dictionary,
@@ -1283,7 +1308,10 @@ fn cid_encoding<S: Source>(
         Some(Object::Name(name)) => Ok(match name.as_slice() {
             b"Identity-H" => Some((CidCodes::Identity, false)),
             b"Identity-V" => Some((CidCodes::Identity, true)),
-            _ => None,
+            other => predefined::encoding(other).map(|cmap| {
+                let vertical = cmap.is_vertical();
+                (CidCodes::CMap(cmap), vertical)
+            }),
         }),
         Some(object @ Object::Reference(_)) => {
             let Some((cmap, vertical)) = embedded_cmap(file, object, 0, budget)? else {
@@ -1296,8 +1324,9 @@ fn cid_encoding<S: Source>(
 }
 
 /// The embedded CMap `object` refers to, with its parents merged under it:
-/// another embedded CMap (`/UseCMap` reference) or `Identity-H`/`-V` by
-/// name (`usecmap` or `/UseCMap`). `depth` counts the CMaps above it.
+/// another embedded CMap (`/UseCMap` reference), or by name (`usecmap` or
+/// `/UseCMap`) `Identity-H`/`-V` or a predefined CMap this build embeds.
+/// `depth` counts the CMaps above it.
 fn embedded_cmap<S: Source>(
     file: &PdfFile<S>,
     object: &Object,
@@ -1332,9 +1361,9 @@ fn embedded_cmap<S: Source>(
                 return Ok(None);
             };
             vertical |= parent_vertical;
-            Some(parent)
+            Some(Arc::new(parent))
         }
-        (Some(Object::Name(name)), _) => match identity(name, budget)? {
+        (Some(Object::Name(name)), _) => match named(name, budget)? {
             Some((parent, parent_vertical)) => {
                 vertical |= parent_vertical;
                 Some(parent)
@@ -1344,7 +1373,7 @@ fn embedded_cmap<S: Source>(
         (Some(_), _) => return Ok(None),
         (None, Some(name)) => {
             let name = name.to_vec();
-            match identity(&name, budget)? {
+            match named(&name, budget)? {
                 Some((parent, parent_vertical)) => {
                     vertical |= parent_vertical;
                     Some(parent)
@@ -1364,21 +1393,65 @@ fn embedded_cmap<S: Source>(
     Ok(Some((cmap, vertical)))
 }
 
-/// `Identity-H` or `Identity-V` as a CMap, for a `usecmap` parent; `None`
-/// for another predefined CMap.
-fn identity(name: &[u8], budget: &mut Budget) -> Result<Option<(CMap, bool)>, Error> {
+/// A CMap named as a `usecmap` parent: `Identity-H`, `Identity-V` or a
+/// predefined CMap this build embeds; `None` for another.
+fn named(name: &[u8], budget: &mut Budget) -> Result<Option<(Arc<CMap>, bool)>, Error> {
     let vertical = match name {
         b"Identity-H" => false,
         b"Identity-V" => true,
-        _ => return Ok(None),
+        other => {
+            return Ok(predefined::encoding(other).map(|cmap| {
+                let vertical = cmap.is_vertical();
+                (cmap, vertical)
+            }));
+        }
     };
     let data: &[u8] =
         b"begincodespacerange <0000> <FFFF> endcodespacerange begincidrange <0000> <FFFF> 0 endcidrange";
     match CMap::parse(data, budget) {
-        Ok(cmap) => Ok(Some((cmap, vertical))),
+        Ok(cmap) => Ok(Some((Arc::new(cmap), vertical))),
         Err(CMapError::Syntax(other)) => Err(Error::Syntax(other)),
         Err(CMapError::Unterminated { .. }) => Ok(None),
     }
+}
+
+/// The UCS2 CMap of the CID collection of a Type 0 font, for the text of
+/// its CIDs (ISO 32000-2, 9.10.2): the collection of its predefined
+/// encoding, else the `/CIDSystemInfo` of its descendant when it is
+/// Adobe-Japan1, -GB1, -CNS1 or -Korea1. `None` otherwise, or when this
+/// build does not embed them.
+fn collection_of<S: Source>(
+    file: &PdfFile<S>,
+    font: &Dictionary,
+    descendant: &Dictionary,
+    budget: &mut Budget,
+) -> Result<Option<Arc<CMap>>, Error> {
+    if let Some(Object::Name(name)) = font.get(b"Encoding")
+        && let Some(ordering) = predefined::encoding_collection(name)
+    {
+        return Ok(predefined::collection(ordering));
+    }
+    let Some(info) = descendant.get(b"CIDSystemInfo") else {
+        return Ok(None);
+    };
+    let Some(info) = resolve_dictionary(file, info, budget)? else {
+        return Ok(None);
+    };
+    // Strings, maybe indirect; a name is tolerated, as some producers
+    // write one.
+    let mut text = |key: &[u8]| -> Result<Option<Vec<u8>>, Error> {
+        Ok(match info.get(key) {
+            Some(object) => match resolve(file, object, budget)? {
+                Some(Object::String(bytes) | Object::Name(bytes)) => Some(bytes),
+                _ => None,
+            },
+            None => None,
+        })
+    };
+    if text(b"Registry")?.as_deref() != Some(b"Adobe".as_slice()) {
+        return Ok(None);
+    }
+    Ok(text(b"Ordering")?.and_then(|ordering| predefined::collection(&ordering)))
 }
 
 /// `/DW2` (`[880 -1000]` by default) and `/W2` (9.7.4.3): `c [w1y vx vy …]`

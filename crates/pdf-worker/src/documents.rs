@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     fn missing_text_is_reported() {
-        // A predefined CMap other than Identity: the font is not read.
-        let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+        // A predefined CMap this build does not embed: the font is not read.
+        let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-HW-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
         let layer = layer_of("BT /F1 10 Tf 0 0 Td <0041> Tj ET", font);
         assert!(layer.incomplete && !layer.truncated);
         assert!(layer.lines.is_empty());

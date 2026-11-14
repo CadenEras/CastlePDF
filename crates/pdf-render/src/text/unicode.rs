@@ -30,6 +30,9 @@ pub enum UnicodeSource {
     ToUnicodeOtherLength,
     /// The glyph name of the code (`/Encoding`, `/Differences`).
     GlyphName,
+    /// The CID of the code in an Adobe CJK collection (Japan1, GB1, CNS1,
+    /// Korea1), through Adobe's UCS2 CMap of that collection (9.10.2).
+    Collection,
     /// No source: the glyph's text is unknown.
     Unknown,
 }
@@ -45,6 +48,8 @@ pub(crate) struct TextMap {
     /// Text of each one-byte code from its glyph name, for simple and Type 3
     /// fonts.
     by_code: Option<Box<[Option<Box<str>>]>>,
+    /// The UCS2 CMap of the font's CID collection, for a Type 0 font.
+    collection: Option<Arc<CMap>>,
 }
 
 impl TextMap {
@@ -60,7 +65,14 @@ impl TextMap {
                     .map(|name| name.as_deref().and_then(name_text).map(Box::from))
                     .collect()
             }),
+            collection: None,
         }
+    }
+
+    /// The same, the text of CIDs without a `/ToUnicode` entry coming from
+    /// `collection`, the UCS2 CMap of the font's CID collection.
+    pub fn with_collection(self, collection: Option<Arc<CMap>>) -> Self {
+        Self { collection, ..self }
     }
 
     /// Text of each one-byte code given directly (the dingbats of a
@@ -70,6 +82,7 @@ impl TextMap {
             to_unicode: to_unicode(font),
             parsed: OnceLock::new(),
             by_code: Some(texts.into_boxed_slice()),
+            collection: None,
         }
     }
 
@@ -106,12 +119,15 @@ impl TextMap {
         Ok(self.parsed.get_or_init(|| parsed).as_deref())
     }
 
-    /// The text of `code` and where it came from. `unreadable` is set when
-    /// the font's `/ToUnicode` could not be read (first use only).
+    /// The text of `code` (whose CID is `cid` in a Type 0 font) and where
+    /// it came from, in the order of 9.10.2: `/ToUnicode`, then the CID
+    /// collection, then the glyph name. `unreadable` is set when the font's
+    /// `/ToUnicode` could not be read (first use only).
     pub fn text<S: Source>(
         &self,
         file: &PdfFile<S>,
         code: Code,
+        cid: Option<u32>,
         budget: &mut Budget,
         unreadable: &mut bool,
     ) -> Result<(Option<String>, UnicodeSource), Error> {
@@ -131,6 +147,11 @@ impl TextMap {
             if let Some(text) = other {
                 return Ok((Some(text), UnicodeSource::ToUnicodeOtherLength));
             }
+        }
+        if let (Some(collection), Some(cid)) = (&self.collection, cid)
+            && let Some(text) = collection.unicode(Code { value: cid, len: 2 })
+        {
+            return Ok((Some(text), UnicodeSource::Collection));
         }
         let by_name = (code.len == 1)
             .then_some(self.by_code.as_ref())

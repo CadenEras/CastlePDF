@@ -20,7 +20,7 @@ pas un booléen « compatible PDF 2.0 ».
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
-texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
+texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
@@ -29,8 +29,11 @@ Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée ave
 
 | Limite | Pourquoi elle compte | Sortie attendue |
 | --- | --- | --- |
-| Le texte d'une police Type 0 à CMap prédéfinie autre qu'`Identity` est perdu, même avec une `/ToUnicode` valide : ses codes ne peuvent pas être découpés ; ses octets sont comptés (`unread_bytes`). Depuis 3.4b, une police que le rendu ne dessine pas (non incluse, Type 1, programme endommagé) donne son texte | Texte absent sur ces pages | CMap prédéfinies en 3.7b |
-| Police CID `Identity` sans `/ToUnicode`, TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
+| Depuis 3.7b, les 6 encodages prédéfinis rencontrés sur le corpus et leurs formes verticales (12 CMap, `crates/pdf-render/cmaps`) sont lus. Une autre CMap prédéfinie (`UniJIS-UCS2-HW-H`, `GBK-EUC-H`…) reste non lue : texte perdu, octets comptés (`unread_bytes`) | 0 première page SafeDocs, 10 UNSAFE (2026-11-14), dont des dictionnaires abîmés | Ajouter une CMap d'Adobe à `scripts/make-cmaps.mjs` quand la mesure en trouve |
+| Une police CJK non incluse n'est pas dessinée : aucune police de remplacement CJK n'est livrée. Son texte est extrait (3.4b et 3.7b) | 54 et 39 premières pages où du texte n'est pas dessiné (`Text`), inchangées par 3.7b | Police de remplacement CJK (taille et licence à étudier, plusieurs Mo), si la mesure le justifie |
+| Les notices des données tierces incluses dans le binaire (polices OFL, CMap d'Adobe en BSD-3-Clause) ne sont livrées qu'avec les sources (`crates/pdf-render/fonts`, `crates/pdf-render/cmaps`) : une distribution binaire doit les reproduire dans sa documentation | Condition des licences pour tout artefact publié | Fichier de notices tierces joint aux binaires et à l'application, avant le premier artefact qui en contient (au plus tard en stabilisation) |
+| Une CMap incluse qui déclare `/WMode 0` mais fait `usecmap` d'une CMap verticale (`Identity-V`, une `-V` prédéfinie) devient verticale : le lecteur ne distingue pas `/WMode 0` d'un `/WMode` absent | Cas improbable, non vu sur le corpus | Garder le `/WMode` déclaré, si un document en montre le besoin |
+| Police CID `Identity` sans `/ToUnicode` d'une collection autre qu'Adobe-Japan1, -GB1, -CNS1 ou -Korea1 (celles-ci passent par leur CMap UCS2 depuis 3.7b), TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
 | `usecmap` d'une `/ToUnicode` non fusionné (celui des CMap d'encodage l'est depuis 3.4a, sur quatre niveaux) | Parent ignoré | Même résolution bornée que les encodages, si la mesure en trouve |
 | Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |
 
