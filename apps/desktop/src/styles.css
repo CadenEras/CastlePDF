@@ -154,18 +154,27 @@ button:focus-visible {
   user-select: text;
 }
 
-.text-layer [data-word] {
+/* One box per line, its words and spaces in one flow (placeLine): a screen
+   reader reads it as a line. */
+.text-line {
   position: absolute;
+  z-index: 1;
   white-space: pre;
   font-family: sans-serif;
 }
 
-/* Spaces and line breaks between words: in the text, out of the way. */
-.text-line {
+/* Under the lines while a selection is made: a gap resolves to the end of
+   the selection's line rather than to the first text of the page
+   (holdSelection). Sized only while the pointer is down. */
+.text-layer .end-of-content {
   position: absolute;
   top: 0;
   left: 0;
-  font-size: 1px;
+  width: 0;
+  height: 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
 }
 
 .text-layer ::selection {

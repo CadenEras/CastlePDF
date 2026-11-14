@@ -396,7 +396,7 @@ describe("Viewer", () => {
     const text = screen.getByLabelText("Texte de la page 1");
     expect(text.textContent).toContain("page1");
     // Scale 2 at a pixel ratio of 1: twice the page pixels at scale 1.
-    expect(text.querySelector<HTMLElement>("[data-word]")?.style.left).toBe("20px");
+    expect(text.querySelector<HTMLElement>("[data-line]")?.style.left).toBe("20px");
     expect(screen.queryByRole("note", { name: "Texte partiel" })).toBeNull();
   });
 

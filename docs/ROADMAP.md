@@ -20,7 +20,7 @@ pas un booléen « compatible PDF 2.0 ».
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
-texte, sélection et copie (fait ; vérification à la main à faire) ; 3.7 recherche ; 3.7b CMap prédéfinies d'Adobe (CJK) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
+texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche ; 3.7b CMap prédéfinies d'Adobe (CJK) ; 3.8 Type 1 inclus ; 3.9 CCITTFax ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
@@ -33,6 +33,7 @@ Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée ave
 | Police CID `Identity` sans `/ToUnicode`, TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
 | `usecmap` d'une `/ToUnicode` non fusionné (celui des CMap d'encodage l'est depuis 3.4a, sur quatre niveaux) | Parent ignoré | Même résolution bornée que les encodages, si la mesure en trouve |
 | Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |
+| La couche de texte n'a pas de paragraphes : chaque ligne est un bloc, et le Narrateur s'arrête en fin de ligne au milieu d'une phrase (Windows, 2026-11-14) | Lecture continue d'un lecteur d'écran hachée | Regroupement des lignes en paragraphes dans la mise en page, puis un conteneur par paragraphe dans la couche, vérifié au Narrateur ; VoiceOver et Orca à vérifier |
 
 ## P2 terminée (`v0.1.0-alpha.3`)
 

@@ -7,6 +7,16 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+### Corrigé
+
+- UI : **sélection et lecture de la couche de texte** après la vérification à la main sous
+  Windows. Une sélection qui passait sur un vide (espace entre deux mots, interligne, marge,
+  entre deux colonnes) sautait à la ligne du dessus : chaque ligne est désormais une seule
+  boîte où les mots et de vraies espaces se suivent, à leur longueur sur la page par
+  l'espacement des lettres, et un élément non sélectionnable, sous les lignes pendant une
+  sélection, suit la ligne de son extrémité mobile (comme pdf.js). Le Narrateur lit ligne par
+  ligne au lieu de mot par mot.
+
 ### Ajouté
 
 - UI : **sélection et copie du texte** (ADR-0006, tranche 3.6b). Une couche de texte transparente
