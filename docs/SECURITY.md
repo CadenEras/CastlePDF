@@ -115,7 +115,9 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   caractères (`MAX_SEARCH_CHARS`, 12 octets de position chacun), même hors du worker. Une
   page rend au plus 1 000 occurrences (`truncated` au-delà) ; le décodage vérifie leur nombre
   avant d'allouer. La recherche est linéaire (Knuth-Morris-Pratt), sans expression régulière
-  venue de l'utilisateur (cibles de fuzzing `search` et `protocol`) ;
+  venue de l'utilisateur (cibles de fuzzing `search` et `protocol`). L'UI valide les
+  occurrences reçues (`parseSearchHits`), garde au plus 10 000 occurrences par document et
+  n'insère le texte surligné que comme texte ;
 - `current_document` ne rend que le dernier événement de document ;
 - `begin_view` numérote les vues côté shell : une tuile ne peut citer qu'une génération
   déjà attribuée ;

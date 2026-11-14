@@ -408,6 +408,12 @@ Recherche, moteur et worker (tranche 3.7, 2026-11-14) :
   mot de la couche ; requête absente `truncated` aussi), une ligature ne donne qu'une
   occurrence par lettre repliée, minuscule avant accent (signe angström), page de recherche en
   attente remplacée par la suivante dans le shell ;
+- interface (tranche 3.7, 2026-11-14) : réponses du shell validées (`parseSearchHits`,
+  bornes et formes refusées), ordre de parcours depuis la page affichée, compte et rang en ordre
+  du document, suivant et précédent en boucle, découpe d'un mot en morceaux surlignés en points
+  de code ; de bout en bout avec le shell simulé : recherche page par page, page de l'occurrence
+  amenée à l'écran et marquée, Échap, aucun résultat, recherche remplacée dont la page tardive
+  est ignorée ; copie exacte à travers les marques ;
 - fuzzing `search` : 1 091 533 exécutions en 2 min, puis 2 737 181 en 3 min après la revue (WSL),
   aucun crash ; `protocol` : 55 189 852 exécutions en 5 min, aucun crash.
 
@@ -455,6 +461,25 @@ document privé ni fixture (titre et deux colonnes, une colonne en Times, une pa
 | OS | Date | Points 7 à 12 |
 | --- | --- | --- |
 | Windows | 2026-11-14 | Première passe : la sélection sautait à la ligne du dessus sur tout vide (7, 9, 10) et le Narrateur lisait mot par mot (11). Après correction (une boîte par ligne, vrais espaces, élément de fin de contenu) : OK pour 7 à 10 et 12 ; 11 le Narrateur lit en continu d'une ligne à l'autre avec Verr. Maj + R (un clic sur un mot lit seulement sa ligne, comme tout élément cliqué). Une copie arrêtée au bout d'une ligne n'a pas d'espace final : le PDF n'en contient pas |
+| macOS | à faire (pas de machine pour l'instant) | |
+| Linux | à faire (pas de machine pour l'instant) | |
+
+Recherche (tranche 3.7, même document ; sa page 2 déborde volontairement sous le bas de la
+page et sur son pied de page) :
+13. Ctrl+F (Cmd+F) met le curseur dans le champ de recherche.
+14. Casse et accents ignorés par défaut (`chateau`, `coeur`, `NOEL`) : compteur et surlignage
+    sur les bons mots, sur chaque occurrence, page tournée et page qui déborde comprises.
+15. Entrée, Maj+Entrée, F3 et Maj+F3 parcourent les occurrences d'une page à l'autre, en
+    boucle ; la page défile jusqu'à l'occurrence courante, centrée et entourée.
+16. Une expression sur deux lignes (`épais de près de trois`) est surlignée sur ses deux lignes.
+17. « Respecter les accents » et « Respecter la casse » restreignent les occurrences.
+18. Échap efface la recherche ; le défilement reste fluide pendant une recherche, et une copie
+    d'un texte surligné reste exacte.
+19. Lecteur d'écran : le compteur de résultats est annoncé.
+
+| OS | Date | Points 13 à 19 |
+| --- | --- | --- |
+| Windows | 2026-11-14 | Première passe : sur la page qui déborde, les occurrences 5 à 8 étaient surlignées une à trois lignes trop haut (`scrollIntoView` faisait défiler la couche de texte dans sa page). Après correction (couche en `overflow: clip`, seule la zone des pages défile) : OK pour 13 à 19, sans décalage sur aucune occurrence |
 | macOS | à faire (pas de machine pour l'instant) | |
 | Linux | à faire (pas de machine pour l'instant) | |
 

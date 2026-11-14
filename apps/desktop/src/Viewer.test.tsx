@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   PageSize,
   RepairState,
+  SearchHits,
+  SearchOptions,
   TextLayer,
   Tile,
   TileRequest,
@@ -36,6 +38,15 @@ const ipc = vi.hoisted(() => ({
     vi.fn<
       (document: number, page: number, generation: number) => Promise<TextLayer>
     >(),
+  searchPage:
+    vi.fn<
+      (
+        document: number,
+        page: number,
+        query: string,
+        options: SearchOptions,
+      ) => Promise<SearchHits>
+    >(),
 }));
 
 vi.mock("./ipc", async (original) => ({
@@ -44,6 +55,7 @@ vi.mock("./ipc", async (original) => ({
   pageSize: ipc.pageSize,
   renderTile: ipc.renderTile,
   pageText: ipc.pageText,
+  searchPage: ipc.searchPage,
 }));
 
 /** Tiles drawn: page canvas label, x, y, width, height. */
@@ -413,5 +425,95 @@ describe("Viewer", () => {
       screen.getByRole("note", { name: "Texte indisponible" }).textContent,
     ).toContain("délai dépassé");
     expect(status()).toBe("Page 1 sur 3.");
+  });
+
+  function searchFor(text: string, key = "Enter", shiftKey = false) {
+    const field = screen.getByLabelText("Rechercher dans le document");
+    fireEvent.change(field, { target: { value: text } });
+    fireEvent.keyDown(field, { key, shiftKey });
+  }
+
+  function searchStatus(): string {
+    return (
+      screen.getByRole("search").querySelector(".search-status")?.textContent ??
+      ""
+    );
+  }
+
+  it("searches page by page, goes to the occurrence and marks it", async () => {
+    ipc.pageText.mockImplementation((_document, page) =>
+      Promise.resolve({
+        lines: [[{ text: `page${String(page + 1)}`, x0: 10, y0: 20, x1: 60, y1: 20, size: 12 }]],
+        truncated: false,
+        incomplete: false,
+      }),
+    );
+    // Only page 2 holds the query: "page" of its word "page2".
+    ipc.searchPage.mockImplementation((_document, page) =>
+      Promise.resolve({
+        hits: page === 1 ? [{ start: [0, 0, 0], end: [0, 0, 4] }] : [],
+        truncated: false,
+        incomplete: false,
+      }),
+    );
+    render(<Viewer info={INFO} />);
+    await settle();
+    searchFor("PAGE");
+    await settle();
+    // From the page in view, every page once, with the options.
+    expect(ipc.searchPage.mock.calls.map(([, page]) => page)).toEqual([0, 1, 2]);
+    expect(ipc.searchPage).toHaveBeenCalledWith(3, 0, "PAGE", {
+      matchCase: false,
+      matchDiacritics: false,
+    });
+    expect(searchStatus()).toBe("Résultat 1 sur 1.");
+    // Page 2 was brought into view; its text marks the occurrence.
+    expect(status()).toBe("Page 2 sur 3.");
+    const text = screen.getByLabelText("Texte de la page 2");
+    const mark = text.querySelector("mark[data-current]");
+    expect(mark?.textContent).toBe("page");
+    // Enter again: the next one, here the same; Escape ends the search.
+    searchFor("PAGE");
+    await settle();
+    expect(ipc.searchPage).toHaveBeenCalledTimes(3);
+    expect(searchStatus()).toBe("Résultat 1 sur 1.");
+    searchFor("PAGE", "Escape");
+    await settle();
+    expect(searchStatus()).toBe("");
+    expect(text.querySelector("mark")).toBeNull();
+  });
+
+  it("says when nothing is found, and drops a search replaced by another", async () => {
+    let release: (() => void) | undefined;
+    ipc.searchPage.mockImplementation((_document, _page, query) =>
+      query === "first"
+        ? new Promise((resolve) => {
+            release = () => {
+              resolve({
+                hits: [{ start: [0, 0, 0], end: [0, 0, 1] }],
+                truncated: false,
+                incomplete: false,
+              });
+            };
+          })
+        : Promise.resolve({ hits: [], truncated: false, incomplete: true }),
+    );
+    render(<Viewer info={INFO} />);
+    await settle();
+    searchFor("first");
+    await settle();
+    expect(searchStatus()).toBe("Recherche en cours, page 0 sur 3…");
+    searchFor("second");
+    await settle();
+    // The first search's late page is dropped.
+    release?.();
+    await settle();
+    expect(searchStatus()).toBe("Aucun résultat.");
+    expect(
+      screen.getByRole("note", { name: "Recherche partielle" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Résultat suivant" }),
+    ).toHaveProperty("disabled", true);
   });
 });

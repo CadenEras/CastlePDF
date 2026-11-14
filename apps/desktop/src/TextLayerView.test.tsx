@@ -107,6 +107,51 @@ describe("text layer", () => {
     expect(selectedText(root, selection)).toBe("");
   });
 
+  it("marks the occurrences of a search, and still copies the words", () => {
+    const revealed: string[] = [];
+    const { container } = render(
+      <TextLayerView
+        layer={layer}
+        factor={1}
+        label="Texte"
+        // From "ello" to "wo", across the space; then "not".
+        hits={[
+          { start: [0, 0, 1], end: [0, 1, 2] },
+          { start: [1, 0, 3], end: [1, 0, 6] },
+        ]}
+        current={1}
+        reveal
+        onRevealed={(target) => {
+          revealed.push(target.textContent);
+        }}
+      />,
+    );
+    const marks = Array.from(container.querySelectorAll("mark"));
+    expect(marks.map((mark) => mark.textContent)).toEqual(["ello", " ", "wo", "not"]);
+    expect(marks.map((mark) => mark.dataset.hit)).toEqual(["0", "0", "0", "1"]);
+    expect(container.querySelectorAll("[data-current]")).toHaveLength(1);
+    expect(container.querySelector("[data-current]")?.textContent).toBe("not");
+    // Handed to the viewer to scroll to; the layer does not scroll.
+    expect(revealed).toEqual(["not"]);
+    // The words keep their text, and the line its spaces.
+    expect(words(container).map((w) => w.textContent)).toEqual([
+      "Hello",
+      "world",
+      "<b>not html</b>",
+    ]);
+    const root = must(container.querySelector<HTMLElement>(".text-layer"));
+    const [hello, world] = words(container);
+    // From the "H" before the mark to the "r" after the next one.
+    const range = document.createRange();
+    range.setStart(must(must(hello).firstChild), 0);
+    range.setEnd(must(must(world).lastChild), 1);
+    const selection = must(window.getSelection());
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(selectedText(root, selection)).toBe("Hello wor");
+    selection.removeAllRanges();
+  });
+
   it("keeps the selection's moving end over a gap while selecting", () => {
     const { container, unmount } = render(
       <TextLayerView layer={layer} factor={1} label="Texte" />,

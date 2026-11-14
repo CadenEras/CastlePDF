@@ -7,7 +7,10 @@ import {
   type CSSProperties,
 } from "react";
 
-import type { LayerWord, TextLayer } from "./ipc";
+import type { LayerWord, SearchHit, TextLayer } from "./ipc";
+import { wordSegments } from "./search";
+
+const NO_HITS: readonly SearchHit[] = [];
 
 /** Share of the font size above the baseline, as the engine bounds words. */
 const ASCENT = 0.8;
@@ -148,15 +151,22 @@ export function selectedText(root: HTMLElement, selection: Selection): string {
       if (!range.intersectsNode(span)) {
         continue;
       }
+      // A word may hold several nodes (the marks of a search): offsets
+      // are counted from the start of the word.
       const text = span.textContent;
-      const node = span.firstChild;
+      const offset = (container: Node, at: number) => {
+        const head = document.createRange();
+        head.selectNodeContents(span);
+        head.setEnd(container, at);
+        return head.toString().length;
+      };
       let start = 0;
       let end = text.length;
-      if (node !== null && range.startContainer === node) {
-        start = range.startOffset;
+      if (span.contains(range.startContainer)) {
+        start = offset(range.startContainer, range.startOffset);
       }
-      if (node !== null && range.endContainer === node) {
-        end = range.endOffset;
+      if (span.contains(range.endContainer)) {
+        end = offset(range.endContainer, range.endOffset);
       }
       const part = text.slice(start, end);
       if (part !== "") {
@@ -255,10 +265,24 @@ export function TextLayerView({
   layer,
   factor,
   label,
+  hits: given,
+  current = null,
+  reveal = false,
+  onRevealed,
 }: {
   layer: TextLayer;
   factor: number;
   label: string;
+  /** Occurrences of a search on this page, drawn as marks. */
+  hits?: readonly SearchHit[] | undefined;
+  /** Rank of the occurrence shown, among `hits`. */
+  current?: number | null;
+  /**
+   * Hand the occurrence shown to `onRevealed` once it is drawn, for the
+   * viewer to scroll its pages to it. The layer never scrolls itself.
+   */
+  reveal?: boolean;
+  onRevealed?: (target: HTMLElement) => void;
 }) {
   const lines = useMemo(
     () => layer.lines.map((line) => placeLine(line, factor)),
@@ -269,6 +293,36 @@ export function TextLayerView({
     const element = root.current;
     return element === null ? undefined : holdSelection(element);
   }, []);
+  const hits = given ?? NO_HITS;
+  // Words split where occurrences start and end; none without a search.
+  const marked = useMemo(
+    () =>
+      hits.length === 0
+        ? null
+        : layer.lines.map((line, index) =>
+            line.map((word, position) =>
+              wordSegments(word.text, index, position, hits),
+            ),
+          ),
+    [layer, hits],
+  );
+  useEffect(() => {
+    if (!reveal) {
+      return;
+    }
+    const shown = root.current?.querySelector<HTMLElement>("[data-current]");
+    if (shown !== null && shown !== undefined) {
+      onRevealed?.(shown);
+    }
+  }, [reveal, current, marked, onRevealed]);
+  const mark = (text: string, hit: number | null, key: number | string) =>
+    hit === null ? (
+      <Fragment key={key}>{text}</Fragment>
+    ) : (
+      <mark key={key} data-hit={hit} data-current={hit === current || undefined}>
+        {text}
+      </mark>
+    );
   const onCopy = (event: ClipboardEvent<HTMLDivElement>) => {
     const selection = window.getSelection();
     if (selection === null) {
@@ -293,11 +347,17 @@ export function TextLayerView({
             <Fragment key={position}>
               {position > 0 && (
                 <span data-gap style={line.gaps[position - 1]}>
-                  {" "}
+                  {mark(
+                    " ",
+                    marked?.[index]?.[position]?.gapHit ?? null,
+                    "gap",
+                  )}
                 </span>
               )}
               <span data-word style={word.style}>
-                {word.text}
+                {marked?.[index]?.[position]?.segments.map((segment, at) =>
+                  mark(segment.text, segment.hit, at),
+                ) ?? word.text}
               </span>
             </Fragment>
           ))}

@@ -338,6 +338,57 @@ export function parseTextLayer(value: unknown): TextLayer {
   return { lines, truncated: value.truncated, incomplete: value.incomplete };
 }
 
+/**
+ * A place in a page's text layer: line, word and character indices, the
+ * character counted in Unicode code points of the word's text.
+ */
+export type TextPlace = readonly [line: number, word: number, char: number];
+
+/** An occurrence on a page: from `start` to the character before `end`. */
+export interface SearchHit {
+  start: TextPlace;
+  end: TextPlace;
+}
+
+/** The occurrences of a query in one page (ADR-0006, tranche 3.7). */
+export interface SearchHits {
+  hits: SearchHit[];
+  /** Occurrences were left out: too many, or text beyond the layer's bound. */
+  truncated: boolean;
+  /** Text the page shows is missing: an occurrence there cannot be found. */
+  incomplete: boolean;
+}
+
+/** Most occurrences the shell sends for a page; anything beyond is refused. */
+export const MAX_PAGE_HITS = 1000;
+
+function isPlace(value: unknown): value is TextPlace {
+  return Array.isArray(value) && value.length === 3 && value.every(isU32);
+}
+
+/** Checks the occurrences of a page from the shell, keeping known fields only. */
+export function parseSearchHits(value: unknown): SearchHits {
+  const invalid = () => new Error("invalid search result from shell");
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.hits) ||
+    value.hits.length > MAX_PAGE_HITS ||
+    typeof value.truncated !== "boolean" ||
+    typeof value.incomplete !== "boolean"
+  ) {
+    throw invalid();
+  }
+  const hits = value.hits.map((hit: unknown) => {
+    if (!isRecord(hit) || !isPlace(hit.start) || !isPlace(hit.end)) {
+      throw invalid();
+    }
+    const [l0, w0, c0] = hit.start;
+    const [l1, w1, c1] = hit.end;
+    return { start: [l0, w0, c0] as const, end: [l1, w1, c1] as const };
+  });
+  return { hits, truncated: value.truncated, incomplete: value.incomplete };
+}
+
 async function command(name: string, args: Record<string, unknown>): Promise<unknown> {
   try {
     return await invoke<unknown>(name, args);
@@ -394,6 +445,27 @@ export async function pageText(
   generation: number,
 ): Promise<TextLayer> {
   return parseTextLayer(await command("page_text", { document, page, generation }));
+}
+
+/** How a query is compared with the text. */
+export interface SearchOptions {
+  matchCase: boolean;
+  matchDiacritics: boolean;
+}
+
+/**
+ * The occurrences of `query` in `page`. The shell keeps at most one search
+ * page waiting: a newer one replaces it (the older fails as stale).
+ */
+export async function searchPage(
+  document: number,
+  page: number,
+  query: string,
+  options: SearchOptions,
+): Promise<SearchHits> {
+  return parseSearchHits(
+    await command("search_page", { document, page, query, ...options }),
+  );
 }
 
 /**

@@ -23,6 +23,8 @@ import {
   type RepairState,
   type TextLayer,
 } from "./ipc";
+import { SearchBar } from "./SearchBar";
+import { useSearch, type Place } from "./search";
 import { TextLayerView } from "./TextLayerView";
 import { describeTimings, record, summarize, type TileTiming } from "./timings";
 
@@ -526,6 +528,66 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     onScroll();
   };
 
+  // Search (ADR-0006, tranche 3.7): the occurrence shown is brought into
+  // view by its page's text layer, once that layer is there.
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [reveal, setReveal] = useState<Place | null>(null);
+  const show = (place: Place) => {
+    setReveal(place);
+    // A page already shown with its text scrolls to the occurrence itself.
+    const shown =
+      place.page >= firstVisible &&
+      place.page <= lastVisible &&
+      layers.has(place.page);
+    if (!shown) {
+      scrollToPage(place.page);
+    }
+  };
+  const found = useSearch(document, pages, show);
+  // Centres the occurrence in the pages' view. Only the pages scroll:
+  // `scrollIntoView` would also scroll the text layer within its page, off
+  // the drawing, when its text runs past the page.
+  const revealed = useCallback((target: HTMLElement) => {
+    setReveal(null);
+    const element = scroller.current;
+    if (element === null) {
+      return;
+    }
+    const box = target.getBoundingClientRect();
+    const view = element.getBoundingClientRect();
+    element.scrollTop += box.top - view.top - (view.height - box.height) / 2;
+    if (box.left < view.left || box.right > view.right) {
+      element.scrollLeft += box.left - view.left - (view.width - box.width) / 2;
+    }
+  }, []);
+  const firstVisibleRef = useRef(firstVisible);
+  useEffect(() => {
+    firstVisibleRef.current = firstVisible;
+  }, [firstVisible]);
+  const { search, next, previous } = found;
+  // Ctrl+F (Cmd+F) goes to the search field; F3 and Shift+F3 move between
+  // occurrences from anywhere in the window.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInput.current?.focus();
+        searchInput.current?.select();
+      } else if (event.key === "F3") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          previous();
+        } else {
+          next();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [next, previous]);
+
   const current = firstVisible;
   const loading = progress.done < progress.total;
   const where = `Page ${String(current + 1)} sur ${String(pages)}`;
@@ -609,6 +671,14 @@ export function Viewer({ info }: { info: DocumentInfo }) {
               // Pixels of the page at scale 1 to CSS pixels.
               factor={exact.scale / ratio}
               label={`Texte de la page ${String(page + 1)}`}
+              hits={found.state.hits.get(page)}
+              current={
+                found.state.current?.page === page
+                  ? found.state.current.rank
+                  : null
+              }
+              reveal={reveal?.page === page}
+              onRevealed={revealed}
             />
           )}
         </div>
@@ -646,6 +716,19 @@ export function Viewer({ info }: { info: DocumentInfo }) {
           </span>
         )}
       </div>
+      <SearchBar
+        state={found.state}
+        input={searchInput}
+        onSearch={(query, options) => {
+          search(query, options, firstVisibleRef.current);
+        }}
+        onNext={next}
+        onPrevious={previous}
+        onClear={() => {
+          found.clear();
+          scroller.current?.focus();
+        }}
+      />
       {repair !== "none" && (
         <p className="repaired" role="note" aria-label="Document réparé">
           {REPAIR_NOTES[repair]}

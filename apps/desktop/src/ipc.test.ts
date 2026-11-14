@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_LAYER_WORDS,
+  MAX_PAGE_HITS,
   ShellError,
   TILE_HEADER,
   describeCommandError,
@@ -10,6 +11,7 @@ import {
   parseJobEvent,
   parseJobId,
   parsePageSize,
+  parseSearchHits,
   parseTextLayer,
   parseTile,
   skippedLabels,
@@ -195,5 +197,27 @@ describe("documents and tiles", () => {
     // Beyond the bound of the shell's response: refused.
     const many = Array.from({ length: MAX_LAYER_WORDS + 1 }, () => word);
     expect(() => parseTextLayer({ lines: [many], truncated: false, incomplete: false })).toThrow();
+  });
+
+  it("checks the occurrences of a page and keeps their known fields only", () => {
+    const hit = { start: [0, 1, 2], end: [3, 0, 4] };
+    expect(
+      parseSearchHits({ hits: [{ ...hit, extra: 1 }], truncated: true, incomplete: false }),
+    ).toEqual({ hits: [hit], truncated: true, incomplete: false });
+    for (const value of [
+      null,
+      { hits: [], truncated: false },
+      { hits: {}, truncated: false, incomplete: false },
+      { hits: [{ start: [0, 1], end: [0, 1, 2] }], truncated: false, incomplete: false },
+      { hits: [{ start: [0, 1, -1], end: [0, 1, 2] }], truncated: false, incomplete: false },
+      { hits: [{ start: [0, 1, 0.5], end: [0, 1, 2] }], truncated: false, incomplete: false },
+      { hits: [{ start: [0, 1, 2, 3], end: [0, 1, 2] }], truncated: false, incomplete: false },
+      { hits: [{ start: [0, 1, 2] }], truncated: false, incomplete: false },
+      { hits: [], truncated: false, incomplete: "no" },
+    ]) {
+      expect(() => parseSearchHits(value)).toThrow();
+    }
+    const many = Array.from({ length: MAX_PAGE_HITS + 1 }, () => hit);
+    expect(() => parseSearchHits({ hits: many, truncated: true, incomplete: false })).toThrow();
   });
 });
