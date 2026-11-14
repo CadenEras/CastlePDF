@@ -19,6 +19,13 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **images CCITTFax** (`CCITTFaxDecode`, tranche 3.9), décodeur écrit pour le projet :
+  Group 3 1D et 2D, Group 4, codes de fin de ligne et de bloc, alignement sur l'octet,
+  `BlackIs1`, `/Rows`. Les images et masques numérisés en noir et blanc sont désormais dessinés
+  au lieu d'être signalés : premières pages du corpus qui gardent une image non dessinée 113 → 48
+  et 140 → 63. Fixture `ccitt.pdf` (encodeur du script de fixtures), décodage identique à
+  `pdfimages` (nouveau test oracle, workflow `oracle`) ; cible de fuzzing `ccitt`.
+
 - Moteur : **polices Type 1 incluses** (`/FontFile`, tranche 3.8, amendement
   d'ADR-0005). Lues par le lecteur Type 1 de `read-fonts`, déjà verrouillé avec `skrifa` :
   `eexec` binaire ou hexadécimal, PFB, sous-routines, `seac`, encodage intégré ou du PDF.

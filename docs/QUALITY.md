@@ -467,6 +467,35 @@ Type 1 inclus (tranche 3.8, 2026-11-14) :
   intégré sans glyphe non signalé (comme CFF) ; variante de `type1.pdf` à `/FontMatrix` inclinée
   de 2000 unités, toujours identique à `pdftoppm` et `pdftotext`.
 
+CCITTFaxDecode (tranche 3.9, 2026-11-14) :
+- décodeur du projet (`pdf-syntax`, `filter/ccitt.rs`) : tables T.4 vérifiées sans préfixe
+  commun et retrouvées à leur longueur, rangées 1D, codes de complément, modes 2D (passe,
+  horizontal, vertical), Group 3 à étiquette, EOL et bits de remplissage, fin de bloc,
+  alignement sur l'octet, `BlackIs1`, données abîmées en erreur, extensions refusées comme non
+  prises en charge, paramètres validés, chaque rangée facturée (limite testée) ;
+- `ccitt.pdf` (encodeur T.4/T.6 du script de fixtures : Group 4 en gris, Group 3 2D avec EOL et
+  `/Rows`, masque Group 4 peint en rouge, image en ligne, Group 3 1D de 2 600 colonnes avec EOL,
+  alignement et `BlackIs1`) : les quatre images XObject décodées identiques bit à bit à
+  `pdfimages` (Poppler 22.02, WSL ; workflow `oracle`) et dessinées pixel pour pixel comme le
+  motif source (`tests/images.rs`) ;
+- `pdftoppm` n'est pas l'oracle de cette fixture : à une image par pixel, il dessine les
+  images 1 bit en gris avec des colonnes et rangées décalées d'un pixel (2 937 des 18 000 pixels
+  de la première image diffèrent de ses données ; les nôtres, aucun ; les masques sont exacts
+  chez lui aussi) ;
+- `survey` (même protocole) : premières pages qui gardent une image non dessinée 113 → 48
+  (SafeDocs) et 140 → 63 (UNSAFE) ; taux, crashs et timeouts inchangés, temps médian 29 et
+  16 ms ;
+- fuzzing `ccitt` (nouvelle cible, graines tirées de la fixture) : 11 264 956 exécutions en
+  10 min (WSL), aucun crash ;
+- après la revue : deux changements à la même colonne (plage de longueur nulle) s'annulent comme
+  chez Poppler et pdf.js, ce qui borne une rangée à `columns` + 1 éléments (sinon une longue suite
+  de modes verticaux sur place, derrière Flate, faisait grandir la mémoire hors budget) et garde
+  la ligne de référence sans doublon ; un code de fin de ligne peut précéder une rangée Group 4,
+  deux de suite terminent le bloc (même sans `/EndOfBlock`) ; des données qui s'arrêtent avant
+  `/Rows`, ou avant `/Height` à l'affichage, laissent des rangées blanches, non noires ;
+  l'extension 1D est non prise en charge, non abîmée ; décodage toujours identique à `pdfimages`,
+  mesure sur le corpus inchangée (48 et 63), fuzzing `ccitt` 5 614 305 exécutions en 5 min.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release
