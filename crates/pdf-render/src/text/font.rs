@@ -29,6 +29,7 @@ use skrifa::metrics::GlyphMetrics;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::ps::cff::CffFontRef;
+use skrifa::raw::ps::type1::Type1Font;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
 use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
 
@@ -51,12 +52,23 @@ const MAX_DIFFERENCES: usize = 4096;
 const MAX_CIDS: usize = 65_536;
 /// Deepest chain of embedded CMaps followed through `usecmap` or `/UseCMap`.
 pub(crate) const MAX_USECMAP_DEPTH: usize = 4;
+/// Most name comparisons a Type 1 program may cost to read: `read-fonts`
+/// looks up each name of its `/Encoding` among all its glyphs, one by one,
+/// without a budget or cancellation; past this bound (well under a second)
+/// the program is not read, and a replacement draws the font.
+const MAX_TYPE1_LOOKUPS: u64 = 100_000_000;
+/// Bytes of `read-fonts`' index per glyph (two ranges) and per subroutine.
+const TYPE1_ENTRY_BYTES: u64 = 40;
+/// Least bytes of one charstring or subroutine entry (`/a 0 RD `).
+const TYPE1_MIN_ENTRY: u64 = 8;
 
 /// A font ready to show text.
 #[derive(Debug)]
 pub(crate) struct Font {
     program: Arc<[u8]>,
     format: Format,
+    /// The program read once, for a Type 1 font (`/FontFile`).
+    type1: Option<Type1>,
     units_per_em: f64,
     mapping: Mapping,
     /// Drawn with a replacement font (`standard`): reported.
@@ -72,6 +84,22 @@ enum Format {
     OpenType,
     /// Bare CFF (Compact Font Format), read by `read-fonts`.
     Cff,
+    /// Type 1 (`/FontFile`), read by `read-fonts` (ADR-0005, amended for
+    /// tranche 3.8): cleartext part, then the `eexec` part, binary or hex.
+    Type1,
+}
+
+/// A Type 1 program as read by `read-fonts`: decrypted, its charstrings and
+/// subroutines ready to draw.
+#[derive(Clone)]
+struct Type1(Arc<Type1Font>);
+
+impl std::fmt::Debug for Type1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Type1")
+            .field("glyphs", &self.0.num_glyphs())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -204,9 +232,19 @@ pub(crate) struct Code {
 }
 
 impl Font {
-    /// Bytes of the program, counted when the font is cached.
+    /// Bytes of the program, counted when the font is cached; for a Type 1
+    /// program, its decrypted copy and the index of its glyphs besides.
     pub fn program_len(&self) -> usize {
-        self.program.len()
+        match &self.type1 {
+            Some(Type1(font)) => {
+                let index = u64::from(font.num_glyphs()).saturating_mul(TYPE1_ENTRY_BYTES);
+                self.program
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(usize::try_from(index).unwrap_or(usize::MAX))
+            }
+            None => self.program.len(),
+        }
     }
 
     /// Bytes of the encoding CMap tables the font holds alone, counted when
@@ -353,6 +391,16 @@ impl Font {
                 };
                 cff.draw(&subfont, glyph, &[], None, &mut pen).is_ok()
             }
+            Format::Type1 => {
+                // Unscaled: font units, the `FontMatrix` applied.
+                let Some(Type1(font)) = &self.type1 else {
+                    return Ok(None);
+                };
+                if glyph.to_u32() >= font.num_glyphs() {
+                    return Ok(None);
+                }
+                font.draw(glyph, None, &mut pen).is_ok()
+            }
         };
         if !drawn {
             return Ok(None);
@@ -495,6 +543,7 @@ pub(crate) fn load_text_only<S: Source>(
             Ok(Some(Font {
                 program: Arc::from(Vec::new()),
                 format: Format::OpenType,
+                type1: None,
                 units_per_em: 1000.0,
                 mapping: Mapping::Simple {
                     glyphs,
@@ -532,6 +581,7 @@ pub(crate) fn load_text_only<S: Source>(
             Ok(Some(Font {
                 program: Arc::from(Vec::new()),
                 format: Format::OpenType,
+                type1: None,
                 units_per_em: 1000.0,
                 mapping: Mapping::Cid {
                     codes,
@@ -552,12 +602,14 @@ pub(crate) fn load_text_only<S: Source>(
 /// names no glyph of the program.
 type SimpleGlyphs = (Box<[Option<u16>; 256]>, Box<[bool; 256]>);
 
-/// A font program, how to read it, and its units per em.
-type Program = (Arc<[u8]>, Format, f64);
+/// A font program, how to read it, its units per em, and the Type 1
+/// program read.
+type Program = (Arc<[u8]>, Format, f64, Option<Type1>);
 
 /// The embedded program of a descriptor, if it can be opened: `/FontFile2`
-/// (TrueType), or `/FontFile3` with `/Subtype /OpenType`, `/Type1C` or
-/// `/CIDFontType0C`. `/FontFile` (Type 1) is not read (ADR-0005).
+/// (TrueType), `/FontFile3` with `/Subtype /OpenType`, `/Type1C` or
+/// `/CIDFontType0C`, or `/FontFile` (Type 1, read once here and kept in
+/// the program's `Type1`).
 fn program<S: Source>(
     file: &PdfFile<S>,
     descriptor: &Dictionary,
@@ -565,6 +617,8 @@ fn program<S: Source>(
 ) -> Result<Option<Program>, Error> {
     let (object, format) = if let Some(object) = descriptor.get(b"FontFile2") {
         (object, Format::OpenType)
+    } else if let Some(object) = descriptor.get(b"FontFile") {
+        (object, Format::Type1)
     } else if let Some(object) = descriptor.get(b"FontFile3") {
         let subtype = match resolve_dictionary(file, object, budget)? {
             Some(stream) => stream
@@ -584,6 +638,7 @@ fn program<S: Source>(
     let Some(bytes) = stream_bytes(file, object, budget)? else {
         return Ok(None);
     };
+    let mut type1 = None;
     let units_per_em = match format {
         Format::OpenType => match FontRef::new(&bytes).and_then(|font| font.head()) {
             Ok(head) => f64::from(head.units_per_em()),
@@ -593,12 +648,48 @@ fn program<S: Source>(
             Ok(cff) => f64::from(cff.upem()),
             Err(_) => return Ok(None),
         },
+        Format::Type1 => {
+            // Bounded before reading (`type1_cost`): the work of the reader,
+            // and its memory, charged as at most an index entry per eight
+            // bytes besides the decrypted copy.
+            let Some(cost) = type1_cost(&bytes) else {
+                return Ok(None);
+            };
+            budget.charge_decoded_bytes(cost)?;
+            match Type1Font::new(&bytes) {
+                Ok(font) => {
+                    let upem = f64::from(font.upem());
+                    type1 = Some(Type1(Arc::new(font)));
+                    upem
+                }
+                Err(_) => return Ok(None),
+            }
+        }
     };
     // 16 to 16 384 units per em (OpenType `head`); anything else is damaged.
     if !(16.0..=16_384.0).contains(&units_per_em) {
         return Ok(None);
     }
-    Ok(Some((Arc::from(bytes), format, units_per_em)))
+    Ok(Some((Arc::from(bytes), format, units_per_em, type1)))
+}
+
+/// What reading the Type 1 program `bytes` may cost in memory, or `None`
+/// when reading it could take too long: its `/Encoding` names (at most the
+/// `/` before `eexec`) times its glyphs (at most one per
+/// `TYPE1_MIN_ENTRY` bytes after it), each looked up linearly, must stay
+/// within `MAX_TYPE1_LOOKUPS`. Without `eexec` it is not a program.
+fn type1_cost(bytes: &[u8]) -> Option<u64> {
+    let eexec = bytes.windows(5).position(|window| window == b"eexec")?;
+    let names = bytes
+        .get(..eexec)?
+        .iter()
+        .filter(|byte| **byte == b'/')
+        .count() as u64;
+    let glyphs = (bytes.len() - eexec) as u64 / TYPE1_MIN_ENTRY;
+    if names.saturating_mul(glyphs) > MAX_TYPE1_LOOKUPS {
+        return None;
+    }
+    Some((bytes.len() as u64).saturating_add(glyphs.saturating_mul(TYPE1_ENTRY_BYTES)))
 }
 
 /// A simple font: one byte per code. Without a program that can be read
@@ -625,7 +716,7 @@ fn simple<S: Source>(
         Some(object) => resolve(file, object, budget)?,
         None => None,
     };
-    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
+    let Some((program, format, units_per_em, type1)) = program(file, &descriptor, budget)? else {
         return substitute(file, font, &descriptor, encoding.as_ref(), budget);
     };
     let (glyphs, missing, font_ref, names) = match format {
@@ -648,8 +739,17 @@ fn simple<S: Source>(
             let (glyphs, missing) = cff_glyphs(&cff, &mut names, budget)?;
             (glyphs, missing, None, names)
         }
+        Format::Type1 => {
+            // As for CFF: without a base encoding, the built-in one applies.
+            let mut names = encoding_names(file, encoding.as_ref(), None, budget)?;
+            let Some(Type1(program)) = &type1 else {
+                return Ok(None);
+            };
+            let (glyphs, missing) = type1_glyphs(program, &mut names, budget)?;
+            (glyphs, missing, None, names)
+        }
     };
-    let widths = simple_widths(
+    let mut widths = simple_widths(
         file,
         font,
         &descriptor,
@@ -658,9 +758,27 @@ fn simple<S: Source>(
         units_per_em,
         budget,
     )?;
+    // Without /Widths, a Type 1 program gives its own advances (in font
+    // units, its FontMatrix applied), as a TrueType one does.
+    if font.get(b"Widths").is_none()
+        && let Some(Type1(program)) = &type1
+    {
+        for (slot, glyph) in widths.iter_mut().zip(glyphs.iter()) {
+            let advance = glyph.and_then(|gid| {
+                program
+                    .advance(GlyphId::new(u32::from(gid)), None)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(advance) = advance {
+                *slot = f64::from(advance) * 1000.0 / units_per_em;
+            }
+        }
+    }
     Ok(Some(Font {
         program: Arc::clone(&program),
         format,
+        type1,
         units_per_em,
         mapping: Mapping::Simple {
             glyphs,
@@ -670,6 +788,51 @@ fn simple<S: Source>(
         substituted: false,
         text: TextMap::new(font, Some(&names)),
     }))
+}
+
+/// Glyph of each code of a simple Type 1 font, as `cff_glyphs` does: by the
+/// glyph name of the PDF's encoding, else by the font's built-in encoding,
+/// whose name then becomes the code's (for its text).
+fn type1_glyphs(
+    font: &Type1Font,
+    names: &mut [Option<Vec<u8>>],
+    budget: &mut Budget,
+) -> Result<SimpleGlyphs, Error> {
+    let mut by_name: BTreeMap<&[u8], u16> = BTreeMap::new();
+    for (gid, name) in font.glyph_names() {
+        budget.charge_object()?;
+        if let Ok(gid) = u16::try_from(gid.to_u32()) {
+            by_name.entry(name.as_bytes()).or_insert(gid);
+        }
+    }
+    let builtin = font.encoding();
+    let mut glyphs = Box::new([None; 256]);
+    let mut missing = Box::new([false; 256]);
+    for ((code, slot), lost) in (0_u8..=255).zip(glyphs.iter_mut()).zip(missing.iter_mut()) {
+        let Some(name) = names.get_mut(usize::from(code)) else {
+            continue;
+        };
+        // A name the PDF gives must find its glyph; one the built-in
+        // encoding gives may not (a subset), as for CFF.
+        let named_by_pdf = name.is_some();
+        if name.is_none() {
+            // The built-in encoding names the code.
+            *name = builtin
+                .as_ref()
+                .and_then(|encoding| encoding.glyph_name(code))
+                .filter(|name| *name != ".notdef")
+                .map(|name| name.as_bytes().to_vec());
+        }
+        let glyph = name
+            .as_deref()
+            .and_then(|name| by_name.get(name).copied())
+            .filter(|gid| *gid != 0);
+        *slot = glyph;
+        *lost = named_by_pdf
+            && glyph.is_none()
+            && name.as_deref().is_some_and(|name| name != b".notdef");
+    }
+    Ok((glyphs, missing))
 }
 
 /// A simple font drawn with a replacement font (ADR-0005, step 5.3): its
@@ -733,6 +896,7 @@ fn substitute<S: Source>(
     Ok(Some(Font {
         program: Arc::from(bytes),
         format: Format::OpenType,
+        type1: None,
         units_per_em,
         mapping: Mapping::Simple {
             glyphs,
@@ -843,6 +1007,7 @@ fn symbols<S: Source>(
     Ok(Some(Font {
         program: Arc::from(bytes),
         format: Format::OpenType,
+        type1: None,
         units_per_em,
         mapping: Mapping::Simple {
             glyphs,
@@ -1222,7 +1387,12 @@ fn cid<S: Source>(
     let Some(descriptor) = resolve_dictionary(file, descriptor, budget)? else {
         return Ok(None);
     };
-    let Some((program, format, units_per_em)) = program(file, &descriptor, budget)? else {
+    // A CID-keyed Type 1 program (`/FontFile` under a CIDFont) is not
+    // read: refused before reading it.
+    if descriptor.get(b"FontFile2").is_none() && descriptor.get(b"FontFile").is_some() {
+        return Ok(None);
+    }
+    let Some((program, format, units_per_em, _)) = program(file, &descriptor, budget)? else {
         return Ok(None);
     };
     let cid_to_gid = match (format, descendant.get(b"CIDToGIDMap")) {
@@ -1270,6 +1440,8 @@ fn cid<S: Source>(
                     .collect(),
             )
         }
+        // Refused above.
+        (Format::Type1, _) => return Ok(None),
     };
     let widths = cid_widths(file, &descendant, budget)?;
     let vertical = if vertical {
@@ -1281,6 +1453,7 @@ fn cid<S: Source>(
     Ok(Some(Font {
         program,
         format,
+        type1: None,
         units_per_em,
         mapping: Mapping::Cid {
             codes,
@@ -1592,6 +1765,27 @@ fn cid_widths<S: Source>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type1_programs_are_bounded_before_reading() {
+        // Encoding names (slashes before eexec) times glyphs (eight bytes
+        // each after it), at the bound and one past it.
+        let program = |names: usize, after: usize| {
+            let mut bytes = "/".repeat(names).into_bytes();
+            bytes.extend_from_slice(b"eexec");
+            bytes.resize(names + 5 + after, b' ');
+            bytes
+        };
+        let glyphs = usize::try_from(MAX_TYPE1_LOOKUPS / 1000).unwrap();
+        assert!(type1_cost(&program(1000, glyphs * 8 - 5)).is_some());
+        assert!(type1_cost(&program(1000, glyphs * 8 + 3)).is_none());
+        // The memory charged: the bytes, and an index entry per glyph.
+        assert_eq!(
+            type1_cost(&program(1, 80)),
+            Some(86 + 10 * TYPE1_ENTRY_BYTES)
+        );
+        assert!(type1_cost(b"no encrypted part").is_none());
+    }
 
     #[test]
     fn symbolic_sets_are_recognised_by_name() {

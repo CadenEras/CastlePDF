@@ -572,8 +572,9 @@ fn a_damaged_cff_program_is_replaced() {
 
 #[cfg(feature = "standard-fonts")]
 #[test]
-fn a_type1_program_is_replaced() {
-    // /FontFile (Type 1) is not read (ADR-0005): a replacement draws it.
+fn an_unreadable_type1_program_is_replaced() {
+    // A /FontFile that is not a Type 1 program (a header only): a
+    // replacement draws it, and says so.
     let rendering = render(with_program(
         "BT /F1 40 Tf 20 30 Td (A) Tj ET",
         "Type1",
@@ -600,4 +601,95 @@ fn without_replacement_fonts_the_text_is_skipped() {
         [Unsupported::Text]
     );
     assert_eq!(dark(&rendering, 842, (0, 0, 595, 842)), 0);
+}
+
+#[test]
+fn embedded_type1_programs_are_drawn_and_give_their_text() {
+    // ADR-0005 amended, tranche 3.8: a synthetic Type 1 font, binary and
+    // hexadecimal eexec, built-in encoding and /Differences, a subroutine
+    // and a seac composite (scripts/make-fixtures.mjs, `type1Program`).
+    let bytes = std::fs::read(repo("tests/corpus/public/type1.pdf")).expect("fixture");
+    let rendering = render(bytes.clone());
+    assert!(rendering.skipped.is_empty(), "{:?}", rendering.skipped);
+    // The triangle "A" of the first line at 40 pt: ink at its base, middle.
+    assert!(dark(&rendering, 180, (18, 131, 26, 135)) > 0);
+    let document = document(bytes);
+    let text = pdf_render::page_text(
+        document.file(),
+        document.page(0).expect("page"),
+        &pdf_render::RenderLimits::default(),
+        &mut budget(),
+    )
+    .expect("text");
+    let all: String = text
+        .glyphs
+        .iter()
+        .filter_map(|glyph| glyph.text.as_deref())
+        .collect();
+    assert_eq!(all, "ABC O \u{c1}ABC OBOA \u{c1}CABO");
+}
+
+/// The Type 1 program of `type1.pdf` (object 11): binary eexec,
+/// FontMatrix 0.001.
+fn type1_program() -> Vec<u8> {
+    let pdf = std::fs::read(repo("tests/corpus/public/type1.pdf")).expect("fixture");
+    let find = |from: usize, needle: &[u8]| {
+        pdf[from..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|at| from + at)
+            .expect("marker")
+    };
+    let object = find(0, b"11 0 obj\n<< /Length ") + 20;
+    let digits = pdf[object..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    let length: usize = std::str::from_utf8(&pdf[object..object + digits])
+        .expect("digits")
+        .parse()
+        .expect("length");
+    let start = find(object, b"stream\n") + 7;
+    pdf[start..start + length].to_vec()
+}
+
+#[test]
+fn without_widths_a_type1_program_gives_its_advances() {
+    // No /Widths: "A" advances 600 units of 1000, so the second "A" starts
+    // 24 points after the first at 40 points.
+    let bytes = with_program(
+        "BT /F1 40 Tf 10 30 Td (AA) Tj ET",
+        "Type1",
+        "",
+        "FontFile",
+        "",
+        &type1_program(),
+        4,
+    );
+    let document = document(bytes);
+    let text = pdf_render::page_text(
+        document.file(),
+        document.page(0).expect("page"),
+        &pdf_render::RenderLimits::default(),
+        &mut budget(),
+    )
+    .expect("text");
+    let xs: Vec<f64> = text.glyphs.iter().map(|glyph| glyph.x).collect();
+    assert_eq!(xs.len(), 2);
+    assert!((xs[1] - xs[0] - 24.0).abs() < 1e-6, "{xs:?}");
+}
+
+#[test]
+fn a_type1_program_under_a_cid_font_is_not_read() {
+    // /FontFile under a CIDFontType0: refused, its text not drawn.
+    let rendering = render(with_program(
+        "BT /F1 40 Tf 10 30 Td <0041> Tj ET",
+        "Type0",
+        "/Encoding /Identity-H /DescendantFonts [<< /Type /Font /Subtype /CIDFontType0 /BaseFont /F /FontDescriptor 7 0 R >>]",
+        "FontFile",
+        "",
+        &type1_program(),
+        4,
+    ));
+    assert!(rendering.skipped.contains(&Unsupported::Text));
 }

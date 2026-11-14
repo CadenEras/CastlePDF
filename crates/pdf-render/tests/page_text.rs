@@ -402,7 +402,7 @@ fn a_cid_font_that_cannot_be_drawn_still_gives_its_text() {
 
 #[test]
 fn a_symbolic_type1_font_gives_the_text_of_its_glyph_names() {
-    // An embedded Type 1 program is not read, and a symbolic font is not
+    // An embedded Type 1 program that cannot be read, and a symbolic font is not
     // replaced: the font is read for its text only.
     let font = "<< /Type /Font /Subtype /Type1 /BaseFont /CMSY10 /FirstChar 65 /LastChar 66 /Widths [600 700] \
         /Encoding << /Differences [65 /arrowright /bullet] >> /FontDescriptor 6 0 R >>";

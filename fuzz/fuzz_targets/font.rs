@@ -4,7 +4,8 @@
 //! (`/FontFile3` `/Type1C` or `/CIDFontType0C`); bits 2 and 3, the Type 0
 //! encoding (ADR-0006, tranche 3.4a): `Identity-H`, `Identity-V` with
 //! `/W2`, an embedded CMap mixing one- and two-byte codes over `Identity-H`
-//! by `usecmap`, or the same CMap vertical.
+//! by `usecmap`, or the same CMap vertical; bit 4, for a simple font, a
+//! Type 1 program (`/FontFile`, ADR-0005 amended, tranche 3.8) instead.
 //! Properties: no panic, overflow or unbounded work; a font that cannot be
 //! read is reported as `Text`, never fatal.
 #![no_main]
@@ -27,8 +28,10 @@ const CMAP: &str = "/Identity-H usecmap begincodespacerange <00> <7F> <8000> <FF
     begincidrange <20> <7E> 3 endcidrange begincidchar <8001> 9 endcidchar \
     beginnotdefrange <00> <1F> 1 endnotdefrange";
 
-fn pdf(program: &[u8], cid: bool, cff: bool, encoding: u8) -> Vec<u8> {
-    let (simple, descendant, file, stream) = if cff {
+fn pdf(program: &[u8], cid: bool, cff: bool, encoding: u8, type1: bool) -> Vec<u8> {
+    let (simple, descendant, file, stream) = if type1 && !cid {
+        ("Type1", "CIDFontType0", "FontFile", "")
+    } else if cff {
         ("Type1", "CIDFontType0", "FontFile3", if cid { " /Subtype /CIDFontType0C" } else { " /Subtype /Type1C" })
     } else {
         ("TrueType", "CIDFontType2", "FontFile2", "")
@@ -99,7 +102,13 @@ fuzz_target!(|data: &[u8]| {
     let Some((first, program)) = data.split_first() else {
         return;
     };
-    let bytes = pdf(program, first & 1 == 1, first & 2 == 2, (first >> 2) & 3);
+    let bytes = pdf(
+        program,
+        first & 1 == 1,
+        first & 2 == 2,
+        (first >> 2) & 3,
+        first & 16 == 16,
+    );
     let Ok(source) = MemorySource::from_vec(bytes, &ResourceLimits::default()) else {
         return;
     };

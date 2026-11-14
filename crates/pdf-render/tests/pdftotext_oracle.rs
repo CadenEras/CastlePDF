@@ -40,7 +40,7 @@ use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 /// Fixture, page index, every glyph's text known, and whether its words
 /// are compared.
-const CASES: [(&str, usize, bool); 11] = [
+const CASES: [(&str, usize, bool); 12] = [
     ("minimal.pdf", 0, true),
     ("incremental.pdf", 0, true),
     ("hybrid.pdf", 0, true),
@@ -52,6 +52,7 @@ const CASES: [(&str, usize, bool); 11] = [
     ("cmaps.pdf", 0, false),
     ("cmaps.pdf", 1, true),
     ("filters.pdf", 0, true),
+    ("type1.pdf", 0, true),
 ];
 
 fn corpus(name: &str) -> PathBuf {
