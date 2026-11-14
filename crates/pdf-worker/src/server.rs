@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use pdf_render::search::SearchOptions;
 use pdf_syntax::{Budget, CancellationToken, ResourceLimits};
 
 use crate::PROTOCOL_VERSION;
@@ -253,6 +254,29 @@ fn job_of(request: Request, documents: &Shared<Documents>) -> Option<(u64, Work)
                 document
                     .ok_or(ErrorCode::UnknownDocument)
                     .and_then(|document| documents::page_text(&document, page, id, budget))
+                    .unwrap_or_else(|code| failed(id, code))
+            };
+            (id, Box::new(work))
+        }
+        Request::SearchPage {
+            id,
+            document,
+            page,
+            query,
+            match_case,
+            match_diacritics,
+        } => {
+            let document = lock(documents).get(document);
+            let options = SearchOptions {
+                match_case,
+                match_diacritics,
+            };
+            let work = move |budget: &mut Budget| {
+                document
+                    .ok_or(ErrorCode::UnknownDocument)
+                    .and_then(|document| {
+                        documents::search_page(&document, page, &query, options, id, budget)
+                    })
                     .unwrap_or_else(|code| failed(id, code))
             };
             (id, Box::new(work))

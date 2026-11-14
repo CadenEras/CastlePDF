@@ -18,7 +18,7 @@ décompression et codecs doivent échouer proprement. Les annulations interrompe
 étapes longues ; si un codec ne peut pas être interrompu, le worker doit pouvoir être
 tué sans bloquer l'application. Définir droits et limites de processus pour chaque OS.
 
-État du worker (protocole v5) :
+État du worker (protocole v6) :
 - le chemin d'un document est choisi par le shell, jamais transmis par l'UI ; le worker
   le lit sous `max_input_bytes`, refuse ce qui n'est pas un fichier régulier et ne
   reçoit pas plus de 4 096 octets de chemin en UTF-8 ;
@@ -105,6 +105,17 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   réponse vérifie chaque nombre de lignes et de mots avant d'allouer (cible de fuzzing
   `protocol`). Le texte reste une donnée : l'UI le valide (`parseTextLayer`), ne l'insère que
   comme texte (jamais comme HTML) et reconstruit elle-même la copie depuis ses mots ;
+- `search_page` (tranche 3.7) n'accepte que le document courant, une page existante et une
+  requête non vide d'au plus 1 024 octets ; le worker la refuse aussi au-delà de 256 caractères
+  une fois repliée. Une recherche se fait page par page : chaque page est une tâche courte ;
+  une page en attente est remplacée par la suivante, et toute autre tâche, tuiles comprises,
+  passe avant elle. Le worker cherche dans la couche de texte de la page, telle que
+  `page_text` l'envoie (960 Kio au plus) : chaque occurrence désigne des mots que l'UI a, et
+  le texte au-delà n'est pas cherché (`truncated`). Le texte replié est borné à 4 Mi
+  caractères (`MAX_SEARCH_CHARS`, 12 octets de position chacun), même hors du worker. Une
+  page rend au plus 1 000 occurrences (`truncated` au-delà) ; le décodage vérifie leur nombre
+  avant d'allouer. La recherche est linéaire (Knuth-Morris-Pratt), sans expression régulière
+  venue de l'utilisateur (cibles de fuzzing `search` et `protocol`) ;
 - `current_document` ne rend que le dernier événement de document ;
 - `begin_view` numérote les vues côté shell : une tuile ne peut citer qu'une génération
   déjà attribuée ;

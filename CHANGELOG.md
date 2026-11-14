@@ -19,6 +19,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur, CLI, worker et shell : **recherche dans le texte** (ADR-0006, tranche 3.7a).
+  `pdf_render::search` trouve une requête dans les lignes d'une page, dans l'ordre de lecture,
+  y compris d'une ligne à la suivante. La casse et les accents des lettres latines sont
+  ignorés sauf demande, les ligatures, apostrophes typographiques, espaces et traits d'union
+  conditionnels repliés. `castle-pdf search <fichier> <requête> [--match-case]
+  [--match-diacritics]` imprime les lignes trouvées, le nombre d'occurrences et le temps.
+  Requête `SearchPage` (protocole **v6**) et commande Tauri `search_page` (permission
+  `allow-search-page`) : une page par tâche, chaque occurrence placée en ligne, mot et
+  caractère de la couche de texte ; au plus 1 000 par page, requête d'au plus 1 024 octets.
+  Cible de fuzzing `search`.
+
 - UI : **sélection et copie du texte** (ADR-0006, tranche 3.6b). Une couche de texte transparente
   couvre chaque page dessinée : un élément par mot, placé sur sa ligne de base, tourné selon
   elle et étiré à sa longueur, donc sélectionnable avec la souris et lu par les lecteurs

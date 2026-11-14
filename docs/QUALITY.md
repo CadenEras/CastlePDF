@@ -392,6 +392,25 @@ inconnus par les pipes, `page_transform` pour les quatre rotations, une crop box
 `/UserUnit` et une page trop grande pour un rendu à l'échelle 1.
 Fuzzing `protocol` : 144 150 598 exécutions en 10 min (WSL), aucun crash.
 
+Recherche, moteur et worker (tranche 3.7, 2026-11-14) :
+- comparaison repliée (casse, accents latins, ligatures, apostrophes, espaces, trait d'union
+  conditionnel), occurrences entre deux lignes, sans chevauchement, borne d'occurrences et de
+  requête testées à la limite et au-delà (`pdf_render::search`) ;
+- `castle-pdf search` sur `columns.pdf` et `text.pdf` ; `SearchPage` par les pipes, chaque
+  occurrence vérifiée contre la couche de texte de la même page ; commande du shell de bout
+  en bout avec le processus worker ;
+- temps de `castle-pdf search` (release, WSL, médiane de 3 exécutions, ouverture exclue) sur
+  les 8 documents les plus longs de l'échantillon SafeDocs (449 à 1 844 pages) : de 192 ms
+  (449 pages) à 1 214 ms (910 pages), soit 0,4 à 2,1 ms par page ; une requête absente
+  coûte autant qu'une requête fréquente (`the`) : le temps est celui de l'extraction du texte ;
+- après la revue : texte replié borné (`MAX_SEARCH_CHARS`, testé à la borne), recherche dans
+  la couche de texte même (couche tronquée : 1 000 occurrences puis `truncated`, chacune sur un
+  mot de la couche ; requête absente `truncated` aussi), une ligature ne donne qu'une
+  occurrence par lettre repliée, minuscule avant accent (signe angström), page de recherche en
+  attente remplacée par la suivante dans le shell ;
+- fuzzing `search` : 1 091 533 exécutions en 2 min, puis 2 737 181 en 3 min après la revue (WSL),
+  aucun crash ; `protocol` : 55 189 852 exécutions en 5 min, aucun crash.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

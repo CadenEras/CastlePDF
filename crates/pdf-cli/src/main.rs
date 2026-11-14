@@ -5,7 +5,8 @@
 //! It never prints document content: no strings, streams or resource values,
 //! and only standard trailer key names. `castle-pdf render` writes one page to
 //! a new PPM image. `castle-pdf text` prints the text of the pages: the only
-//! command that prints document content, on request. `castle-pdf survey` measures how the engine handles every
+//! command that prints document content, on request, with `castle-pdf search`,
+//! which prints the lines holding a query. `castle-pdf survey` measures how the engine handles every
 //! file of a directory, each probed in a child process (`castle-pdf probe`),
 //! and reports aggregated counts only. Exit codes: 0 success, 1 the document
 //! cannot be read or rendered, or the image cannot be created, or a surveyed
@@ -15,6 +16,7 @@ mod inspect;
 mod open;
 mod probe;
 mod render;
+mod search;
 mod survey;
 mod text;
 
@@ -34,6 +36,11 @@ Usage:
                               of every page separated by form feeds, in
                               content order; a summary per page goes to the
                               error output
+  castle-pdf search <file> <query> [--match-case] [--match-diacritics]
+                              Print each line holding the query, as
+                              page <n>: <line>; case and accents are ignored
+                              unless asked; counts and time go to the error
+                              output
   castle-pdf survey <directory> [--timeout <seconds>] [--jobs <n>] [--paths]
                               Open every file under the directory and render
                               its first page, each in a child process killed
@@ -45,8 +52,8 @@ Usage:
   castle-pdf --help, -h       Show this help
   castle-pdf --version        Show the version
 
-`inspect` lists structure only, never document content; `text` prints the
-document's text, with control characters replaced by U+FFFD. `render` never
+`inspect` lists structure only, never document content; `text` and `search`
+print the document's text, with control characters replaced by U+FFFD. `render` never
 overwrites a file and lists what the page uses but it cannot render yet.
 `survey` reports never hold document content, and file names only with
 --paths. Exit codes: 0 success, 1 the document cannot be read or rendered, or
@@ -81,6 +88,10 @@ fn run(args: &[std::ffi::OsString], out: &mut dyn Write, err: &mut dyn Write) ->
         },
         [command, rest @ ..] if *command == "text" => match text::Request::parse(rest) {
             Some(request) => text::run(&request, out, err),
+            None => err.write_all(USAGE.as_bytes()).map(|()| 2),
+        },
+        [command, rest @ ..] if *command == "search" => match search::Request::parse(rest) {
+            Some(request) => search::run(&request, out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),
         },
         [command, rest @ ..] if *command == "survey" => match survey::Request::parse(rest) {
@@ -178,6 +189,11 @@ mod tests {
             &["survey", "d", "--jobs", "0"],
             &["survey", "d", "--jobs", "65"],
             &["survey", "d", "--paths", "x"],
+            &["search"],
+            &["search", "a"],
+            &["search", "a", "  "],
+            &["search", "a", "q", "--match-case", "--match-case"],
+            &["search", "a", "q", "--whole-word"],
             &["probe"],
             &["probe", "a", "b"],
         ] {

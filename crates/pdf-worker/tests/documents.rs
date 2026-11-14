@@ -73,6 +73,80 @@ fn a_page_gives_its_text_layer_through_the_pipes() {
 }
 
 #[test]
+fn a_search_places_its_hits_in_the_text_layer() {
+    let worker = spawn();
+    assert!(matches!(
+        open(&worker, 1, "columns.pdf"),
+        Response::DocumentOpened { document: 1, .. }
+    ));
+    let Response::PageText { layer, .. } = call(
+        &worker,
+        &Request::PageText {
+            id: 2,
+            document: 1,
+            page: 0,
+        },
+    ) else {
+        panic!("text layer expected");
+    };
+    let search = |id: u64, document: u32, query: &str| {
+        call(
+            &worker,
+            &Request::SearchPage {
+                id,
+                document,
+                page: 0,
+                query: query.to_owned(),
+                match_case: false,
+                match_diacritics: false,
+            },
+        )
+    };
+    let Response::SearchHits {
+        id: 3,
+        hits,
+        truncated: false,
+        incomplete: false,
+    } = search(3, 1, "LEFT")
+    else {
+        panic!("hits expected");
+    };
+    assert_eq!(hits.len(), 3);
+    for hit in &hits {
+        // Each hit names the word "Left" of the layer, whole.
+        let [line, word, char] = hit.start.map(|index| index as usize);
+        assert_eq!(layer.lines[line].words[word].text, "Left");
+        assert_eq!(char, 0);
+        assert_eq!(hit.end, [hit.start[0], hit.start[1], 4]);
+    }
+    // Across two lines of the layer.
+    let Response::SearchHits { hits, .. } = search(4, 1, "three right") else {
+        panic!("hits expected");
+    };
+    assert_eq!(hits.len(), 1);
+    let [start, end] = [hits[0].start, hits[0].end].map(|[l, w, c]| {
+        let word = &layer.lines[l as usize].words[w as usize].text;
+        (word.clone(), c)
+    });
+    assert_eq!(
+        (start, end),
+        (("three".to_owned(), 0), ("Right".to_owned(), 5))
+    );
+    // A query empty once folded, or too long, an unknown document.
+    let long = "a".repeat(1025);
+    for (id, document, query, code) in [
+        (5, 1, " \t", ErrorCode::InvalidRequest),
+        (6, 1, long.as_str(), ErrorCode::InvalidRequest),
+        (7, 2, "left", ErrorCode::UnknownDocument),
+    ] {
+        assert_eq!(
+            search(id, document, query),
+            Response::JobFailed { id, code }
+        );
+    }
+}
+
+#[test]
 fn a_page_is_rendered_tile_by_tile() {
     let worker = spawn();
     assert_eq!(

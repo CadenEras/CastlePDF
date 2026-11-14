@@ -90,6 +90,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "search"
+path = "fuzz_targets/search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "protocol"
 path = "fuzz_targets/protocol.rs"
 test = false

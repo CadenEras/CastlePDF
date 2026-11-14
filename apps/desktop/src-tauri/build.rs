@@ -10,6 +10,7 @@ fn main() {
             "page_size",
             "render_tile",
             "page_text",
+            "search_page",
         ]));
     if let Err(error) = tauri_build::try_build(attributes) {
         eprintln!("tauri build script failed: {error:#}");

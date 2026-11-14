@@ -86,7 +86,7 @@ cargo install --locked cargo-fuzz@0.13.2
 cargo fuzz run lexer -- -max_total_time=300 -rss_limit_mb=2048 -dict=dict/pdf.dict   # ou objects
 ```
 
-Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType ou CFF arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
+Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType ou CFF arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `search` (texte et requête arbitraires : chaque occurrence dans le texte, dans l'ordre de lecture), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
 puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`) lance
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 
@@ -115,6 +115,7 @@ Interface effective, relevée sur `--help` :
 cargo run -p pdf-cli -- inspect <fichier>   # castle-pdf inspect <fichier>
 cargo run -p pdf-cli -- render <fichier> <page> <sortie.ppm> [--scale <facteur>]
 cargo run -p pdf-cli -- text <fichier> [--page <n>]
+cargo run -p pdf-cli -- search <fichier> <requête> [--match-case] [--match-diacritics]
 cargo run -p pdf-cli -- survey <répertoire> [--timeout <secondes>] [--jobs <n>] [--paths]
 cargo run -p pdf-cli -- probe <fichier>       # une étape de survey
 cargo run -p pdf-cli -- --help                # ou -h
@@ -143,12 +144,20 @@ quand le rendu échoue ou que l'image ne peut pas être créée. Limites par dé
 
 `text` affiche le texte d'une page (numérotée à partir de 1) ou de toutes, séparées par un
 saut de page, dans l'ordre du contenu (ADR-0006, tranche 3.3) : c'est la seule commande qui
-affiche le contenu du document, à la demande. Elle affiche les lignes et les mots de
+affiche le contenu du document, à la demande, avec `search`. Elle affiche les lignes et les mots de
 `reading_lines` dans l'ordre de lecture (tranches 3.5a et 3.5b), `/ActualText` compris. Un glyphe dont le texte est
 inconnu s'affiche U+FFFD, comme tout caractère de contrôle venu du document (aucune séquence
 d'échappement n'atteint le terminal). Un résumé par page va sur la sortie d'erreur : glyphes,
 inconnus, lus par un code `/ToUnicode` d'une autre longueur, `/ToUnicode` illisibles. Codes
 de sortie comme `render`.
+
+`search` cherche une requête dans toutes les pages (tranche 3.7a) et affiche chaque ligne qui
+la contient, `page <n>: <ligne>`, comme `text` l'affiche. La casse et les accents latins sont
+ignorés sauf `--match-case` ou `--match-diacritics` ; les ligatures, apostrophes, espaces et
+traits d'union conditionnels sont repliés (`pdf_render::search`). La sortie d'erreur donne le
+nombre d'occurrences et de pages et le temps de recherche, ouverture exclue. Une requête vide
+une fois repliée ou trop longue (256 caractères) est un usage incorrect (2) ; autres codes
+comme `text`.
 
 `survey` parcourt récursivement les fichiers réguliers du répertoire (liens symboliques
 non suivis) et lance pour chacun `castle-pdf probe` dans un processus enfant, tué après

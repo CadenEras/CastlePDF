@@ -20,8 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pdf_worker::client::{ClientError, WorkerProcess};
 use pdf_worker::protocol::{
-    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_TILE_SIDE, Repair, Request, Response,
-    TextLayer, TileRect,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_TILE_SIDE, Repair,
+    Request, Response, TextLayer, TileRect,
 };
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +180,33 @@ impl From<TextLayer> for TextLayerDto {
     }
 }
 
+/// The occurrences of a query in a page (ADR-0006, tranche 3.7): each from
+/// its first character to the one after its last, as `[line, word, char]`
+/// indices into the page's text layer (`TextLayerDto`), characters counted
+/// in Unicode scalar values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchHitsDto {
+    pub hits: Vec<HitDto>,
+    /// More occurrences than the worker carries for a page.
+    pub truncated: bool,
+    /// Text the page shows is missing: an occurrence there cannot be found.
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HitDto {
+    pub start: [u32; 3],
+    pub end: [u32; 3],
+}
+
+/// What `search_page` looks for, as sent by the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    pub query: String,
+    pub match_case: bool,
+    pub match_diacritics: bool,
+}
+
 /// Arguments of `render_tile`, as sent by the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -268,6 +295,16 @@ enum Job {
         page: u32,
         generation: u64,
         reply: Reply<TextLayerDto>,
+    },
+    /// Searches one page; a search of the document is a page at a time, so
+    /// that tiles go in between. It belongs to no view: a search goes on
+    /// while the user scrolls. At most one waits in the queue, and every
+    /// other job goes before it.
+    Search {
+        document: u32,
+        page: u32,
+        search: SearchRequest,
+        reply: Reply<SearchHitsDto>,
     },
     /// Opens the current document again in a restarted worker.
     Reopen { path: String },
@@ -484,6 +521,34 @@ impl WorkerHandle {
         }
     }
 
+    /// The occurrences of `search.query` in `page` of the current document.
+    /// The query is refused when it is blank or longer than
+    /// `MAX_QUERY_BYTES`; the worker also refuses one too long once folded.
+    pub fn search_page(
+        &self,
+        document: u32,
+        page: u32,
+        search: SearchRequest,
+    ) -> Pending<SearchHitsDto> {
+        let query = &search.query;
+        if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
+            return Pending::Ready(Err(CommandError::InvalidArgument { field: "query" }));
+        }
+        if let Err(error) = self.check_page(document, page) {
+            return Pending::Ready(Err(error));
+        }
+        let (reply, receiver) = channel();
+        match self.queue(Job::Search {
+            document,
+            page,
+            search,
+            reply,
+        }) {
+            Ok(()) => Pending::Waiting(receiver),
+            Err(error) => Pending::Ready(Err(error)),
+        }
+    }
+
     /// Starts a new view (page, scale, document) and returns its generation:
     /// the queued tiles of older views are dropped at once, before the new
     /// view's requests.
@@ -656,6 +721,17 @@ impl Manager<'_> {
                 }
             }
             Command::Queue(job) => {
+                // A newer search page replaces the one still waiting: the
+                // UI moved on to another page or another query.
+                if matches!(job, Job::Search { .. })
+                    && let Some(index) = self
+                        .queue
+                        .iter()
+                        .position(|queued| matches!(queued, Job::Search { .. }))
+                    && let Some(older) = self.queue.remove(index)
+                {
+                    self.refuse(older, CommandError::Stale);
+                }
                 if self.queue.len() >= MAX_QUEUED {
                     self.refuse(job, CommandError::Busy);
                 } else {
@@ -728,6 +804,9 @@ impl Manager<'_> {
             Job::Text { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
+            Job::Search { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
             Job::Reopen { .. } => {}
         }
     }
@@ -753,7 +832,14 @@ impl Manager<'_> {
             {
                 self.lose_worker();
             }
-            let Some(job) = self.queue.pop_front() else {
+            // Tiles and the rest go before a search page: a search never
+            // keeps the view waiting longer than the page it is on.
+            let next = self
+                .queue
+                .iter()
+                .position(|job| !matches!(job, Job::Search { .. }))
+                .unwrap_or(0);
+            let Some(job) = self.queue.remove(next) else {
                 return;
             };
             let Some(worker) = &self.worker else {
@@ -772,7 +858,9 @@ impl Manager<'_> {
                 }
             }
             let target = match &job {
-                Job::Size { document, .. } | Job::Text { document, .. } => Some(*document),
+                Job::Size { document, .. }
+                | Job::Text { document, .. }
+                | Job::Search { document, .. } => Some(*document),
                 Job::Tile { key, .. } => Some(key.document),
                 _ => None,
             };
@@ -820,6 +908,14 @@ impl Manager<'_> {
                     document: worker_document,
                     page: *page,
                 },
+                Job::Search { page, search, .. } => Request::SearchPage {
+                    id,
+                    document: worker_document,
+                    page: *page,
+                    query: search.query.clone(),
+                    match_case: search.match_case,
+                    match_diacritics: search.match_diacritics,
+                },
                 Job::Reopen { path } => Request::OpenDocument {
                     id,
                     path: path.clone(),
@@ -843,7 +939,8 @@ impl Manager<'_> {
             | Response::DocumentOpened { id, .. }
             | Response::PageSize { id, .. }
             | Response::Tile { id, .. }
-            | Response::PageText { id, .. } => *id,
+            | Response::PageText { id, .. }
+            | Response::SearchHits { id, .. } => *id,
             Response::HelloAck { .. } | Response::ProtocolError { .. } => {
                 eprintln!("castle-pdf: unexpected worker response: {response:?}");
                 self.lose_worker();
@@ -964,6 +1061,27 @@ impl Manager<'_> {
             }
             (Job::Text { reply, .. }, Response::PageText { layer, .. }) => {
                 let _ = reply.send(Ok(TextLayerDto::from(layer)));
+            }
+            (
+                Job::Search { reply, .. },
+                Response::SearchHits {
+                    hits,
+                    truncated,
+                    incomplete,
+                    ..
+                },
+            ) => {
+                let _ = reply.send(Ok(SearchHitsDto {
+                    hits: hits
+                        .into_iter()
+                        .map(|hit| HitDto {
+                            start: hit.start,
+                            end: hit.end,
+                        })
+                        .collect(),
+                    truncated,
+                    incomplete,
+                }));
             }
             (
                 Job::Tile { key, reply, .. },
@@ -1457,6 +1575,84 @@ mod tests {
             handle.page_text(info.document, 1, generation).wait(TIMEOUT),
             Err(CommandError::InvalidArgument { field: "page" })
         );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_page_is_searched() {
+        let (handle, _events) = start();
+        let search = |query: &str, match_case: bool| SearchRequest {
+            query: query.to_owned(),
+            match_case,
+            match_diacritics: false,
+        };
+        assert_eq!(
+            handle
+                .search_page(1, 0, search("left", false))
+                .wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "document" })
+        );
+        let info = handle.open(&fixture("columns.pdf")).wait(TIMEOUT).unwrap();
+        // No view needed: a search goes on while the view changes.
+        let found = handle
+            .search_page(info.document, 0, search("LEFT", false))
+            .wait(TIMEOUT)
+            .unwrap();
+        assert!(!found.truncated && !found.incomplete);
+        assert_eq!(
+            found.hits,
+            [1, 2, 3].map(|line| HitDto {
+                start: [line, 0, 0],
+                end: [line, 0, 4],
+            })
+        );
+        let found = handle
+            .search_page(info.document, 0, search("LEFT", true))
+            .wait(TIMEOUT)
+            .unwrap();
+        assert!(found.hits.is_empty());
+        let long = "a".repeat(MAX_QUERY_BYTES + 1);
+        for query in ["", " \t ", long.as_str()] {
+            assert_eq!(
+                handle
+                    .search_page(info.document, 0, search(query, false))
+                    .wait(TIMEOUT),
+                Err(CommandError::InvalidArgument { field: "query" })
+            );
+        }
+        // Blank only once folded: refused by the worker.
+        assert_eq!(
+            handle
+                .search_page(info.document, 0, search("\u{AD}", false))
+                .wait(TIMEOUT),
+            Err(CommandError::Failed {
+                reason: "invalidRequest"
+            })
+        );
+        assert_eq!(
+            handle
+                .search_page(info.document, 1, search("left", false))
+                .wait(TIMEOUT),
+            Err(CommandError::InvalidArgument { field: "page" })
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn a_waiting_search_page_is_replaced_by_the_next() {
+        let (handle, _events) = start();
+        let info = handle.open(&fixture("columns.pdf")).wait(TIMEOUT).unwrap();
+        // A diagnostic job holds the worker: the searches wait in the queue.
+        handle.run(20, 50).unwrap();
+        let search = |query: &str| SearchRequest {
+            query: query.to_owned(),
+            match_case: false,
+            match_diacritics: false,
+        };
+        let first = handle.search_page(info.document, 0, search("left"));
+        let second = handle.search_page(info.document, 0, search("right"));
+        assert_eq!(first.wait(TIMEOUT), Err(CommandError::Stale));
+        assert_eq!(second.wait(TIMEOUT).unwrap().hits.len(), 3);
         handle.stop();
     }
 

@@ -14,8 +14,8 @@ use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, RunEvent, State, WindowEvent};
 
 use worker::{
-    CommandError, DocumentInfo, JobEvent, PageSize, Pending, TextLayerDto, TileRequest,
-    WorkerHandle,
+    CommandError, DocumentInfo, JobEvent, PageSize, Pending, SearchHitsDto, SearchRequest,
+    TextLayerDto, TileRequest, WorkerHandle,
 };
 
 const JOB_EVENT: &str = "worker-job";
@@ -109,6 +109,27 @@ async fn page_text(
     reply(worker.page_text(document, page, generation), REPLY_TIMEOUT).await
 }
 
+/// The occurrences of `query` in `page` of the current document
+/// (ADR-0006, tranche 3.7). The UI searches a document a page at a time and
+/// stops when the query changes. The query is the user's typing, bounded
+/// by the shell and the worker.
+#[tauri::command]
+async fn search_page(
+    worker: State<'_, WorkerHandle>,
+    document: u32,
+    page: u32,
+    query: String,
+    match_case: bool,
+    match_diacritics: bool,
+) -> Result<SearchHitsDto, CommandError> {
+    let search = SearchRequest {
+        query,
+        match_case,
+        match_diacritics,
+    };
+    reply(worker.search_page(document, page, search), REPLY_TIMEOUT).await
+}
+
 /// Raw bytes, received as an `ArrayBuffer`: no JSON or base64 (ADR-0003).
 #[tauri::command]
 async fn render_tile(
@@ -186,7 +207,8 @@ fn main() -> ExitCode {
             begin_view,
             page_size,
             render_tile,
-            page_text
+            page_text,
+            search_page
         ])
         .build(tauri::generate_context!());
 
