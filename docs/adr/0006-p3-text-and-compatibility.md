@@ -114,3 +114,8 @@ Ordre en tranches vérifiables :
   être désactivée sans toucher au rendu.
 - Accepté le 2026-11-12 : texte avant filtres, couche de texte DOM, CMap prédéfinies
   décidées après la mesure de la tranche 3.1 (même jour : intégrées en 3.7b).
+- Précisé le 2026-11-14 (tranche 3.7b) : les « tables compactes » sont les fichiers d'Adobe
+  eux-mêmes, compressés en Deflate et lus par le lecteur de CMap du moteur (déjà testé et
+  fuzzé), plutôt qu'un format propre au projet. Les tables UCS2 des collections viennent du
+  dépôt voisin d'Adobe `mapping-resources-pdf` (même licence). 735 886 octets ; détail dans
+  `crates/pdf-render/cmaps/README.md`.

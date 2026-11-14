@@ -371,6 +371,13 @@ impl CMap {
         self.skipped
     }
 
+    /// Bytes held by its mapping tables, as charged when they were built.
+    pub fn tables_bytes(&self) -> u64 {
+        tables_cost(&self.unicode)
+            .saturating_add(tables_cost(&self.cids))
+            .saturating_add(tables_cost(&self.notdefs))
+    }
+
     /// Whether the CMap declares codespace ranges.
     pub fn has_codespace(&self) -> bool {
         !self.codespaces.is_empty()

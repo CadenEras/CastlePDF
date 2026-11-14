@@ -19,6 +19,16 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **CMap prédéfinies d'Adobe** (ADR-0006, tranche 3.7b). Les encodages CJK rencontrés
+  sur le corpus (`UniJIS-UCS2`, `UniJIS-UTF16`, `90ms-RKSJ`, `UniGB-UCS2`, `UniCNS-UCS2`,
+  `UniKS-UCS2`, horizontaux et verticaux) découpent les codes d'une police Type 0 en CID, pour
+  le rendu comme pour le texte, y compris en parent `usecmap` d'une CMap incluse. Sans
+  `/ToUnicode`, le texte d'une police d'Adobe-Japan1, -GB1, -CNS1 ou -Korea1 vient de la CMap
+  UCS2 de sa collection (ISO 32000-2, 9.10.2 ; source `Collection`). Seize fichiers d'Adobe
+  (BSD-3-Clause, versions figées) compressés, 720 Kio, derrière la fonction `cjk-cmaps`
+  active par défaut ; `scripts/make-cmaps.mjs` les produit et les vérifie. Fixture `cjk.pdf`,
+  comparée à `pdftoppm` et `pdftotext` avec poppler-data.
+
 - UI : **recherche dans le document** (ADR-0006, tranche 3.7). Champ de recherche (Ctrl+F),
   options « Respecter la casse » et « Respecter les accents », recherche après une pause de
   frappe ou sur Entrée, page par page depuis la page affichée, avec la progression puis

@@ -142,3 +142,24 @@ fn text_matches_pdftotext() {
     }
     eprintln!("fixtures: text matches pdftotext");
 }
+
+/// Adobe's predefined CMaps and CJK collections (tranche 3.7b): Poppler
+/// reads them from poppler-data, so this case runs only when
+/// `CASTLE_POPPLER_DATA` is set too. Characters only: the page has a
+/// vertical line.
+#[test]
+fn cjk_text_matches_pdftotext() {
+    let (Some(executable), Some(_)) = (
+        std::env::var_os("CASTLE_PDFTOTEXT"),
+        std::env::var_os("CASTLE_POPPLER_DATA"),
+    ) else {
+        eprintln!(
+            "pdftotext CJK oracle skipped: CASTLE_PDFTOTEXT or CASTLE_POPPLER_DATA is not set"
+        );
+        return;
+    };
+    let (ours, _) = ours("cjk.pdf", 0);
+    let (theirs, _) = theirs(&PathBuf::from(executable), "cjk.pdf", 0);
+    assert_eq!(ours, theirs, "cjk.pdf");
+    eprintln!("cjk fixture: text matches pdftotext");
+}

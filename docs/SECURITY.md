@@ -49,6 +49,15 @@ viennent ni du système ni du réseau, ce qui garde un rendu déterministe. Leur
 `cargo-deny` ne voit pas ces fichiers. Un texte dessiné avec elles est signalé, jamais
 présenté comme exact.
 
+CMap prédéfinies d'Adobe (ADR-0006, tranche 3.7b) : 16 fichiers d'Adobe inclus dans le
+binaire (fonction `cjk-cmaps`), inventaire et licence BSD-3-Clause dans
+`crates/pdf-render/cmaps/README.md`. Chaque fichier est décompressé et lu par le lecteur de
+CMap du moteur, une fois par processus, sous un budget propre, puis partagé : un document choisit
+seulement lequel de ces fichiers connus est lu. Une CMap incluse qui en hérite (`usecmap`) en
+copie les tables : la copie est facturée au budget du rendu, et le cache des polices du document
+la compte avec la police (`Font::tables_len`), pour que mille petites CMap incluses ne puissent
+retenir des Go hors de son plafond.
+
 Images (ADR-0005) :
 - **taille** : largeur × hauteur est vérifiée contre `max_image_pixels` avant tout
   décodage, ce qui refuse une image déclarée géante avec peu de données sans rien allouer ;

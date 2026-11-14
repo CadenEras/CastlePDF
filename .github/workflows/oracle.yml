@@ -72,7 +72,8 @@ jobs:
           APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
         run: |
           sudo apt-get $APT_OPTS update
-          sudo apt-get $APT_OPTS install -y --no-install-recommends poppler-utils
+          # poppler-data: Adobe's CJK CMaps, for cjk.pdf (tranche 3.7b).
+          sudo apt-get $APT_OPTS install -y --no-install-recommends poppler-utils poppler-data
           pdftoppm -v
       - name: Install pinned toolchain
         run: rustup toolchain install
@@ -84,11 +85,15 @@ jobs:
         run: |
           set -o pipefail
           export CASTLE_PDFTOPPM="$(command -v pdftoppm)"
+          export CASTLE_POPPLER_DATA=/usr/share/poppler
           cargo test -p pdf-render --locked --test pdftoppm_oracle -- --nocapture 2>&1 | tee oracle.log
           grep -q "fixtures: rendering matches pdftoppm" oracle.log
+          grep -q "cjk fixture: rendering matches pdftoppm" oracle.log
       - name: Compare text with pdftotext
         run: |
           set -o pipefail
           export CASTLE_PDFTOTEXT="$(command -v pdftotext)"
+          export CASTLE_POPPLER_DATA=/usr/share/poppler
           cargo test -p pdf-render --locked --test pdftotext_oracle -- --nocapture 2>&1 | tee text-oracle.log
           grep -q "fixtures: text matches pdftotext" text-oracle.log
+          grep -q "cjk fixture: text matches pdftotext" text-oracle.log

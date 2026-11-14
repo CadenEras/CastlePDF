@@ -417,6 +417,32 @@ Recherche, moteur et worker (tranche 3.7, 2026-11-14) :
 - fuzzing `search` : 1 091 533 exécutions en 2 min, puis 2 737 181 en 3 min après la revue (WSL),
   aucun crash ; `protocol` : 55 189 852 exécutions en 5 min, aucun crash.
 
+CMap prédéfinies d'Adobe (tranche 3.7b, 2026-11-14) :
+- choix mesuré : encodages nommés des premières pages (SafeDocs : `UniJIS-UCS2-H` 31 polices,
+  `UniCNS-UCS2-H` 18, `UniKS-UCS2-H` 6, `UniGB-UCS2-H` 5, `90ms-RKSJ-H` 2 ; UNSAFE :
+  `UniJIS-UCS2-H` 11, `UniJIS-UTF16-H` 4, `90ms-RKSJ-H` 3), avec leurs formes `-V`, et les quatre
+  CMap UCS2 des collections : 16 fichiers d'Adobe, 735 886 octets compressés (2 084 051 octets) ;
+- chaque fichier embarqué se lit sans entrée ignorée, valeurs de CID et d'Unicode vérifiées
+  contre les sources d'Adobe ; `usecmap` d'une CMap incluse vers une CMap prédéfinie ; texte
+  d'une police `Identity-H` dont la police descendante nomme Adobe-Japan1 ;
+- `cjk.pdf` : huit polices, une ligne verticale, rendu sans élément ignoré et texte attendu ;
+  comparaison à `pdftoppm` et `pdftotext` dans le workflow `oracle` (avec poppler-data, absent
+  de la machine WSL de mesure) ;
+- `survey` (même protocole) : premières pages dont du texte est en police non lue 22 → 0
+  (SafeDocs) et 15 → 10 (UNSAFE, 32 582 → 21 963 octets) ; glyphes extraits 3 029 322 → 3 074 914
+  et 3 493 756 → 3 499 093 ; inconnus 1,01 % → 0,82 % et 0,83 % → 0,57 % ; pages où du texte
+  n'est pas dessiné inchangées (54 et 39 : polices CJK non incluses, sans police de remplacement) ;
+  taux, crashs et timeouts inchangés, temps médian 27 et 15 ms ;
+- fuzzing `font` (polices Type 0 aux encodages prédéfinis comprises) : 43 380 exécutions en 5 min
+  (WSL), aucun crash ;
+- après la revue : tables de CMap qu'une police détient seule comptées dans le cache des polices
+  (une CMap incluse copiant un parent prédéfini pesait 4 Kio pour le cache), chargement des CMap
+  prédéfinies sans réentrée ni échec gardé, `/CIDSystemInfo` en chaînes indirectes ou en noms,
+  code d'une plage notdef sans texte de la collection, refus sans la fonction `cjk-cmaps` ;
+  tests de `pdf-render` sans les fonctions par défaut : ceux de la recherche de collection passent,
+  quatre tests de mise en page (`tests/layout.rs`) échouent faute de `standard-fonts`, comme sur
+  `main` avant cette tranche.
+
 ## Contrôles manuels par OS
 
 Ce que la CI ne voit pas : un geste dans l'application release

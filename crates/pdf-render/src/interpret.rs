@@ -429,6 +429,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         &mut self,
         map: &TextMap,
         key: CodeKey,
+        cid: Option<u32>,
         budget: &mut Budget,
     ) -> Result<bool, Error> {
         let Some(count) = self.text_glyphs.as_ref().map(Vec::len) else {
@@ -441,7 +442,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             });
         }
         let mut unreadable = false;
-        let (text, source) = map.text(self.file, key, budget, &mut unreadable)?;
+        let (text, source) = map.text(self.file, key, cid, budget, &mut unreadable)?;
         if unreadable {
             self.unreadable_to_unicode += 1;
         }
@@ -1481,7 +1482,12 @@ impl<'a, S: Source> Interpreter<'a, S> {
         };
         self.fonts.insert(name.to_vec(), selected.clone());
         let bytes = match &selected {
-            Selected::Font { font, .. } => font.program_len() + ENTRY_BYTES,
+            // The CMap tables a font holds alone count too: an embedded
+            // CMap may copy a large predefined parent (`usecmap`).
+            Selected::Font { font, .. } => font
+                .program_len()
+                .saturating_add(usize::try_from(font.tables_len()).unwrap_or(usize::MAX))
+                .saturating_add(ENTRY_BYTES),
             _ => ENTRY_BYTES,
         };
         if let Some(id) = id
@@ -1561,7 +1567,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 if shown.is_multiple_of(CANCEL_CHECK_CODES) {
                     budget.check_cancelled()?;
                 }
-                let recorded = self.start_glyph(font.text(), code.key, budget)?;
+                let recorded = self.start_glyph(font.text(), code.key, code.cid, budget)?;
                 if draws && code.missing {
                     self.skipped.insert(Unsupported::Text);
                 }
@@ -1687,7 +1693,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     value: u32::from(code),
                     len: 1,
                 };
-                let recorded = self.start_glyph(&font.text, key, budget)?;
+                let recorded = self.start_glyph(&font.text, key, None, budget)?;
                 if draws && font.missing.get(index).copied().unwrap_or(false) {
                     self.skipped.insert(Unsupported::Text);
                 }

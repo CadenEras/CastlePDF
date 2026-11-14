@@ -7,6 +7,7 @@ pub(crate) mod cmap;
 )]
 pub(crate) mod encodings;
 pub(crate) mod font;
+pub(crate) mod predefined;
 pub(crate) mod standard;
 pub(crate) mod string;
 pub(crate) mod type3;

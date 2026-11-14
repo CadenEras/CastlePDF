@@ -319,9 +319,9 @@ fn a_null_or_named_to_unicode_counts_as_absent() {
 
 #[test]
 fn text_in_a_font_that_cannot_be_read_is_counted() {
-    // A Type 0 font with a predefined CMap other than Identity-H is not read
-    // yet (tranche 3.4): its glyphs are absent, their bytes counted.
-    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+    // A Type 0 font with a predefined CMap this build does not embed is not
+    // read: its glyphs are absent, their bytes counted.
+    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-HW-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
     let page = text(
         one_page(
             "BT /F1 10 Tf <00410042> Tj [<0043> 5 <0044>] TJ /F2 10 Tf (x) Tj ET",
@@ -336,6 +336,33 @@ fn text_in_a_font_that_cannot_be_read_is_counted() {
     assert_eq!(lines(&page), ["x"]);
     assert_eq!(page.unread_bytes, 8);
     assert!(page.skipped.contains(&Unsupported::Text));
+}
+
+#[test]
+#[cfg(feature = "cjk-cmaps")]
+fn text_of_a_cjk_collection_comes_from_its_ucs2_cmap() {
+    // A predefined encoding (tranche 3.7b): Unicode codes to Japan1 CIDs, then
+    // the CIDs to Unicode through Adobe-Japan1-UCS2, without /ToUnicode.
+    let predefined = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+    // Identity-H whose descendant names the collection: the codes are the
+    // CIDs (843 is あ).
+    let identity = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 7 >> >>] >>";
+    // The same with another registry: no standard text.
+    let other = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Castle) /Ordering (Japan1) /Supplement 0 >> >>] >>";
+    let page = text(
+        one_page(
+            "BT /F1 10 Tf <004100423042> Tj ET BT /F2 10 Tf 0 -20 Td <034B> Tj ET BT /F3 10 Tf 0 -40 Td <034B> Tj ET",
+            "/F1 5 0 R /F2 6 0 R /F3 7 0 R",
+            &[predefined, identity, other],
+        ),
+        0,
+    );
+    assert_eq!(page.unread_bytes, 0);
+    assert!(!page.skipped.contains(&Unsupported::Text));
+    let texts: Vec<Option<&str>> = page.glyphs.iter().map(|g| g.text.as_deref()).collect();
+    assert_eq!(texts, [Some("A"), Some("B"), Some("あ"), Some("あ"), None]);
+    assert_eq!(count(&page, UnicodeSource::Collection), 4);
+    assert_eq!(count(&page, UnicodeSource::Unknown), 1);
 }
 
 /// A /ToUnicode CMap stream over two-byte codes mapping `<0001>` to `<0002>`
@@ -436,4 +463,56 @@ fn to_unicode_length_is_right() {
         .and_then(|rest| rest.strip_suffix("\nendstream"))
         .expect("stream data");
     assert_eq!(data.len(), 96);
+}
+
+#[test]
+#[cfg(feature = "cjk-cmaps")]
+fn a_collection_named_indirectly_or_by_a_name_is_found() {
+    // /CIDSystemInfo strings may be indirect; some producers write names.
+    let indirect = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry 7 0 R /Ordering 8 0 R /Supplement 0 >> >>] >>";
+    let named = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /Identity-H /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering /Japan1 /Supplement 0 >> >>] >>";
+    let page = text(
+        one_page(
+            "BT /F1 10 Tf <034B> Tj ET BT /F2 10 Tf 0 -20 Td <034B> Tj ET",
+            "/F1 5 0 R /F2 6 0 R",
+            &[indirect, named, "(Adobe)", "(Japan1)"],
+        ),
+        0,
+    );
+    let texts: Vec<Option<&str>> = page.glyphs.iter().map(|g| g.text.as_deref()).collect();
+    assert_eq!(texts, [Some("\u{3042}"), Some("\u{3042}")]);
+}
+
+#[test]
+#[cfg(feature = "cjk-cmaps")]
+fn a_code_in_a_notdef_range_gets_no_text_from_the_collection() {
+    // <0001> is CID 843 ("あ"); <0002> only falls in a notdef range to the
+    // same CID: its glyph is the notdef glyph, its text unknown.
+    let cmap = "begincodespacerange <0000> <FFFF> endcodespacerange 1 begincidchar <0001> 843 endcidchar 1 beginnotdefrange <0002> <0002> 843 endnotdefrange";
+    let stream = format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len());
+    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding 6 0 R /DescendantFonts [<< /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 0 >> >>] >>";
+    let page = text(
+        one_page(
+            "BT /F1 10 Tf <00010002> Tj ET",
+            "/F1 5 0 R",
+            &[font, &stream],
+        ),
+        0,
+    );
+    let texts: Vec<Option<&str>> = page.glyphs.iter().map(|g| g.text.as_deref()).collect();
+    assert_eq!(texts, [Some("\u{3042}"), None]);
+    assert_eq!(count(&page, UnicodeSource::Unknown), 1);
+}
+
+#[test]
+#[cfg(not(feature = "cjk-cmaps"))]
+fn without_the_cjk_cmaps_a_predefined_encoding_is_not_read() {
+    let font = "<< /Type /Font /Subtype /Type0 /BaseFont /F /Encoding /UniJIS-UCS2-H /DescendantFonts [<< /Subtype /CIDFontType2 >>] >>";
+    let page = text(
+        one_page("BT /F1 10 Tf <00410042> Tj ET", "/F1 5 0 R", &[font]),
+        0,
+    );
+    assert!(page.glyphs.is_empty());
+    assert_eq!(page.unread_bytes, 4);
+    assert!(page.skipped.contains(&Unsupported::Text));
 }
