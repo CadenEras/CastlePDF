@@ -88,7 +88,7 @@ cargo install --locked cargo-fuzz@0.13.2
 cargo fuzz run lexer -- -max_total_time=300 -rss_limit_mb=2048 -dict=dict/pdf.dict   # ou objects
 ```
 
-Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType, CFF ou Type 1 arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `search` (texte et requête arbitraires : chaque occurrence dans le texte, dans l'ordre de lecture), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
+Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType, CFF ou Type 1 arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `ccitt` (données CCITTFax arbitraires, paramètres tirés des trois premiers octets ; graines dans `fuzz/seeds/ccitt`), `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `search` (texte et requête arbitraires : chaque occurrence dans le texte, dans l'ordre de lecture), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
 puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`) lance
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 
@@ -108,6 +108,11 @@ effacé, décalage de 2 px, trou rempli) et la page DeviceCMYK, qui diffère par
 (conversion ISO 32000-2 10.4.2.4 contre approximation d'un profil d'impression par
 poppler), doivent être détectés : c'est le contrôle de sensibilité du critère. Le
 workflow `oracle` l'impose.
+
+Oracle de décodage CCITTFax `pdfimages` (même paquet) :
+`CASTLE_PDFIMAGES="$(command -v pdfimages)" cargo test -p pdf-syntax --locked --test pdfimages_oracle -- --nocapture`
+compare bit à bit chaque image de `ccitt.pdf` décodée par le moteur à celle qu'extrait
+`pdfimages`. Le workflow `oracle` l'impose.
 
 ## CLI de diagnostic `castle-pdf` (crate `pdf-cli`)
 

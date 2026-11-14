@@ -141,7 +141,7 @@ fn corrupt_and_truncated_flate_data() {
 #[test]
 fn filter_entries_are_validated() {
     let data = compress_to_vec_zlib(b"x", 6);
-    for filter in [&b"CCITTFaxDecode"[..], b"DCTDecode", b"JBIG2Decode", b"Fl"] {
+    for filter in [&b"JPXDecode"[..], b"DCTDecode", b"JBIG2Decode", b"Fl"] {
         assert_eq!(
             decode_stream(
                 &dict(vec![(b"Filter", name(filter))]),
@@ -358,7 +358,7 @@ fn everything_is_validated_before_decoding() {
     let bomb = compress_to_vec_zlib(&vec![0_u8; 4 << 20], 9);
     let chain = dict(vec![(
         b"Filter",
-        Object::Array(vec![name(b"FlateDecode"), name(b"CCITTFaxDecode")]),
+        Object::Array(vec![name(b"FlateDecode"), name(b"JPXDecode")]),
     )]);
     let mut b = budget();
     assert_eq!(

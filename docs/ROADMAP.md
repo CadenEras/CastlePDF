@@ -20,7 +20,7 @@ pas un booléen « compatible PDF 2.0 ».
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
-texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus (fait, ADR-0005 amendé) ; 3.9 CCITTFax ; 3.10 JBIG2 et
+texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus (fait, ADR-0005 amendé) ; 3.9 CCITTFax (fait) ; 3.10 JBIG2 et
 JPX ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
@@ -79,14 +79,16 @@ faux présenté comme exact. Elles restent suivies ici jusqu'à leur tranche.
 | --- | --- | --- |
 | Chaque tuile réinterprète tout le contenu de la page (le cache par document évite seulement de relire et décoder) | Avec le cache, une première page en tuiles de 256 px à l'échelle 2 (environ 45 tuiles) prend 89 ms en médiane et 336 ms au p95 ; le maximum reste de 8 s (SafeDocs, 2026-11-11, test `tile_cost`) | Liste d'affichage par page si les pages lourdes le justifient, mesurée de même |
 | Une image en ligne est décodée à chaque dessin, même dans un rendu (pas d'identifiant d'objet pour la garder) | Coût sur les pages qui répètent une image en ligne | Images en ligne clées par contenu si la mesure le justifie |
-| Images en CCITTFax, JBIG2 ou JPX signalées (`Image`), pas dessinées | 113 et 140 premières pages du corpus gardent une image non dessinée, pour un de ces filtres ou une taille au-delà de `max_image_pixels` (2026-11-11) | Filtres de P3 (ADR-0003, amendé), avec leurs propres oracles et fuzzing |
+| Une image CCITTFax dont une rangée est abîmée n'est pas dessinée du tout : `/DamagedRowsBeforeError` n'est pas suivi (Poppler et pdf.js dessinent l'image partielle) | Image numérisée abîmée absente au lieu de partielle ; non mesuré sur le corpus | Suivre `/DamagedRowsBeforeError` en peignant les rangées sûres, si la mesure en trouve |
+| Images en JBIG2 ou JPX signalées (`Image`), pas dessinées (CCITTFax décodé depuis la tranche 3.9) | 48 et 63 premières pages du corpus gardent une image non dessinée, pour un de ces filtres ou une taille au-delà de `max_image_pixels` (2026-11-14 ; 113 et 140 avant CCITTFax) | Filtres de P3 (ADR-0003, amendé), avec leurs propres oracles et fuzzing |
 | Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 4 premières pages du corpus (`limit/DecodedBytes`), dont une par les images de ses formulaires (2026-11-10) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
 
 Raisons du report, dans l'ordre du tableau :
 - réinterprétation par tuile : une optimisation, pas un manque ; 89 ms en médiane pour une
   première page avec le cache, et une réception de 5 ms en médiane en défilement sous Windows ;
 - images en ligne redécodées : aucun coût mesuré ne le justifie encore ;
-- CCITTFax, JBIG2 et JPX : filtres de P3 par ADR-0003 ; chacun demande son oracle et son fuzzing ;
+- JBIG2 et JPX : filtres de P3 par ADR-0003 ; chacun demande son oracle et son fuzzing
+  (CCITTFax fait en 3.9) ;
 - pages au-delà de 256 Mio d'images décodées : 4 premières pages du corpus, refusées
   explicitement ; un décodage à la résolution affichée est une tranche à part entière.
 
