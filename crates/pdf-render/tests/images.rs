@@ -546,6 +546,7 @@ fn a_jpeg_that_panics_the_decoder_is_reported_not_fatal() {
         0,
     );
     assert_eq!(skipped(&page), [Unsupported::Image]);
+}
 
 /// The pattern `scripts/make-fixtures.mjs` draws in `ccitt.pdf`
 /// (`ccittPattern`): true for black.
