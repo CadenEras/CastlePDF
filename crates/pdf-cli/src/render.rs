@@ -140,7 +140,7 @@ fn name(capability: Unsupported) -> &'static str {
     match capability {
         Unsupported::Text => "text",
         Unsupported::TextClip => "text clipping",
-        Unsupported::Image => "inline images",
+        Unsupported::Image => "images",
         Unsupported::XObject => "XObjects",
         Unsupported::Shading => "shadings",
         Unsupported::Pattern => "patterns",

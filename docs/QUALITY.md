@@ -182,6 +182,24 @@ en 12 803 tuiles de 256 px à l'échelle 2, comme le visualiseur, release, WSL) 
 - résultats identiques au pixel près avec ou sans cache (test `cache`, fixtures de texte,
   d'images, de formulaires et de Type 3, pages et zones dans plusieurs ordres).
 
+Tranche 3.11, limites reportées de P2 (2026-11-15, même protocole, release, WSL ; `tile_cost`
+donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule, zone de
+1 pixel en coin, médiane de 9 passes avec le cache chaud) :
+- 193 premières pages SafeDocs, 8 528 tuiles : page entière médiane 23 ms, p95 184 ms, max
+  338 ms, total 9,3 s ; en tuiles avec cache médiane 89 ms, p95 362 ms, max 4,4 s, total 31,6 s.
+  Les tuiles coûtent 3,4 fois la page entière, soit 2,6 ms de plus par tuile en moyenne ;
+- les huit pages les plus lentes en tuiles (35 à 513 tuiles) font 2 à 22 fois la page entière ;
+  leur passe d'interprétation coûte 4,6 à 13,6 ms, ce que chaque tuile paie avant de dessiner
+  ses cellules. Une tuile visible reste donc sous 20 ms sur ces pages ;
+- les images en ligne, redécodées à chaque passe, sont comprises dans ce coût et ne le font
+  pas ressortir ;
+- `survey` : 2 premières pages SafeDocs et 2 UNSAFE refusées par `limit/DecodedBytes` (4 le
+  2026-11-10), chacune avec 2 à 7 images de 8,7 à 32,9 Mpx. Le rasteriseur garde chaque
+  image dessinée jusqu'à la fin de la page (`Canvas::finish`) : le budget cumulatif approche
+  donc le pic réel, à la surestimation près des échantillons libérés après conversion en RGBA ;
+- décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
+  de route) ; elles restent reportées avec ces chiffres.
+
 Défilement continu, vérifié à la main dans l'application sous Windows, sur un long PDF
 (2026-11-11) :
 - défilement à la molette et au clavier, suivi de la page dans la barre d'état, boutons page
