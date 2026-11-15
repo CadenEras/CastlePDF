@@ -32,6 +32,11 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Documentation : **matrice de support** (`docs/SUPPORT.md`, tranche 3.12), critère de sortie
+  de P3. Capacités du fichier, des filtres, du dessin, des polices, des images, du texte, de
+  l'interactivité, de l'application et des plateformes, chacune avec son état (pris en charge,
+  partiel, signalé, refusé, absent) et sa preuve, et la mesure sur corpus.
+
 - Moteur : **images CCITTFax** (`CCITTFaxDecode`, tranche 3.9), décodeur écrit pour le projet :
   Group 3 1D et 2D, Group 4, codes de fin de ligne et de bloc, alignement sur l'octet,
   `BlackIs1`, `/Rows`. Les images et masques numérisés en noir et blanc sont désormais dessinés
@@ -603,6 +608,7 @@ l'architecture, le worker, les budgets et la CI. Aucun binaire n'est distribué.
 - Isolation OS du worker (sandbox) non implémentée.
 - Licence du projet non décidée.
 
-[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.2...HEAD
+[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.1

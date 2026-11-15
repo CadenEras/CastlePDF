@@ -33,8 +33,10 @@ mémoire bornée, réactivité et maintenabilité.
 | P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | Terminée (`v0.1.0-alpha.3`) : PDF 1.5+, réparation, texte, images, formulaires, Type 3, défilement continu ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) |
 | P3 et suivantes | Texte, écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
 
-Le support PDF sera publié sous forme de matrice de capacités. Toute capacité absente
-renvoie une erreur explicite plutôt qu'un résultat approximatif.
+Le support PDF est publié dans la [matrice de support](docs/SUPPORT.md). Une capacité
+manquante est signalée (rendu partiel) ou refusée par une erreur explicite. Exceptions
+connues, listées dans la matrice (état « Absent ») : surtout les annotations et les champs
+de formulaire, ni dessinés ni encore signalés (P5).
 
 ## Architecture
 
