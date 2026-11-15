@@ -224,13 +224,22 @@ pub(crate) fn decode<S: Source>(
         return stencil(&samples, dictionary, fill, budget).map(Ok);
     }
     let space = match (&samples.jpeg, space) {
-        // A JPEG says itself how many components it has.
-        (Some(components), _) => match components {
-            1 => Space::Gray,
-            3 => Space::Rgb,
-            4 => Space::Cmyk,
-            _ => return Ok(Err(Unsupported::Image)),
-        },
+        // A JPEG says itself how many components it has, drawn as gray,
+        // RGB or CMYK. Unless the PDF declares a family whose colours the
+        // components are not: reported, not drawn.
+        (Some(components), declared) => {
+            if let Some(object) = declared
+                && foreign_jpeg_space(file, object, budget)?
+            {
+                return Ok(Err(Unsupported::ColorSpace));
+            }
+            match components {
+                1 => Space::Gray,
+                3 => Space::Rgb,
+                4 => Space::Cmyk,
+                _ => return Ok(Err(Unsupported::Image)),
+            }
+        }
         (None, Some(object)) => match color_space(file, object, budget)? {
             Some(space) => space,
             None => return Ok(Err(Unsupported::ColorSpace)),
@@ -500,6 +509,31 @@ fn to_byte(value: f32) -> u8 {
 }
 
 /// The colour space of an image, `None` if not supported.
+/// Whether the `/ColorSpace` declared for a JPEG names a family whose
+/// colours its components are not (8.6): Indexed, or Lab, Separation,
+/// DeviceN and Pattern, which are not supported. Any other declaration,
+/// damaged or unreadable included (an ICCBased profile whose `/N` is not
+/// read, for instance), leaves the JPEG drawn by its own components, as
+/// before. Limits and cancellation are errors.
+fn foreign_jpeg_space<S: Source>(
+    file: &PdfFile<S>,
+    object: &Object,
+    budget: &mut Budget,
+) -> Result<bool, Error> {
+    let family = match resolve(file, object, budget)? {
+        Some(Object::Name(name)) => name,
+        Some(Object::Array(items)) => match items.into_iter().next() {
+            Some(Object::Name(name)) => name,
+            _ => return Ok(false),
+        },
+        _ => return Ok(false),
+    };
+    Ok(matches!(
+        family.as_slice(),
+        b"Indexed" | b"I" | b"Lab" | b"Separation" | b"DeviceN" | b"Pattern"
+    ))
+}
+
 fn color_space<S: Source>(
     file: &PdfFile<S>,
     object: &Object,

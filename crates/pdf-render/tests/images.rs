@@ -609,3 +609,117 @@ fn ccitt_images_are_decoded_and_drawn_pixel_for_pixel() {
     }
     assert_eq!(differing, 0);
 }
+
+#[test]
+fn a_jpeg_declared_in_a_space_of_other_colours_is_reported_not_drawn() {
+    // Tranche 3.13: a JPEG gives its own components, drawn as gray, RGB or
+    // CMYK. A PDF space whose colours they are not (Indexed, or one not
+    // supported: Separation, Lab) was drawn as gray without a word; it is
+    // now reported, the image left out. Gray, ICCBased and CalGray are
+    // still drawn (the black left edge of the gradient), and so is a
+    // declaration that cannot be read: an ICCBased whose /N is indirect,
+    // a damaged object.
+    let jpeg = std::fs::read(repo("tests/images/gray.jpg")).expect("jpeg");
+    let image = |space: &str| {
+        format!("/Width 32 /Height 16 /BitsPerComponent 8 /ColorSpace {space} /Filter /DCTDecode")
+    };
+    let function = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0 0 0] /N 1 >>";
+    let profile = "<< /N 1 /Length 0 >>\nstream\n\nendstream";
+    let indirect_n = "<< /N 9 0 R /Length 0 >>\nstream\n\nendstream";
+    for space in [
+        "[/Indexed /DeviceRGB 0 <FF0000>]",
+        "[/Separation /Spot /DeviceCMYK 6 0 R]",
+        "[/Lab << /WhitePoint [0.9505 1 1.089] >>]",
+    ] {
+        let page = render(with_image("", &image(space), &jpeg, &[function]), 0);
+        assert_eq!(skipped(&page), vec![Unsupported::ColorSpace], "{space}");
+        assert_eq!(at(&page, 52, 100), [255, 255, 255], "{space}");
+    }
+    for space in [
+        "/DeviceGray",
+        "[/ICCBased 6 0 R]",
+        "[/CalGray << /WhitePoint [0.9505 1 1.089] >>]",
+        "[/ICCBased 7 0 R]",
+        "8 0 R",
+    ] {
+        let more = [profile, indirect_n, "<< /Damaged", "1"];
+        let page = render(with_image("", &image(space), &jpeg, &more), 0);
+        assert!(skipped(&page).is_empty(), "{space}: {:?}", skipped(&page));
+        assert!(
+            at(&page, 52, 100)[0] < 30,
+            "{space}: {:?}",
+            at(&page, 52, 100)
+        );
+    }
+}
+
+#[test]
+fn an_image_drawn_without_its_default_space_or_its_layer_says_so() {
+    // Tranche 3.13: a `DefaultRGB` resource replaces DeviceRGB (8.6.5.6),
+    // and `/OC` puts an image in an optional content group (8.11.3.1).
+    // Neither is applied: the image is drawn as before, and reported, on
+    // every render, the decoded image coming from the cache or not.
+    let image = |extra: &str| {
+        format!(
+            "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB \
+             /BitsPerComponent 8 /Filter /ASCIIHexDecode {extra} /Length 7 >>\nstream\nFF0000>\nendstream"
+        )
+    };
+    let draw = b"q 100 0 0 100 50 50 cm /I Do Q";
+    let defaults = "/ColorSpace << /DefaultRGB [/CalRGB << /WhitePoint [0.9505 1 1.089] >>] >>";
+    let layer = "<< /Type /OCG /Name (Layer) >>";
+    for (resources, extra, expected) in [
+        (defaults, "", Unsupported::ColorSpace),
+        ("", "/OC 6 0 R", Unsupported::OptionalContent),
+    ] {
+        let image = image(extra);
+        let bytes = with_content(
+            draw,
+            &format!("/XObject << /I 5 0 R >> {resources}"),
+            &[&image, layer],
+        );
+        let document = document(bytes);
+        let page = document.page(0).expect("page");
+        let mut cache = pdf_render::RenderCache::default();
+        for _ in 0..2 {
+            let rendering = pdf_render::render_page_cached(
+                document.file(),
+                page,
+                &RenderOptions::default(),
+                &mut cache,
+                &mut budget(),
+            )
+            .expect("render");
+            assert_eq!(skipped(&rendering), vec![expected]);
+            assert_eq!(at(&rendering, 100, 100), [255, 0, 0]);
+        }
+    }
+    // An inline image as well; a stencil mask has no colour space of its own
+    // (its gray fill is not replaced: no `DefaultGray`).
+    let content = inline("", "/W 1 /H 1 /BPC 8 /CS /RGB /F /AHx", b"FF0000>");
+    let page = render(with_content(&content, defaults, &[]), 0);
+    assert_eq!(skipped(&page), vec![Unsupported::ColorSpace]);
+    assert_eq!(at(&page, 100, 100), [255, 0, 0]);
+    let content = inline("0 g", "/W 1 /H 1 /IM true /F /AHx", b"00>");
+    let page = render(with_content(&content, defaults, &[]), 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+}
+
+#[test]
+fn an_unreadable_colour_space_resource_does_not_stop_an_image() {
+    // A form whose `/ColorSpace` resource is not a dictionary: a DeviceRGB
+    // image in it has no `Default` to look up. Checking for one must not
+    // fail the form (it was drawn before tranche 3.13).
+    let image = "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB \
+                 /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\nFF0000>\nendstream";
+    let draw = "q 100 0 0 100 50 50 cm /I Do Q";
+    let form = format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+         /Resources << /ColorSpace 42 /XObject << /I 6 0 R >> >> /Length {} >>\nstream\n{draw}\nendstream",
+        draw.len()
+    );
+    let bytes = with_content(b"/F Do", "/XObject << /F 5 0 R >>", &[&form, image]);
+    let page = render(bytes, 0);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 100, 100), [255, 0, 0]);
+}

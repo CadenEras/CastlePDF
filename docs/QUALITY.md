@@ -200,6 +200,17 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 3.13, signaler ce qui manquait en silence (`survey`, 2026-11-15, même protocole) :
+- premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout, temps par
+  fichier inchangé (médiane 29 et 16 ms) ;
+- nouvelles pages signalées : `Annotation` 42 (SafeDocs) et 40 (UNSAFE) ; `ColorSpace`
+  380 → 392 et 409 → 417 (JPEG en Indexed, Separation, DeviceN ou Lab, `Default*` d'une
+  image) ; `OptionalContent` 54 → 56 et 53 inchangé (image d'un calque) ;
+- tests : `annotations.rs` (annotations montrées ou non, cachées, pop-up, liens, entrées
+  abîmées, tuiles avec cache), `images.rs` (JPEG selon l'espace déclaré, `Default*` et `/OC`
+  sur une image, à chaque rendu avec ou sans cache) ; chacun vérifié en échec sans le
+  changement du moteur.
+
 Défilement continu, vérifié à la main dans l'application sous Windows, sur un long PDF
 (2026-11-11) :
 - défilement à la molette et au clavier, suivi de la page dans la barre d'état, boutons page

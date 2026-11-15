@@ -335,6 +335,7 @@ fn skipped_bit(capability: Unsupported) -> u16 {
         Unsupported::TransferFunction => Skipped::TRANSFER_FUNCTION,
         Unsupported::OptionalContent => Skipped::OPTIONAL_CONTENT,
         Unsupported::FontSubstituted => Skipped::FONT_SUBSTITUTED,
+        Unsupported::Annotation => Skipped::ANNOTATION,
         _ => Skipped::OTHER,
     }
 }
@@ -527,6 +528,35 @@ mod tests {
         };
         // Helvetica is not embedded: drawn with a replacement font.
         assert_eq!(skipped, Skipped(Skipped::FONT_SUBSTITUTED));
+    }
+
+    #[test]
+    fn each_capability_has_a_bit_of_its_own() {
+        // Every capability the renderer reports reaches the shell under its
+        // own bit (OTHER is for those added later), annotations included.
+        let all = [
+            Unsupported::Text,
+            Unsupported::TextClip,
+            Unsupported::Image,
+            Unsupported::XObject,
+            Unsupported::Shading,
+            Unsupported::Pattern,
+            Unsupported::ColorSpace,
+            Unsupported::BlendMode,
+            Unsupported::SoftMask,
+            Unsupported::AlphaIsShape,
+            Unsupported::TransferFunction,
+            Unsupported::OptionalContent,
+            Unsupported::FontSubstituted,
+            Unsupported::Annotation,
+        ];
+        let bits: Vec<u16> = all.iter().map(|c| skipped_bit(*c)).collect();
+        let mut distinct = bits.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), all.len());
+        assert!(!bits.contains(&Skipped::OTHER));
+        assert_eq!(skipped_bit(Unsupported::Annotation), Skipped::ANNOTATION);
     }
 
     fn layer(path: &str, page: u32) -> TextLayer {

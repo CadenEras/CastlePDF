@@ -13,7 +13,7 @@ distribué** : version de développement, à construire depuis les sources.
 | **Partiel** | Implémenté avec la restriction indiquée |
 | **Signalé** | Non dessiné ou non appliqué. Le rendu le dit (`Rendering::skipped`, mention « Rendu partiel » dans l'application), jamais en silence |
 | **Refusé** | Le document ou la page n'est pas ouvert : erreur de capacité ou de limite explicite |
-| **Absent** | Ni pris en charge, ni signalé. Cette catégorie est l'exception à la règle « jamais en silence » et chaque ligne dit pourquoi |
+| **Absent** | Ni pris en charge, ni signalé. Ce qui pourrait rendre une page fausse sans le dire est signalé depuis la tranche 3.13 ; ce qui reste ici est sans effet sur un rendu écran ou dit pourquoi |
 
 Les fixtures sont dans `tests/corpus/public` (`scripts/make-fixtures.mjs`). Les oracles sont
 Poppler (`pdftoppm`, `pdftotext`, `pdfimages`, 22.02 en CI) et qpdf, lancés par le workflow
@@ -21,8 +21,8 @@ Poppler (`pdftoppm`, `pdftotext`, `pdfimages`, 22.02 en CI) et qpdf, lancés par
 
 ## Mesure sur corpus
 
-Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-15, détails dans
-`docs/QUALITY.md`) :
+Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-15, après la tranche
+3.13, détails dans `docs/QUALITY.md`) :
 
 | Corpus | Fichiers | Ouverts | Dont par réparation | Première page rendue | Crash, timeout |
 | --- | --- | --- | --- | --- | --- |
@@ -35,17 +35,18 @@ rendues qui signalent chaque manque (une page peut en avoir plusieurs) :
 | Signalé | SafeDocs (1 920) | UNSAFE (2 229) |
 | --- | --- | --- |
 | `FontSubstituted` (police de remplacement) | 661 | 922 |
-| `ColorSpace` | 380 | 409 |
+| `ColorSpace` | 392 | 417 |
 | `SoftMask` | 91 | 34 |
 | `BlendMode` | 75 | 32 |
 | `Shading` | 69 | 46 |
 | `AlphaIsShape` | 60 | 27 |
-| `OptionalContent` | 54 | 53 |
+| `OptionalContent` | 56 | 53 |
 | `Image` | 48 | 63 |
 | `Pattern` | 39 | 22 |
 | `Text` | 34 | 26 |
 | `XObject` | 3 | 13 |
 | `TextClip` | 7 | 2 |
+| `Annotation` (annotations et champs non dessinés) | 42 | 40 |
 | `TransferFunction` | 1 | 0 |
 
 Texte des premières pages : 0,53 % de glyphes sans Unicode connu sur les deux corpus,
@@ -124,9 +125,9 @@ signalés et jamais devinés.
 | DeviceGray, RGB, CMYK, ICCBased (par `/N`), CalGray, CalRGB, Indexed | Partiel | Sans gestion de couleur : un profil ICC est remplacé par l'espace de base à `/N` composantes | `images.pdf`, `jpeg.pdf` |
 | Lab, Separation, DeviceN | Signalé (`ColorSpace`) | | — |
 | Masques de pochoir, `/SMask`, `/Mask` (pochoir ou clé de couleur), `/Matte` | Pris en charge | | `images.pdf`, `pdftoppm` |
-| Image JPEG dont le PDF déclare un espace Indexed, Separation, DeviceN ou Lab | Absent | L'espace vient du nombre de composantes du JPEG (gris, RVB, CMJN) : l'image est dessinée dans cet espace, sans signalement | — |
-| `DefaultGray`, `DefaultRGB`, `DefaultCMYK` sur une image | Absent | Non appliqués aux images en espace de périphérique (les tracés, eux, sont signalés) | — |
-| Contenu optionnel (`/OC`) d'une image | Absent | Non lu : une image d'un calque masqué est dessinée sans signalement (le `/OC` d'un formulaire et `BDC /OC` sont signalés) | — |
+| Image JPEG dont le PDF déclare un espace Indexed, Separation, DeviceN ou Lab | Signalé (`ColorSpace`) | Non dessinée : ses composantes ne sont pas les couleurs de cet espace (familles Indexed, Lab, Separation, DeviceN, Pattern). Toute autre déclaration, y compris illisible, laisse le JPEG dessiné en gris, RVB ou CMJN selon ses composantes | Tests `images.rs` |
+| `DefaultGray`, `DefaultRGB`, `DefaultCMYK` sur une image | Signalé (`ColorSpace`) | Image dessinée dans l'espace de périphérique, sans l'espace qui le remplace | Tests `images.rs` |
+| Contenu optionnel (`/OC`) d'une image | Signalé (`OptionalContent`) | Dessinée comme si son calque était visible, comme un formulaire | Tests `images.rs` |
 | Image de plus de 32 Mi pixels (`max_image_pixels`) | Signalé (`Image`) | Taille vérifiée avant allocation | Tests `images.rs` |
 | Page dont les données décodées (flux, polices, images et leur conversion en RGBA) dépassent 256 Mio | Refusé (la page) | `limit/DecodedBytes` : 2 et 2 premières pages (voir la feuille de route) | `survey` |
 
@@ -146,8 +147,9 @@ signalés et jamais devinés.
 
 | Capacité | État | Détail |
 | --- | --- | --- |
-| Annotations (liens, notes, tampons, surlignages…) | **Absent** | Ni dessinées ni signalées : leur apparence (`/AP`) n'est pas lue. Prévues en P5 ; jusque-là, une page annotée s'affiche sans ses annotations et sans le dire |
-| Formulaires AcroForm et XFA | **Absent** | Comme les annotations, dont les champs AcroForm sont des widgets : valeurs non affichées. P5 |
+| Annotations (notes, tampons, surlignages…) | Signalé (`Annotation`) | Non dessinées (P5). Une page est signalée dès qu'elle a une annotation avec apparence (`/AP`), ni cachée (`/F` Hidden ou NoView) ni pop-up ; au-delà de 4 096 entrées dans `/Annots`, sans les lire. Un lien, sans apparence, n'est pas signalé | Tests `annotations.rs` |
+| Champs de formulaire AcroForm | Signalé (`Annotation`) | Non dessinés, valeurs non affichées (P5) : chaque widget visible est signalé, même sans apparence | Tests `annotations.rs` |
+| Formulaires XFA | Absent | Non lus ; un XFA dynamique n'a pas de contenu de page, un XFA statique a ses widgets AcroForm, signalés | — |
 | Liens, signets, navigation par destinations | Absent | P5 au plus tôt |
 | JavaScript, actions `Launch`, fichiers joints | Jamais exécutés | Règle de sécurité du projet (`docs/SECURITY.md`) |
 | Ressources réseau ou externes | Jamais chargées | |

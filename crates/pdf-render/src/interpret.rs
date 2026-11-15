@@ -192,6 +192,8 @@ pub(crate) struct Caches {
     glyph_contents: BTreeMap<ObjectId, Option<Arc<Vec<u8>>>>,
     /// Decoded page content, by page.
     pub contents: BTreeMap<ObjectId, Arc<Vec<u8>>>,
+    /// Whether a page has annotations shown by other readers, by page.
+    pub annotations: BTreeMap<ObjectId, bool>,
     /// Bytes kept, and the most.
     bytes: usize,
     pub max_bytes: usize,
@@ -1142,8 +1144,47 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 return Ok(());
             }
         };
+        self.report_image(&stream.dictionary, at, budget)?;
         let interpolate = stream.dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
         self.paint_image(&image, interpolate, at)
+    }
+
+    /// What an image of `dictionary` is drawn without, reported on each
+    /// draw since it depends on where the image is drawn, not on its
+    /// (cached) pixels: its optional content group (`/OC`, 8.11.3.1: drawn
+    /// as if visible, like a form's) and a `DefaultGray`, `DefaultRGB` or
+    /// `DefaultCMYK` resource that replaces its device colour space
+    /// (8.6.5.6: drawn in the device space).
+    fn report_image(
+        &mut self,
+        dictionary: &Dictionary,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        if dictionary.get(b"OC").is_some() {
+            self.skipped.insert(Unsupported::OptionalContent);
+        }
+        if let Some(Object::Name(name)) = dictionary.get(b"ColorSpace")
+            && let Some(space @ (ColorSpace::Gray | ColorSpace::Rgb | ColorSpace::Cmyk)) =
+                device_space(name)
+        {
+            // A `/ColorSpace` resource that cannot be read replaces nothing:
+            // the image is drawn as before, without failing its content.
+            match self.device(space, at, budget) {
+                Ok(ColorSpace::Other) => {
+                    self.skipped.insert(Unsupported::ColorSpace);
+                }
+                Ok(_)
+                | Err(
+                    Error::Content { .. }
+                    | Error::Syntax(
+                        pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. },
+                    ),
+                ) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
     }
 
     /// Reads form `id` once: `None` if it cannot be drawn (no `/BBox`, an
@@ -1340,6 +1381,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             decoded.height,
             decoded.transparent,
         );
+        self.report_image(&dictionary, at, budget)?;
         let interpolate = dictionary.get(b"Interpolate") == Some(&Object::Boolean(true));
         self.paint_image(&image, interpolate, at)
     }

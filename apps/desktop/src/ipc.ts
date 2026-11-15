@@ -93,6 +93,7 @@ export const SKIPPED: readonly (readonly [number, string])[] = [
   [1 << 9, "transparence de forme"],
   [1 << 10, "fonctions de transfert"],
   [1 << 11, "contenu optionnel"],
+  [1 << 13, "annotations et champs de formulaire"],
   [1 << 15, "autres éléments"],
 ];
 
