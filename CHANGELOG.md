@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Moteur : **une police déclarant des millions de glyphes ne coûte plus en proportion.**
+  Trouvé par la cible de fuzzing `font` (délai dépassé en CI) : 7 Ko dont la table `MAXP`
+  étendue annonce 16 millions de glyphes, sans table `post` lisible, faisaient fabriquer par
+  `skrifa` un nom pour chaque glyphe, 0,4 s par chargement (plusieurs secondes sous le
+  fuzzing), pour des noms ensuite écartés. Les noms de glyphes sont désormais lus en
+  proportion de ce que le programme contient (`post` 2.0 en une passe, `post` 1.0, jeu de
+  caractères CFF), sans nom fabriqué ; résultats identiques à ceux de `skrifa` sur les polices
+  du dépôt. Test de régression et graine de fuzzing.
+
 - Moteur : **un JPEG piégé ne fait plus tomber le rendu.** `zune-jpeg` 0.5.15 indexe hors
   bornes dans sa transformée inverse sur certaines données (trouvé par la cible de fuzzing
   `image`) : la panique est contenue à l'appel du décodeur, l'image est signalée non dessinée
