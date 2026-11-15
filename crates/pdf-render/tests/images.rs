@@ -529,3 +529,21 @@ fn images_and_content_in_the_simple_filters_are_drawn() {
     // The ASCIIHex content's own path.
     assert_eq!(at(&page, 150, 50), [0, 0, 255]);
 }
+
+#[test]
+fn a_jpeg_that_panics_the_decoder_is_reported_not_fatal() {
+    // Found by the `image` fuzz target: zune-jpeg 0.5.15 indexes out of
+    // bounds in its IDCT on this data. The image is not drawn, and says so.
+    let data =
+        std::fs::read(repo("crates/pdf-render/tests/data/jpeg-idct-panic.jpg")).expect("test data");
+    let page = render(
+        with_image(
+            "",
+            "/ColorSpace /DeviceGray /BitsPerComponent 8 /Width 32 /Height 16 /Filter /DCTDecode",
+            &data,
+            &[],
+        ),
+        0,
+    );
+    assert_eq!(skipped(&page), [Unsupported::Image]);
+}

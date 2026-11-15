@@ -80,7 +80,17 @@ fn pdf(choices: [u8; 4], data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// pdf-render contains a panic of zune-jpeg on crafted data (`image.rs`,
+/// `contained`), but libFuzzer's panic hook aborts before any unwinding:
+/// the default hook lets that panic be caught, while one that escapes the
+/// target still aborts (libfuzzer-sys catches it and aborts).
+fn default_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| drop(std::panic::take_hook()));
+}
+
 fuzz_target!(|data: &[u8]| {
+    default_panic_hook();
     let Some((choices, data)) = data.split_first_chunk::<4>() else {
         return;
     };
