@@ -24,6 +24,9 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   sélection, suit la ligne de son extrémité mobile (comme pdf.js). Le Narrateur lit ligne par
   ligne au lieu de mot par mot, et en continu d'une ligne à l'autre.
 
+- CLI : `castle-pdf render` signalait toute image non dessinée comme « inline images » ;
+  le libellé est désormais « images » (images en ligne et XObjects).
+
 - `docs/QUALITY.md` : une partie du fichier avait été recopiée au milieu du tableau des
   contrôles manuels (motif `` $` `` d'un remplacement de texte), depuis `v0.1.0-alpha.3`.
 

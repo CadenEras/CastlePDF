@@ -21,7 +21,7 @@ Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
 texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus (fait, ADR-0005 amendé) ; 3.9 CCITTFax (fait) ; 3.10 JBIG2 et
-JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 ; 3.12 matrice de support et `v0.1.0-alpha.4`.
+JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 (fait : remesurées, aucune optimisation justifiée, voir plus bas) ; 3.12 matrice de support et `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
 
@@ -69,7 +69,7 @@ seulement », remplacées par le relevé sur corpus (`tile_cost`), le panneau «
 workflow `memory` sur les trois OS ; ouverture depuis le Finder (#55), vue sur la capture
 macOS après `open -a`, le geste à la main restant au point 6 de la procédure.
 
-### Limites reportées en P3 (décision du 2026-11-11)
+### Limites reportées en P3 (décision du 2026-11-11, remesurées en 3.11 le 2026-11-15)
 
 Elles ne bloquent pas un lecteur utile : chacune donne un résultat explicite (image signalée
 `Image`, page refusée par `limit/DecodedBytes`) ou un coût mesuré acceptable, jamais un rendu
@@ -77,20 +77,28 @@ faux présenté comme exact. Elles restent suivies ici jusqu'à leur tranche.
 
 | Limite | Pourquoi elle compte | Sortie attendue |
 | --- | --- | --- |
-| Chaque tuile réinterprète tout le contenu de la page (le cache par document évite seulement de relire et décoder) | Avec le cache, une première page en tuiles de 256 px à l'échelle 2 (environ 45 tuiles) prend 89 ms en médiane et 336 ms au p95 ; le maximum reste de 8 s (SafeDocs, 2026-11-11, test `tile_cost`) | Liste d'affichage par page si les pages lourdes le justifient, mesurée de même |
-| Une image en ligne est décodée à chaque dessin, même dans un rendu (pas d'identifiant d'objet pour la garder) | Coût sur les pages qui répètent une image en ligne | Images en ligne clées par contenu si la mesure le justifie |
+| Chaque tuile réinterprète tout le contenu de la page (le cache par document évite seulement de relire et décoder) | Avec le cache, une première page en tuiles de 256 px à l'échelle 2 prend 89 ms en médiane, 362 ms au p95 et 4,4 s au plus, soit 3,4 fois la page entière (23 ms en médiane). Une passe d'interprétation, que chaque tuile paie, coûte au plus 13,6 ms sur les pages les plus lentes (SafeDocs, 2026-11-15, test `tile_cost`) | Liste d'affichage par page si une page montre une passe qui retarde ses tuiles visibles, mesurée de même |
+| Une image en ligne est décodée à chaque dessin, même dans un rendu (pas d'identifiant d'objet pour la garder) | Coût sur les pages qui répètent une image en ligne ; compris dans la passe d'interprétation ci-dessus, il ne ressort sur aucune page mesurée (2026-11-15) | Images en ligne clées par contenu si la mesure le justifie |
 | Une image CCITTFax dont une rangée est abîmée n'est pas dessinée du tout : `/DamagedRowsBeforeError` n'est pas suivi (Poppler et pdf.js dessinent l'image partielle) | Image numérisée abîmée absente au lieu de partielle ; non mesuré sur le corpus | Suivre `/DamagedRowsBeforeError` en peignant les rangées sûres, si la mesure en trouve |
 | Images en JBIG2 ou JPX signalées (`Image`), pas dessinées (CCITTFax décodé depuis la tranche 3.9) | 48 et 63 premières pages du corpus gardent une image non dessinée, pour un de ces filtres ou une taille au-delà de `max_image_pixels` (2026-11-14 ; 113 et 140 avant CCITTFax) | Filtres de P3 (ADR-0003, amendé), avec leurs propres oracles et fuzzing |
-| Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 4 premières pages du corpus (`limit/DecodedBytes`), dont une par les images de ses formulaires (2026-11-10) | Décodage réduit à la résolution affichée, ou budget propre aux images, mesuré |
+| Une page dont les images dépassent ensemble le budget de données décodées (256 Mio) n'est pas rendue | 2 premières pages SafeDocs et 2 UNSAFE (`limit/DecodedBytes`, 2026-11-15), chacune avec 2 à 7 images de 8,7 à 32,9 Mpx | Décodage réduit à la résolution affichée, si la mesure en trouve davantage ; pas de budget propre aux images (voir les raisons) |
 
 Raisons du report, dans l'ordre du tableau :
 - réinterprétation par tuile : une optimisation, pas un manque ; 89 ms en médiane pour une
-  première page avec le cache, et une réception de 5 ms en médiane en défilement sous Windows ;
-- images en ligne redécodées : aucun coût mesuré ne le justifie encore ;
+  première page avec le cache, et une réception de 5 ms en médiane en défilement sous Windows.
+  En 3.11 : 2,6 ms de plus par tuile en moyenne, une passe de 13,6 ms au plus, donc une tuile
+  visible sous 20 ms ; une liste d'affichage (état graphique, glyphes et images à garder par
+  page, bornés en mémoire) ne se justifie pas encore ;
+- images en ligne redécodées : aucun coût mesuré ne le justifie encore (3.11 : compris dans
+  la passe d'interprétation, sans page qui ressorte) ;
 - JBIG2 et JPX : filtres de P3 par ADR-0003 ; chacun demande son oracle et son fuzzing
   (CCITTFax fait en 3.9) ;
 - pages au-delà de 256 Mio d'images décodées : 4 premières pages du corpus, refusées
-  explicitement ; un décodage à la résolution affichée est une tranche à part entière.
+  explicitement ; un décodage à la résolution affichée est une tranche à part entière. En
+  3.11 : le rasteriseur garde chaque image dessinée jusqu'à la fin de la page, donc le budget
+  cumulatif approche le pic réel ; un budget par image relâcherait la borne de la mémoire
+  réellement tenue par une page. Ne facturer que le RGBA gardé rendrait 3 de ces 4 pages, mais
+  demande de restituer un budget aujourd'hui monotone : pas pour 0,07 % des premières pages.
 
 ## Première tranche concrète pour Claude
 
