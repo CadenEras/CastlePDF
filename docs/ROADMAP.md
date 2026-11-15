@@ -21,7 +21,7 @@ Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
 texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus (fait, ADR-0005 amendé) ; 3.9 CCITTFax (fait) ; 3.10 JBIG2 et
-JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 (fait : remesurées, aucune optimisation justifiée, voir plus bas) ; 3.12 matrice de support et `v0.1.0-alpha.4`.
+JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 (fait : remesurées, aucune optimisation justifiée, voir plus bas) ; 3.12 matrice de support ([`docs/SUPPORT.md`](SUPPORT.md), fait) et `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
 
@@ -36,6 +36,9 @@ Relevées à la tranche 3.3. Chacune est levée par une tranche ou reportée ave
 | Police CID `Identity` sans `/ToUnicode` d'une collection autre qu'Adobe-Japan1, -GB1, -CNS1 ou -Korea1 (celles-ci passent par leur CMap UCS2 depuis 3.7b), TrueType symbolique sans `/Encoding`, ZapfDingbats inclus (noms `a1`…) : texte inconnu | Signalé, jamais deviné, mais absent | Repli signalé sur la table `cmap` ou `post` de la police incluse et sur la liste ZapfDingbats, si la mesure le justifie |
 | `usecmap` d'une `/ToUnicode` non fusionné (celui des CMap d'encodage l'est depuis 3.4a, sur quatre niveaux) | Parent ignoré | Même résolution bornée que les encodages, si la mesure en trouve |
 | Une `/ToUnicode` endommagée est rejetée entière (Poppler garde le début) | Texte venu des noms de glyphes ou inconnu | Mesurer la fréquence sur le corpus avant de choisir une tolérance |
+| Relevée en 3.12 : les tracés et le texte peints dans un espace autre que DeviceGray, RGB ou CMYK (ICCBased, CalGray, CalRGB, Indexed, Lab, Separation, DeviceN) ne sont pas dessinés, seulement signalés (`ColorSpace`) ; les images acceptent déjà ICCBased par `/N`, CalGray, CalRGB et Indexed | 380 et 409 premières pages (2026-11-15), premier manque après les polices remplacées ; du texte peut manquer | Mêmes espaces que les images pour les tracés et le texte, puis Lab, Separation et DeviceN (fonctions de teinte), mesurés de même |
+| Relevée en 3.12 : les annotations et les champs de formulaire ne sont ni dessinés ni signalés, principale exception à la règle « jamais en silence » | Une page annotée paraît complète sans l'être ; non mesuré sur le corpus | Signaler les annotations à apparence (`/AP`) avant leur dessin en P5, et les compter dans `survey` |
+| Relevée en 3.12 : une image JPEG en Indexed, Separation, DeviceN ou Lab est dessinée dans l'espace de ses composantes, `Default*` n'est pas appliqué aux images, le `/OC` d'une image n'est pas lu ; tous sans signalement (`docs/SUPPORT.md`, état « Absent ») | Rendu faux ou contenu masqué montré, sans le dire ; non mesuré | Signaler (`ColorSpace`, `OptionalContent`) avant de les prendre en charge |
 
 ## P2 terminée (`v0.1.0-alpha.3`)
 

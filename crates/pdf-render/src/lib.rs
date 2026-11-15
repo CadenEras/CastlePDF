@@ -163,8 +163,7 @@ pub enum Unsupported {
     /// painted without that clip, so the rendering may show too much.
     TextClip,
     /// An image (XObject or inline) not drawn: a filter not decoded yet
-    /// (JPX, JBIG2, CCITT, LZW...), damaged data, or a size over
-    /// `max_image_pixels`.
+    /// (JPX, JBIG2), damaged data, or a size over `max_image_pixels`.
     Image,
     /// An XObject not drawn, or a form drawn only up to an error: not a
     /// readable stream, an unknown subtype (PostScript), a form whose
@@ -193,7 +192,7 @@ pub enum Unsupported {
     OptionalContent,
     /// Text drawn with a replacement font: the PDF names a font it does
     /// not embed (one of the 14 standard fonts, for instance), or embeds a
-    /// Type 1 or damaged program. Positions and widths are the PDF's; the
+    /// damaged program. Positions and widths are the PDF's; the
     /// glyphs only resemble the original ones (ADR-0005).
     FontSubstituted,
 }
