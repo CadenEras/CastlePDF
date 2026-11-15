@@ -73,6 +73,14 @@ défaut, à garder). Défaut déjà signalé en amont, ouvert à cette date :
 https://github.com/etemesi254/zune-image/issues/362 ; retirer `contained` seulement après une version
 corrigée et le test de régression vert sans lui.
 
+CCITTFax (tranche 3.9) : décodeur du projet, sans dépendance. Chaque pas lit au moins un bit,
+donc le travail est borné par l'entrée ; chaque rangée est facturée à `max_decoded_bytes` avant
+d'être gardée (une page blanche coûte un bit par rangée, mais pas de mémoire gratuite) ;
+deux changements à la même colonne s'annulent, si bien qu'une rangée garde au plus
+`/Columns` + 1 éléments quelle que soit la longueur de son code ; `/Columns` est borné à 2^17 ;
+les rangées manquantes sont blanches ; des données abîmées sont une erreur, jamais une image devinée ;
+les extensions (mode non compressé) sont refusées comme non prises en charge.
+
 Images (ADR-0005) :
 - **taille** : largeur × hauteur est vérifiée contre `max_image_pixels` avant tout
   décodage, ce qui refuse une image déclarée géante avec peu de données sans rien allouer ;

@@ -161,6 +161,11 @@ fn decoded_streams_match_qpdf() {
             if stream.dictionary.get(b"Filter") == Some(&Object::Name(b"DCTDecode".to_vec())) {
                 continue;
             }
+            // qpdf does not decode CCITTFax ("unable to filter stream
+            // data"): its oracle is pdfimages (tests/pdfimages_oracle.rs).
+            if stream.dictionary.get(b"Filter") == Some(&Object::Name(b"CCITTFaxDecode".to_vec())) {
+                continue;
+            }
             let ours = file
                 .decoded_stream_data(&stream, &mut budget)
                 .unwrap_or_else(|e| panic!("{} object {}: {e}", path.display(), id.number));

@@ -737,6 +737,182 @@ function type1EmbeddedPage() {
   ], '1.4');
 }
 
+// A CCITT encoder (ITU-T T.4 and T.6) for the fixtures: modified Huffman
+// run codes, the 2D modes, EOL, byte alignment, EOFB and RTC.
+const CCITT_WHITE = ['00110101', '000111', '0111', '1000', '1011', '1100', '1110', '1111', '10011',
+  '10100', '00111', '01000', '001000', '000011', '110100', '110101', '101010', '101011', '0100111',
+  '0001100', '0001000', '0010111', '0000011', '0000100', '0101000', '0101011', '0010011', '0100100',
+  '0011000', '00000010', '00000011', '00011010', '00011011', '00010010', '00010011', '00010100',
+  '00010101', '00010110', '00010111', '00101000', '00101001', '00101010', '00101011', '00101100',
+  '00101101', '00000100', '00000101', '00001010', '00001011', '01010010', '01010011', '01010100',
+  '01010101', '00100100', '00100101', '01011000', '01011001', '01011010', '01011011', '01001010',
+  '01001011', '00110010', '00110011', '00110100',
+  '11011', '10010', '010111', '0110111', '00110110', '00110111', '01100100', '01100101', '01101000',
+  '01100111', '011001100', '011001101', '011010010', '011010011', '011010100', '011010101',
+  '011010110', '011010111', '011011000', '011011001', '011011010', '011011011', '010011000',
+  '010011001', '010011010', '011000', '010011011'];
+const CCITT_BLACK = ['0000110111', '010', '11', '10', '011', '0011', '0010', '00011', '000101',
+  '000100', '0000100', '0000101', '0000111', '00000100', '00000111', '000011000', '0000010111',
+  '0000011000', '0000001000', '00001100111', '00001101000', '00001101100', '00000110111',
+  '00000101000', '00000010111', '00000011000', '000011001010', '000011001011', '000011001100',
+  '000011001101', '000001101000', '000001101001', '000001101010', '000001101011', '000011010010',
+  '000011010011', '000011010100', '000011010101', '000011010110', '000011010111', '000001101100',
+  '000001101101', '000011011010', '000011011011', '000001010100', '000001010101', '000001010110',
+  '000001010111', '000001100100', '000001100101', '000001010010', '000001010011', '000000100100',
+  '000000110111', '000000111000', '000000100111', '000000101000', '000001011000', '000001011001',
+  '000000101011', '000000101100', '000001011010', '000001100110', '000001100111',
+  '0000001111', '000011001000', '000011001001', '000001011011', '000000110011', '000000110100',
+  '000000110101', '0000001101100', '0000001101101', '0000001001010', '0000001001011',
+  '0000001001100', '0000001001101', '0000001110010', '0000001110011', '0000001110100',
+  '0000001110101', '0000001110110', '0000001110111', '0000001010010', '0000001010011',
+  '0000001010100', '0000001010101', '0000001011010', '0000001011011', '0000001100100',
+  '0000001100101'];
+const CCITT_EXTENDED = ['00000001000', '00000001100', '00000001101', '000000010010',
+  '000000010011', '000000010100', '000000010101', '000000010110', '000000010111', '000000011100',
+  '000000011101', '000000011110', '000000011111'];
+const CCITT_EOL = '000000000001';
+
+// Encodes `rows` (arrays of 0 white / 1 black) as `K` says: negative Group
+// 4, 0 Group 3 1D, positive Group 3 mixing 1D (every K-th row) and 2D.
+function ccittEncode(rows, { k = -1, endOfLine = false, byteAlign = false } = {}) {
+  let bits = '';
+  const align = () => { bits += '0'.repeat((8 - (bits.length % 8)) % 8); };
+  const eol = () => {
+    // With byte alignment, fill bits make the EOL end on a byte boundary.
+    if (byteAlign) bits += '0'.repeat((8 - ((bits.length + 12) % 8)) % 8);
+    bits += CCITT_EOL;
+  };
+  const run = (black, length) => {
+    const codes = black ? CCITT_BLACK : CCITT_WHITE;
+    while (length >= 2560) { bits += CCITT_EXTENDED[12]; length -= 2560; }
+    if (length >= 64) {
+      const makeup = Math.floor(length / 64);
+      bits += makeup <= 27 ? codes[63 + makeup] : CCITT_EXTENDED[makeup - 28];
+      length -= makeup * 64;
+    }
+    bits += codes[length];
+  };
+  const changes = row => {
+    const list = [];
+    row.forEach((pixel, x) => { if (pixel !== (x === 0 ? 0 : row[x - 1])) list.push(x); });
+    return list;
+  };
+  const width = rows[0].length;
+  const at = (list, i) => (i < list.length ? list[i] : width);
+  const vertical = { 0: '1', 1: '011', '-1': '010', 2: '000011', '-2': '000010', 3: '0000011', '-3': '0000010' };
+  let reference = [];
+  rows.forEach((row, y) => {
+    const coding = changes(row);
+    const oneD = k === 0 || (k > 0 && y % k === 0);
+    if (k < 0 && byteAlign) align();
+    if (k >= 0) {
+      if (endOfLine) eol(); else if (byteAlign) align();
+      if (k > 0) bits += oneD ? '1' : '0';
+    }
+    if (oneD) {
+      let black = false;
+      let start = 0;
+      for (const end of [...coding, width]) {
+        run(black, end - start);
+        start = end;
+        black = !black;
+      }
+      if (start < width) run(black, width - start);
+    } else {
+      let a0 = -1;
+      let black = false;
+      while (a0 < width) {
+        const i1 = coding.findIndex(c => c > a0);
+        const a1 = i1 < 0 ? width : coding[i1];
+        const a2 = i1 < 0 ? width : at(coding, i1 + 1);
+        let j = reference.findIndex(c => c > a0);
+        if (j < 0) j = reference.length;
+        if (j % 2 !== (black ? 1 : 0)) j += 1;
+        const b1 = at(reference, j);
+        const b2 = at(reference, j + 1);
+        if (b2 < a1) {
+          bits += '0001';
+          a0 = b2;
+        } else if (Math.abs(a1 - b1) <= 3) {
+          bits += vertical[a1 - b1];
+          a0 = a1;
+          black = !black;
+        } else {
+          bits += '001';
+          run(black, a1 - Math.max(a0, 0));
+          run(!black, a2 - a1);
+          a0 = a2;
+        }
+      }
+    }
+    reference = coding;
+  });
+  if (k < 0) {
+    bits += CCITT_EOL + CCITT_EOL;
+  } else {
+    for (let i = 0; i < 6; i += 1) { eol(); if (k > 0) bits += '1'; }
+  }
+  align();
+  return Buffer.from((bits.match(/.{8}/g) ?? []).map(byte => parseInt(byte, 2)));
+}
+
+// A test pattern: diagonal bands of several widths, a frame, a disc, a
+// full black row and a full white one, runs long and short.
+function ccittPattern(width, height, seed) {
+  return Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => {
+    if (y === Math.floor(height / 2)) return 1;
+    if (y === Math.floor(height / 3)) return 0;
+    if (x < 2 || y < 2 || x >= width - 2 || y >= height - 2) return 1;
+    const dx = x - width * 0.7;
+    const dy = y - height * 0.5;
+    if (dx * dx + dy * dy < (height * 0.3) ** 2) return (x + y) % 5 === 0 ? 0 : 1;
+    return ((x * 3 + y * (seed + 2)) % (37 + seed * 11)) < 9 + seed ? 1 : 0;
+  }));
+}
+
+// CCITTFaxDecode images (tranche 3.9). Page 1, each drawn one pixel per
+// point: Group 4 in DeviceGray (A), Group 3 2D with K 4, EOLs and /Rows
+// (B), a Group 4 stencil mask painted red (C), an inline Group 4 image
+// (D). Page 2: Group 3 1D, 2600 columns (extended make-up codes), EOLs,
+// byte alignment and BlackIs1 (E).
+function ccittPage() {
+  const a = ccittPattern(180, 100, 0);
+  const b = ccittPattern(150, 90, 1);
+  const c = ccittPattern(120, 70, 2);
+  const d = ccittPattern(40, 24, 3);
+  const e = ccittPattern(2600, 30, 4);
+  const image = (rows, params, extra) => {
+    const data = ccittEncode(rows, params.encode).toString('latin1');
+    return stream(data, ` /Type /XObject /Subtype /Image /Width ${rows[0].length} /Height ${rows.length} `
+      + `${extra} /Filter /CCITTFaxDecode /DecodeParms << ${params.decode} >>`);
+  };
+  const inline = ccittEncode(d, { k: -1 }).toString('latin1');
+  const page1 = [
+    'q 180 0 0 100 10 190 cm /A Do Q',
+    'q 150 0 0 90 220 195 cm /B Do Q',
+    '1 0 0 rg q 120 0 0 70 10 100 cm /C Do Q',
+    `q 40 0 0 24 220 120 cm BI /W 40 /H 24 /IM true /F /CCF /DP << /K -1 /Columns 40 >> ID ${inline} EI Q`,
+  ].join('\n');
+  const page2 = 'q 2600 0 0 30 10 5 cm /E Do Q';
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] '
+      + '/Resources << /XObject << /A 7 0 R /B 8 0 R /C 9 0 R >> >> /Contents 4 0 R >>',
+    stream(page1),
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2620 40] '
+      + '/Resources << /XObject << /E 10 0 R >> >> /Contents 6 0 R >>',
+    stream(page2),
+    image(a, { encode: { k: -1 }, decode: '/K -1 /Columns 180' }, '/ColorSpace /DeviceGray /BitsPerComponent 1'),
+    image(b, { encode: { k: 4, endOfLine: true }, decode: '/K 4 /Columns 150 /Rows 90 /EndOfLine true' },
+      '/ColorSpace /DeviceGray /BitsPerComponent 1'),
+    image(c, { encode: { k: -1 }, decode: '/K -1 /Columns 120' }, '/ImageMask true'),
+    image(e, { encode: { k: 0, endOfLine: true, byteAlign: true },
+      decode: '/K 0 /Columns 2600 /EndOfLine true /EncodedByteAlign true /BlackIs1 true' },
+      '/ColorSpace /DeviceGray /BitsPerComponent 1 /Decode [1 0]'),
+  ], '1.4');
+}
+
 // CFF test fonts (SIL OFL 1.1, tests/fonts), built by
 // scripts/subset-cff-test-fonts.sh: Source Sans 3 (name-keyed CFF, also as
 // an OpenType file) and Noto Sans CJK SC (CID-keyed CFF).
@@ -1205,6 +1381,9 @@ export const fixtures = {
   // Embedded Type 1 fonts: built-in encoding, /Differences, hex eexec,
   // subroutine and seac; see type1EmbeddedPage.
   'type1.pdf': type1EmbeddedPage(),
+  // CCITTFaxDecode: Group 4, Group 3 1D and 2D, EOL, byte alignment,
+  // BlackIs1, a stencil mask, an inline image; see ccittPage.
+  'ccitt.pdf': ccittPage(),
   // Words, lines and /ActualText; see layoutPage.
   'layout.pdf': layoutPage(),
   // Reading order: title, two columns, a line in pieces; see columnsPage.

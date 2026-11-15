@@ -16,8 +16,6 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   les cibles de fuzzing qui dessinent rétablissent le crochet de panique par défaut, sans quoi
   libFuzzer abandonne avant toute récupération.
 
-### Corrigé
-
 - UI : **sélection et lecture de la couche de texte** après la vérification à la main sous
   Windows. Une sélection qui passait sur un vide (espace entre deux mots, interligne, marge,
   entre deux colonnes) sautait à la ligne du dessus : chaque ligne est désormais une seule
@@ -26,7 +24,17 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   sélection, suit la ligne de son extrémité mobile (comme pdf.js). Le Narrateur lit ligne par
   ligne au lieu de mot par mot, et en continu d'une ligne à l'autre.
 
+- `docs/QUALITY.md` : une partie du fichier avait été recopiée au milieu du tableau des
+  contrôles manuels (motif `` $` `` d'un remplacement de texte), depuis `v0.1.0-alpha.3`.
+
 ### Ajouté
+
+- Moteur : **images CCITTFax** (`CCITTFaxDecode`, tranche 3.9), décodeur écrit pour le projet :
+  Group 3 1D et 2D, Group 4, codes de fin de ligne et de bloc, alignement sur l'octet,
+  `BlackIs1`, `/Rows`. Les images et masques numérisés en noir et blanc sont désormais dessinés
+  au lieu d'être signalés : premières pages du corpus qui gardent une image non dessinée 113 → 48
+  et 140 → 63. Fixture `ccitt.pdf` (encodeur du script de fixtures), décodage identique à
+  `pdfimages` (nouveau test oracle, workflow `oracle`) ; cible de fuzzing `ccitt`.
 
 - Moteur : **polices Type 1 incluses** (`/FontFile`, tranche 3.8, amendement
   d'ADR-0005). Lues par le lecteur Type 1 de `read-fonts`, déjà verrouillé avec `skrifa` :
@@ -171,11 +179,6 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   encodages ont ses polices Type 0, sans lire de CMap ni de programme de police (ADR-0006,
   tranche 3.1). `castle-pdf probe` l'affiche (`text=`, `cmaps=`) et `survey` en fait le
   décompte ; résultats sur le corpus dans `docs/QUALITY.md`.
-
-### Corrigé
-
-- `docs/QUALITY.md` : une partie du fichier avait été recopiée au milieu du tableau des
-  contrôles manuels (motif `` $` `` d'un remplacement de texte), depuis `v0.1.0-alpha.3`.
 
 ## [0.1.0-alpha.3] — 2026-11-11
 
