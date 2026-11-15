@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Moteur : **un JPEG piégé ne fait plus tomber le rendu.** `zune-jpeg` 0.5.15 indexe hors
+  bornes dans sa transformée inverse sur certaines données (trouvé par la cible de fuzzing
+  `image`) : la panique est contenue à l'appel du décodeur, l'image est signalée non dessinée
+  (`Image`) comme une image abîmée. Test de régression et graine de fuzzing sur la donnée en cause ;
+  les cibles de fuzzing qui dessinent rétablissent le crochet de panique par défaut, sans quoi
+  libFuzzer abandonne avant toute récupération.
+
+### Corrigé
+
 - UI : **sélection et lecture de la couche de texte** après la vérification à la main sous
   Windows. Une sélection qui passait sur un vide (espace entre deux mots, interligne, marge,
   entre deux colonnes) sautait à la ligne du dessus : chaque ligne est désormais une seule

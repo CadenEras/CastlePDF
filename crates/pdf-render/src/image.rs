@@ -382,6 +382,14 @@ fn without_last_filter<S: Source>(
 /// Decodes a JPEG to 8-bit samples: gray, RGB (from YCbCr or RGB) or CMYK
 /// (YCCK converted here). Only these output spaces are asked of
 /// `zune-jpeg`, which has no conversion for other pairs.
+/// Runs a call into `zune-jpeg`, a panic in it (an index out of bounds on
+/// crafted data in 0.5.15, found by fuzzing) giving `None`: the image is
+/// then reported as not drawn, as damaged data is, and the decoder dropped.
+/// Nothing the decoder touches outlives the call.
+fn contained<T>(call: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).ok()
+}
+
 fn jpeg(data: &[u8], limits: &RenderLimits, budget: &mut Budget) -> Result<Option<Samples>, Error> {
     let side = usize::try_from(MAX_IMAGE_SIDE).unwrap_or(usize::MAX);
     let options = DecoderOptions::default()
@@ -389,7 +397,7 @@ fn jpeg(data: &[u8], limits: &RenderLimits, budget: &mut Budget) -> Result<Optio
         .set_max_height(side)
         .set_strict_mode(false);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(data), options);
-    if decoder.decode_headers().is_err() {
+    if contained(|| decoder.decode_headers()).is_none_or(|headers| headers.is_err()) {
         return Ok(None);
     }
     let (Some(info), Some(input)) = (decoder.info(), decoder.input_colorspace()) else {
@@ -416,7 +424,7 @@ fn jpeg(data: &[u8], limits: &RenderLimits, budget: &mut Budget) -> Result<Optio
         .set_strict_mode(false)
         .jpeg_set_out_colorspace(output);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(data), options);
-    let Ok(mut pixels) = decoder.decode() else {
+    let Some(Ok(mut pixels)) = contained(|| decoder.decode()) else {
         return Ok(None);
     };
     let expected = width as usize * height as usize * components;

@@ -65,6 +65,14 @@ copie les tables : la copie est facturée au budget du rendu, et le cache des po
 la compte avec la police (`Font::tables_len`), pour que mille petites CMap incluses ne puissent
 retenir des Go hors de son plafond.
 
+JPEG (ADR-0005) : `zune-jpeg` 0.5.15 peut paniquer sur des données forgées (index hors bornes
+dans sa transformée inverse, trouvé par fuzzing le 2026-11-14, aucune version stable corrigée à
+cette date). Chaque appel au décodeur est enveloppé par `catch_unwind` (`image.rs`, `contained`) :
+l'image est signalée non dessinée, le décodeur jeté. Cela suppose `panic = "unwind"` (profil par
+défaut, à garder). Défaut déjà signalé en amont, ouvert à cette date :
+https://github.com/etemesi254/zune-image/issues/362 ; retirer `contained` seulement après une version
+corrigée et le test de régression vert sans lui.
+
 Images (ADR-0005) :
 - **taille** : largeur × hauteur est vérifiée contre `max_image_pixels` avant tout
   décodage, ce qui refuse une image déclarée géante avec peu de données sans rien allouer ;
