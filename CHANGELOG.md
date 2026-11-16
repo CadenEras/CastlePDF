@@ -9,6 +9,12 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **motifs de dégradé** en remplissage (tranche 3.17). Une couleur `/Pattern` dont le motif
+  est de type 2 peint son dégradé (axial ou radial) dans la forme remplie, tracé ou texte, avec la
+  `/Matrix` du motif dans l'espace du contenu parent (la page, ou le formulaire qui l'utilise) et
+  son `/Background`. Premières pages signalant `Pattern` : 39 → 24 (SafeDocs) et 22 → 18
+  (UNSAFE) ; les motifs pavés et le contour avec un motif restent signalés.
+
 - Moteur : **dégradés axiaux et radiaux** peints par `sh` (tranche 3.16). Le paramètre de
   chaque pixel est calculé (projection sur l'axe, ou cercle le plus grand passant par le point
   entre les deux cercles), avec l'extension voulue à chaque bout, sous la découpe courante et la

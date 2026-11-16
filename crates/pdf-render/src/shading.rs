@@ -36,6 +36,9 @@ pub(crate) struct Shading {
     pub geometry: Geometry,
     pub extend: [bool; 2],
     pub colors: Vec<[u8; 4]>,
+    /// `/Background` as RGBA: what a shading pattern paints under the
+    /// shading (`sh` ignores it, 8.7.4.3).
+    pub background: Option<[u8; 4]>,
 }
 
 impl Geometry {

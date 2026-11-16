@@ -200,6 +200,24 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 3.17, motifs de dégradé (`survey`, 2026-11-16, même protocole) :
+- premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; `Pattern` 39 → 24
+  et 22 → 18, les autres décomptes inchangés ;
+- douze premières pages SafeDocs qui ne signalent plus `Pattern`, comparées à `pdftoppm` à 72 dpi :
+  0,5 à 4 % de pixels écartés sur la moitié d'entre elles ; vues à l'œil sur trois, écarts venant
+  des bords des glyphes, d'un fond très clair et, sur les plus grands écarts, des masques adoucis
+  signalés sur ces pages ;
+- fuzzing `render` 10 min avec un motif de dégradé radial (matrice, fond) dans les ressources :
+  205 177 exécutions, aucun crash ni délai ;
+- tests : `shadings.rs` (remplissage par un motif, `/Matrix` et `/Background`, espace du
+  formulaire parent, `cm` sans effet sur le motif, pair-impair, motif choisi 5 000 fois,
+  motif pavé et contour signalés) ;
+- relecture indépendante : avec un alpha de remplissage inférieur à 1, le fond transparaissait
+  sous le dégradé (couleurs mêlées) : fond et dégradé sont désormais composés ensemble puis à
+  l'alpha (test vérifié en échec avec l'ancien comportement) ; le chemin rasterisé pour le fond
+  et la découpe est compté ; `SCN` et l'extraction de texte ne lisent plus de motif, et un motif
+  choisi de nouveau ne prend pas d'entrée de plus.
+
 Tranche 3.16, dégradés axiaux et radiaux (`survey`, 2026-11-16, même protocole) :
 - recensement préalable (test ignoré `color_census`, `shadings_of_pages_reporting_shading`) des
   69 et 46 premières pages qui signalaient `Shading` : surtout axiaux (type 2), puis radiaux

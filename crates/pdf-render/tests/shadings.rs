@@ -546,3 +546,232 @@ fn radial_shadings_with_tangent_circles_and_negative_radii() {
         at(&page, 100, 5, 75)
     );
 }
+
+/// A 100 x 100 page with `resources` (dictionary entries), whose content
+/// is `content`, and objects from 5.
+fn page_with(resources: &str, content: &str, objects: &[&str]) -> Document<MemorySource> {
+    let mut bodies = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << {resources} >> /Contents 4 0 R >>"
+        ),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+    ];
+    bodies.extend(objects.iter().map(|body| (*body).to_owned()));
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", bodies.len() + 1).as_bytes(),
+    );
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            bodies.len() + 1
+        )
+        .as_bytes(),
+    );
+    let source = MemorySource::from_vec(out, &ResourceLimits::default()).expect("source");
+    Document::open(source, &mut budget()).expect("document")
+}
+
+#[test]
+fn shading_patterns_fill_paths() {
+    // Tranche 3.17: a shading pattern (PatternType 2) as fill colour paints
+    // its shading within the path; outside it, the page.
+    let shading = axial("0 0 100 0", "/Extend [true true]").replace("6 0 R", "7 0 R");
+    let pattern = format!("<< /PatternType 2 /Shading {shading} >>");
+    let document = page_with(
+        "/Pattern << /P 5 0 R >>",
+        "/Pattern cs /P scn 20 20 60 60 re f",
+        &[&pattern, "null", RED_TO_BLUE],
+    );
+    let page = render(&document);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert!(
+        near(at(&page, 100, 21, 50), [202, 0, 53], 4),
+        "{:?}",
+        at(&page, 100, 21, 50)
+    );
+    assert!(
+        near(at(&page, 100, 50, 50), [128, 0, 127], 4),
+        "{:?}",
+        at(&page, 100, 50, 50)
+    );
+    assert_eq!(at(&page, 100, 10, 50), [255, 255, 255]);
+    assert_eq!(at(&page, 100, 90, 50), [255, 255, 255]);
+}
+
+#[test]
+fn shading_patterns_take_their_matrix_and_background() {
+    // The pattern's /Matrix places the shading in the page's space (here
+    // the axis 0..50 scaled to 0..100: the same as an axis 0..100); its
+    // /Background (green) paints where the shading does not (a radial
+    // shading not extended, of radius 20 at the centre).
+    let scaled = axial("0 0 50 0", "/Extend [true true]").replace("6 0 R", "7 0 R");
+    let radial = "<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [50 50 0 50 50 20] \
+                  /Background [0 1 0] /Function 7 0 R >>";
+    let document = page_with(
+        "/Pattern << /S 5 0 R /B 6 0 R >>",
+        "/Pattern cs /S scn 0 0 100 40 re f /B scn 0 40 100 60 re f",
+        &[
+            &format!("<< /PatternType 2 /Matrix [2 0 0 1 0 0] /Shading {scaled} >>"),
+            &format!("<< /PatternType 2 /Shading {radial} >>"),
+            RED_TO_BLUE,
+        ],
+    );
+    let page = render(&document);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert!(
+        near(at(&page, 100, 50, 20), [128, 0, 127], 4),
+        "{:?}",
+        at(&page, 100, 50, 20)
+    );
+    assert!(
+        near(at(&page, 100, 50, 50), [255, 0, 0], 12),
+        "{:?}",
+        at(&page, 100, 50, 50)
+    );
+    assert_eq!(at(&page, 100, 95, 95), [0, 255, 0]);
+}
+
+#[test]
+fn a_form_uses_its_own_space_for_patterns() {
+    // A pattern used inside a form is in the form's space (8.7.2): the
+    // form moved by 50 points moves its pattern's shading with it.
+    let shading = axial("0 0 50 0", "/Extend [false false]").replace("6 0 R", "8 0 R");
+    let content = "/Pattern cs /P scn 0 0 50 100 re f";
+    let form = format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 50 100] /Matrix [1 0 0 1 50 0] \
+         /Resources << /Pattern << /P 6 0 R >> >> /Length {} >>\nstream\n{content}\nendstream",
+        content.len()
+    );
+    let document = page_with(
+        "/XObject << /F 5 0 R >>",
+        "/F Do",
+        &[
+            &form,
+            &format!("<< /PatternType 2 /Shading {shading} >>"),
+            "null",
+            RED_TO_BLUE,
+        ],
+    );
+    let page = render(&document);
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert_eq!(at(&page, 100, 25, 50), [255, 255, 255]);
+    assert!(
+        near(at(&page, 100, 51, 50), [252, 0, 3], 6),
+        "{:?}",
+        at(&page, 100, 51, 50)
+    );
+    assert!(
+        near(at(&page, 100, 98, 50), [8, 0, 247], 6),
+        "{:?}",
+        at(&page, 100, 98, 50)
+    );
+}
+
+#[test]
+fn other_pattern_paints_are_still_reported() {
+    // A tiling pattern, and a shading pattern used to stroke: reported
+    // (`Pattern`), not painted.
+    let shading = axial("0 0 100 0", "/Extend [true true]").replace("6 0 R", "7 0 R");
+    let tiling = "<< /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 \
+                  /YStep 10 /Resources << >> /Length 0 >>\nstream\n\nendstream";
+    for (pattern, content) in [
+        (tiling.to_owned(), "/Pattern cs /P scn 20 20 60 60 re f"),
+        (
+            format!("<< /PatternType 2 /Shading {shading} >>"),
+            "/Pattern CS /P SCN 10 w 20 20 60 60 re S",
+        ),
+    ] {
+        let document = page_with(
+            "/Pattern << /P 5 0 R >>",
+            content,
+            &[&pattern, "null", RED_TO_BLUE],
+        );
+        let page = render(&document);
+        assert_eq!(skipped(&page), vec![Unsupported::Pattern], "{content}");
+        assert_eq!(at(&page, 100, 50, 20), [255, 255, 255]);
+    }
+}
+
+#[test]
+fn pattern_fills_keep_their_space_alpha_and_fill_rule() {
+    let shading = axial("0 0 100 0", "/Extend [true true]").replace("6 0 R", "7 0 R");
+    let pattern = format!("<< /PatternType 2 /Shading {shading} >>");
+    let objects = [pattern.as_str(), "null", RED_TO_BLUE];
+    // `cm` before `scn` does not move the pattern (its space is the page's,
+    // 8.7.2): x = 75 still takes s = 0.75.
+    let page = render(&page_with(
+        "/Pattern << /P 5 0 R >>",
+        "2 0 0 1 0 0 cm /Pattern cs /P scn 0 0 50 100 re f",
+        &objects,
+    ));
+    assert!(
+        near(at(&page, 100, 75, 50), [64, 0, 191], 4),
+        "{:?}",
+        at(&page, 100, 75, 50)
+    );
+    // Even-odd: the inner square is a hole.
+    let page = render(&page_with(
+        "/Pattern << /P 5 0 R >>",
+        "/Pattern cs /P scn 10 10 80 80 re 30 30 40 40 re f*",
+        &objects,
+    ));
+    assert_eq!(at(&page, 100, 50, 50), [255, 255, 255]);
+    assert!(
+        near(at(&page, 100, 20, 50), [204, 0, 51], 4),
+        "{:?}",
+        at(&page, 100, 20, 50)
+    );
+    // Set 5 000 times inside q/Q, then used: one entry, still drawn.
+    let content =
+        "/Pattern cs ".to_owned() + &"q /P scn Q ".repeat(5000) + "/P scn 0 0 100 100 re f";
+    let page = render(&page_with("/Pattern << /P 5 0 R >>", &content, &objects));
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert!(
+        near(at(&page, 100, 50, 50), [128, 0, 127], 4),
+        "{:?}",
+        at(&page, 100, 50, 50)
+    );
+}
+
+#[test]
+fn a_pattern_background_does_not_show_through_its_shading() {
+    // Found in review: with a fill alpha below 1, the /Background showed
+    // through the shading. They are composited as one paint: at the
+    // centre of a red radial shading on a green background, half alpha
+    // over white gives light red, not a mix with green; outside the
+    // shading, light green.
+    let radial = "<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [50 50 0 50 50 30] \
+                  /Background [0 1 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] \
+                  /C1 [1 0 0] /N 1 >> >>";
+    let page = render(&page_with(
+        "/Pattern << /P 5 0 R >> /ExtGState << /G << /ca 0.5 >> >>",
+        "/G gs /Pattern cs /P scn 0 0 100 100 re f",
+        &[&format!("<< /PatternType 2 /Shading {radial} >>")],
+    ));
+    assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+    assert!(
+        near(at(&page, 100, 50, 50), [255, 128, 128], 3),
+        "{:?}",
+        at(&page, 100, 50, 50)
+    );
+    assert!(
+        near(at(&page, 100, 95, 95), [128, 255, 128], 3),
+        "{:?}",
+        at(&page, 100, 95, 95)
+    );
+}

@@ -1,7 +1,7 @@
 //! Renders arbitrary bytes as the content stream of a 64 x 64 page whose
 //! resources name ExtGStates (one with stream-valued `/TR` and `/HT`), a
 //! device, an ICC, an Indexed, a CalGray and a pattern colour space, an
-//! axial and a radial shading (tranche 3.16), a
+//! axial and a radial shading (tranche 3.16), a shading pattern (3.17), a
 //! `DefaultCMYK` of another kind (tranche 3.14), an XObject, two form XObjects
 //! whose content is the same bytes, scaled and moved (`/X1`: a
 //! transparency group without resources of its own; `/X2`: a plain form
@@ -40,7 +40,10 @@ const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resour
     /Coords [20 20 0 40 40 30] /Extend [false true] /BBox [0 0 50 50] \
     /Function << /FunctionType 3 /Domain [0 1] /Bounds [0.5] /Encode [0 1 1 0] \
     /Functions [<< /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [2] /N 1 >> \
-    << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [2] /N 1 >>] >> >> >> /Pattern << /P0 6 0 R >> \
+    << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [2] /N 1 >>] >> >> >> /Pattern << /P0 6 0 R \
+    /P1 << /PatternType 2 /Matrix [0.5 0 0 2 4 -8] /Shading << /ShadingType 3 \
+    /ColorSpace /DeviceGray /Coords [32 32 4 40 30 28] /Background [0.5] \
+    /Function << /FunctionType 2 /Domain [0 1] /N 2 >> >> >> >> \
     /Properties << /MC0 << /Type /OCG >> >> /Font << /T3 10 0 R >> \
     >> /Contents 4 0 R >>";
 

@@ -22,7 +22,7 @@ Poppler (`pdftoppm`, `pdftotext`, `pdfimages`, 22.02 en CI) et qpdf, lancés par
 ## Mesure sur corpus
 
 Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-16, après la tranche
-3.16, détails dans `docs/QUALITY.md`) :
+3.17, détails dans `docs/QUALITY.md`) :
 
 | Corpus | Fichiers | Ouverts | Dont par réparation | Première page rendue | Crash, timeout |
 | --- | --- | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ rendues qui signalent chaque manque (une page peut en avoir plusieurs) :
 | `AlphaIsShape` | 60 | 27 |
 | `OptionalContent` | 56 | 53 |
 | `Image` | 48 | 65 |
-| `Pattern` | 39 | 22 |
+| `Pattern` | 24 | 18 |
 | `Text` | 34 | 26 |
 | `XObject` | 3 | 13 |
 | `TextClip` | 7 | 2 |
@@ -93,7 +93,8 @@ signalés et jamais devinés.
 | XObjects de formulaire, groupes de transparence | Pris en charge | Groupe à élimination (`/K true`) dessiné comme un groupe ordinaire, signalé (`BlendMode`) | `forms.pdf`, `pdftoppm` |
 | Dégradés axiaux et radiaux peints par `sh` (types 2 et 3) | Pris en charge | Extension, découpe courante et `/BBox` suivies ; couleurs par leurs fonctions et leur espace (ceux des tracés), 256 teintes par dégradé ; calculés sur le rectangle de la découpe, dans une image d'au plus 1 Mpx lissée au-delà | Tests `shadings.rs` (tuiles comprises), fuzzing `render` ; comparé à l'œil à `pdftoppm` |
 | Dégradés de fonction (type 1) et maillés (types 4 à 7) | Signalé (`Shading`) | 9 et 3 premières pages du corpus | Tests `shadings.rs` |
-| Motifs de dégradé (`Pattern` de type 2) et motifs pavés | Signalé (`Pattern`) | Remplissage ou contour avec un motif | — |
+| Motifs de dégradé (`Pattern` de type 2) en remplissage, tracés et texte | Pris en charge | Le dégradé (axial ou radial) peint dans la forme, avec la `/Matrix` du motif dans l'espace du contenu parent (page ou formulaire) et son `/Background` | Tests `shadings.rs`, fuzzing `render` ; comparé à l'œil à `pdftoppm` |
+| Motifs pavés (type 1), contour avec un motif, masque d'image peint avec un motif | Signalé (`Pattern`) | 24 et 18 premières pages du corpus | Tests `shadings.rs` |
 | Motifs (`Pattern`) | Signalé (`Pattern`) | | — |
 | Masques adoucis (`/SMask` d'un `ExtGState`) | Signalé (`SoftMask`) | Contenu peint sans masque : le rendu peut montrer trop | — |
 | Modes de fusion autres que `Normal` | Signalé (`BlendMode`) | Peint en `Normal` | — |
