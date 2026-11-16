@@ -1,6 +1,7 @@
 //! Renders arbitrary bytes as the content stream of a 64 x 64 page whose
 //! resources name ExtGStates (one with stream-valued `/TR` and `/HT`), a
-//! device, an ICC and a pattern colour space, an XObject, two form XObjects
+//! device, an ICC, an Indexed, a CalGray and a pattern colour space, a
+//! `DefaultCMYK` of another kind (tranche 3.14), an XObject, two form XObjects
 //! whose content is the same bytes, scaled and moved (`/X1`: a
 //! transparency group without resources of its own; `/X2`: a plain form
 //! whose resources name `/X1` and itself, so that forms nest and repeat),
@@ -28,7 +29,9 @@ use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
 
 const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resources << \
     /ExtGState << /GS0 5 0 R /GS1 7 0 R >> \
-    /ColorSpace << /CS0 /DeviceRGB /CS1 [/ICCBased 6 0 R] /CS2 /Pattern >> \
+    /ColorSpace << /CS0 /DeviceRGB /CS1 [/ICCBased 6 0 R] /CS2 /Pattern \
+    /CS3 [/Indexed /DeviceRGB 2 <FF0000 00FF00 0000FF>] /CS4 [/CalGray << /WhitePoint [1 1 1] >>] \
+    /DefaultCMYK [/ICCBased 6 0 R] >> \
     /XObject << /X0 6 0 R /X1 8 0 R /X2 9 0 R >> /Shading << /Sh0 6 0 R >> /Pattern << /P0 6 0 R >> \
     /Properties << /MC0 << /Type /OCG >> >> /Font << /T3 10 0 R >> \
     >> /Contents 4 0 R >>";

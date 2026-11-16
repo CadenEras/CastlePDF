@@ -21,8 +21,8 @@ Poppler (`pdftoppm`, `pdftotext`, `pdfimages`, 22.02 en CI) et qpdf, lancés par
 
 ## Mesure sur corpus
 
-Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-15, après la tranche
-3.13, détails dans `docs/QUALITY.md`) :
+Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-16, après la tranche
+3.14, détails dans `docs/QUALITY.md`) :
 
 | Corpus | Fichiers | Ouverts | Dont par réparation | Première page rendue | Crash, timeout |
 | --- | --- | --- | --- | --- | --- |
@@ -35,13 +35,13 @@ rendues qui signalent chaque manque (une page peut en avoir plusieurs) :
 | Signalé | SafeDocs (1 920) | UNSAFE (2 229) |
 | --- | --- | --- |
 | `FontSubstituted` (police de remplacement) | 661 | 922 |
-| `ColorSpace` | 392 | 417 |
+| `ColorSpace` | 91 | 75 |
 | `SoftMask` | 91 | 34 |
 | `BlendMode` | 75 | 32 |
 | `Shading` | 69 | 46 |
 | `AlphaIsShape` | 60 | 27 |
 | `OptionalContent` | 56 | 53 |
-| `Image` | 48 | 63 |
+| `Image` | 48 | 64 |
 | `Pattern` | 39 | 22 |
 | `Text` | 34 | 26 |
 | `XObject` | 3 | 13 |
@@ -84,7 +84,9 @@ signalés et jamais devinés.
 | --- | --- | --- | --- |
 | Chemins, remplissage (non nul, pair-impair), contours, tirets, découpe | Pris en charge | Rasterisation `vello_cpu`, géométrie en double précision | `shapes.pdf`, `pdftoppm` |
 | DeviceGray, DeviceRGB, DeviceCMYK | Partiel | Sans gestion de couleur : CMYK converti par la formule d'ISO 32000-2, 10.4.2.4 (cyan pur plus vif que chez Poppler) | `shapes.pdf` |
-| Autres espaces pour les tracés et le texte (ICCBased, CalGray, CalRGB, Indexed, Lab, Separation, DeviceN, ou espace de périphérique remplacé par `Default*`) | Signalé (`ColorSpace`) | **Le tracé ou le texte peint dans cet espace n'est pas dessiné** ; premier manque du corpus après les polices remplacées | `survey` |
+| ICCBased, CalGray, CalRGB, Indexed pour les tracés et le texte | Partiel | Comme pour les images, sans gestion de couleur : un profil ICC est remplacé par l'espace de périphérique à `/N` composantes, CalGray et CalRGB par le gris et le RVB ; Indexed par sa palette, l'indice arrondi et borné | Tests `colors.rs` ; comparé à l'œil à `pdftoppm` sur des pages du corpus |
+| `DefaultGray`, `DefaultRGB`, `DefaultCMYK` | Partiel | Un remplacement de même nature (profil ICC du même nombre de composantes, CalGray, CalRGB) garde l'espace de périphérique, sans signalement ; un autre est signalé (`ColorSpace`) et le tracé n'est pas peint | Tests `colors.rs` |
+| Lab, Separation, DeviceN (tracés et texte), Indexed sur l'un d'eux | Signalé (`ColorSpace`) | **Le tracé ou le texte peint dans cet espace n'est pas dessiné** : fonctions de teinte à venir | Tests `colors.rs`, `survey` |
 | Alpha constant (`/CA`, `/ca`) | Pris en charge | | `forms.pdf` |
 | XObjects de formulaire, groupes de transparence | Pris en charge | Groupe à élimination (`/K true`) dessiné comme un groupe ordinaire, signalé (`BlendMode`) | `forms.pdf`, `pdftoppm` |
 | Dégradés (`sh`, `Shading`) | Signalé (`Shading`) | | — |
@@ -126,7 +128,7 @@ signalés et jamais devinés.
 | Lab, Separation, DeviceN | Signalé (`ColorSpace`) | | — |
 | Masques de pochoir, `/SMask`, `/Mask` (pochoir ou clé de couleur), `/Matte` | Pris en charge | | `images.pdf`, `pdftoppm` |
 | Image JPEG dont le PDF déclare un espace Indexed, Separation, DeviceN ou Lab | Signalé (`ColorSpace`) | Non dessinée : ses composantes ne sont pas les couleurs de cet espace (familles Indexed, Lab, Separation, DeviceN, Pattern). Toute autre déclaration, y compris illisible, laisse le JPEG dessiné en gris, RVB ou CMJN selon ses composantes | Tests `images.rs` |
-| `DefaultGray`, `DefaultRGB`, `DefaultCMYK` sur une image | Signalé (`ColorSpace`) | Image dessinée dans l'espace de périphérique, sans l'espace qui le remplace | Tests `images.rs` |
+| `DefaultGray`, `DefaultRGB`, `DefaultCMYK` sur une image | Partiel | Comme pour les tracés : un remplacement de même nature est sans effet ici ; un autre est signalé (`ColorSpace`), l'image dessinée dans l'espace de périphérique | Tests `images.rs` |
 | Contenu optionnel (`/OC`) d'une image | Signalé (`OptionalContent`) | Dessinée comme si son calque était visible, comme un formulaire | Tests `images.rs` |
 | Image de plus de 32 Mi pixels (`max_image_pixels`) | Signalé (`Image`) | Taille vérifiée avant allocation | Tests `images.rs` |
 | Page dont les données décodées (flux, polices, images et leur conversion en RGBA) dépassent 256 Mio | Refusé (la page) | `limit/DecodedBytes` : 2 et 2 premières pages (voir la feuille de route) | `survey` |

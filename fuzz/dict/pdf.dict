@@ -92,6 +92,12 @@
 " EMC "
 "/GS0"
 "/CS0"
+"/CS1"
+"/CS3"
+"/CS4"
+" sc "
+" scn "
+"/DeviceCMYK"
 "/Pattern"
 # CMaps (ADR-0006, tranche 3.2).
 "begincodespacerange"

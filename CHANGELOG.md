@@ -41,6 +41,16 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **tracés et texte en ICCBased, CalGray, CalRGB et Indexed** (tranche 3.14). Ils
+  n'étaient pas peints, seulement signalés `ColorSpace` ; ils sont dessinés comme les images, sans
+  gestion de couleur : un profil ICC par son nombre de composantes, CalGray et CalRGB comme gris et
+  RVB, Indexed par sa palette (indice arrondi et borné ; palettes propres à chaque rendu, une fois
+  chacune, imputées au budget, et jamais gardées dans une portée en cache). Un `DefaultGray`, `DefaultRGB` ou `DefaultCMYK` de même nature
+  garde l'espace de périphérique sans signalement, pour les tracés comme pour les images. Lab,
+  Separation et DeviceN restent signalés. Premières pages signalant `ColorSpace` : 392 → 91
+  (SafeDocs) et 417 → 75 (UNSAFE). Cible de fuzzing `render` : espaces Indexed, CalGray et un
+  `DefaultCMYK` d'une autre nature.
+
 - Moteur, worker et UI : **ce qui manquait en silence est signalé** (tranche 3.13). Une page
   avec une annotation que les autres lecteurs montrent (apparence `/AP`, ou champ de
   formulaire), ni cachée ni pop-up, est signalée par la nouvelle capacité `Annotation` : bit
