@@ -117,3 +117,50 @@ fn qpdf_finds_no_error_in_a_written_file() {
     );
     eprintln!("written files: qpdf --check finds no error");
 }
+
+#[test]
+fn qpdf_finds_no_error_in_rewritten_fixtures() {
+    // Every public fixture rewritten unchanged (tranche 4.2): qpdf --check
+    // succeeds without warnings.
+    let Ok(qpdf) = std::env::var("CASTLE_QPDF") else {
+        eprintln!("CASTLE_QPDF not set: qpdf check of rewritten fixtures skipped");
+        return;
+    };
+    let fixtures =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/public");
+    let dir = std::env::temp_dir().join(format!("castle-pdf-rewrite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temporary directory");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(fixtures).expect("fixtures") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "pdf") {
+            continue;
+        }
+        let limits = pdf_syntax::ResourceLimits::default();
+        let mut budget = pdf_syntax::Budget::new(limits, pdf_syntax::CancellationToken::new());
+        let source =
+            pdf_syntax::MemorySource::from_vec(std::fs::read(&path).expect("read"), &limits)
+                .expect("source");
+        let document = pdf_document::Document::open(source, &mut budget).expect("document");
+        let plan = pdf_write::identity_plan(&document);
+        let rewritten =
+            pdf_write::rewrite(&document, &plan, 64 << 20, &mut budget).expect("rewrite");
+        let written = dir.join(path.file_name().expect("name"));
+        std::fs::write(&written, rewritten.bytes).expect("write");
+        let output = Command::new(&qpdf)
+            .arg("--check")
+            .arg(&written)
+            .output()
+            .expect("run qpdf");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "{path:?}: qpdf --check failed:\n{stdout}\n{stderr}"
+        );
+        checked += 1;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(checked >= 20, "{checked} fixtures");
+    eprintln!("rewritten fixtures: qpdf --check finds no error ({checked} files)");
+}

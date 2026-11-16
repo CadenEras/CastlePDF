@@ -233,3 +233,42 @@ fn invalid_plans_are_refused() {
         Some(pdf_write::Error::TooLarge { limit: 200 })
     );
 }
+
+#[test]
+fn optional_content_properties_are_kept() {
+    // Found by the corpus measurement: dropping /OCProperties would make
+    // other readers show the layers a document hides. Kept, with the
+    // groups it names.
+    let pdf = "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [4 0 R] \
+               /D << /OFF [4 0 R] >> >> >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+               3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>\nendobj\n\
+               4 0 obj\n<< /Type /OCG /Name (Hidden) >>\nendobj\n";
+    let mut bytes = pdf.as_bytes().to_vec();
+    // A wrong table: the reader rebuilds it (only the objects matter here).
+    bytes.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    let original = open(bytes);
+    let rewritten =
+        rewrite(&original, &identity_plan(&original), LIMIT, &mut budget()).expect("rewrite");
+    assert!(rewritten.dropped.is_empty(), "{:?}", rewritten.dropped);
+    let written = open_strict(rewritten.bytes);
+    let properties = written
+        .catalog()
+        .get(b"OCProperties")
+        .and_then(pdf_syntax::Object::as_dictionary);
+    let off = properties
+        .and_then(|p| p.get(b"D"))
+        .and_then(pdf_syntax::Object::as_dictionary)
+        .and_then(|d| d.get(b"OFF"))
+        .and_then(pdf_syntax::Object::as_array)
+        .and_then(|a| a.first())
+        .and_then(pdf_syntax::Object::as_reference)
+        .expect("the hidden group");
+    let Ok(pdf_syntax::IndirectValue::Object(group)) = written.file().resolve(off, &mut budget())
+    else {
+        panic!("group");
+    };
+    assert_eq!(
+        group.as_dictionary().and_then(|g| g.get(b"Name")),
+        Some(&pdf_syntax::Object::String(b"Hidden".to_vec()))
+    );
+}

@@ -19,7 +19,12 @@ use crate::render::publish;
 const GROWTH: u64 = 4;
 const MIN_LIMIT: u64 = 16 << 20;
 
-pub fn run(input: &Path, output: &Path, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8> {
+pub fn run(
+    input: &Path,
+    output: &Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> io::Result<u8> {
     let limits = ResourceLimits::default();
     let Some(source) = open::source(input, &limits, err)? else {
         return Ok(1);
@@ -48,7 +53,8 @@ pub fn run(input: &Path, output: &Path, out: &mut dyn Write, err: &mut dyn Write
         let source =
             MemorySource::from_vec(rewritten.bytes.clone(), &limits).map_err(|e| e.to_string())?;
         let mut budget = Budget::new(limits, CancellationToken::new());
-        let file = pdf_syntax::PdfFile::open_strict(source, &mut budget).map_err(|e| e.to_string())?;
+        let file =
+            pdf_syntax::PdfFile::open_strict(source, &mut budget).map_err(|e| e.to_string())?;
         let written = Document::from_file(file, &mut budget).map_err(|e| e.to_string())?;
         Ok(written.page_count())
     };

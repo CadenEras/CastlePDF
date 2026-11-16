@@ -37,14 +37,19 @@ pub struct Rewritten {
     pub dropped: Vec<String>,
 }
 
-/// Catalog entries kept: none of them names a page.
-const KEPT_CATALOG_KEYS: [&[u8]; 6] = [
+/// Catalog entries kept: none of them names a page. `OCProperties` lists
+/// the optional content groups and which are hidden: without it, other
+/// readers would show layers the document hides (found by the corpus
+/// measurement, on 78 and 125 files).
+const KEPT_CATALOG_KEYS: [&[u8]; 8] = [
     b"Metadata",
     b"ViewerPreferences",
     b"PageLayout",
     b"PageMode",
     b"Lang",
     b"OutputIntents",
+    b"OCProperties",
+    b"Extensions",
 ];
 
 /// The identity plan of `document`: every page, in order, unturned.
@@ -73,14 +78,22 @@ pub fn rewrite<S: Source>(
     }
     let mut copier = Copier::new(document, plan);
     let version = document.file().version();
-    let minor = if version.major == 1 { version.minor.max(4) } else { version.minor };
+    let minor = if version.major == 1 {
+        version.minor.max(4)
+    } else {
+        version.minor
+    };
     let mut writer = FileWriter::new(version.major.max(1), minor, limit)?;
 
     // The pages, each as its own new object.
     let mut kids = Vec::with_capacity(plan.len());
     for (index, entry) in plan.iter().enumerate() {
         let page = document.page(entry.page).ok_or(Error::InvalidPlan)?;
-        let number = copier.page_numbers.get(index).copied().ok_or(Error::InvalidPlan)?;
+        let number = copier
+            .page_numbers
+            .get(index)
+            .copied()
+            .ok_or(Error::InvalidPlan)?;
         let dictionary = copier.page_dictionary(document, page, entry.rotation, budget)?;
         writer.object(number, &Object::Dictionary(dictionary))?;
         kids.push(reference(number));
@@ -208,7 +221,10 @@ impl Copier {
                 } else {
                     budget.check_cancelled()?;
                     let number = self.next;
-                    self.next = self.next.checked_add(1).ok_or(Error::InvalidObjectNumber(u32::MAX))?;
+                    self.next = self
+                        .next
+                        .checked_add(1)
+                        .ok_or(Error::InvalidObjectNumber(u32::MAX))?;
                     self.numbers.insert(id, number);
                     self.pending.push_back((id, number));
                     reference(number)
@@ -278,9 +294,13 @@ impl Copier {
         if turned != 0 {
             dictionary.insert(b"Rotate".to_vec(), Object::Integer(i64::from(turned)));
         }
-        if let Some(resources) = page.resources.as_deref() {
-            dictionary.insert(b"Resources".to_vec(), self.map(resources.clone(), budget)?);
-        }
+        // Required of a page (7.7.3.3); an empty dictionary when the source
+        // has none, even inherited.
+        let resources = match page.resources.as_deref() {
+            Some(resources) => self.map(resources.clone(), budget)?,
+            None => Object::Dictionary(Dictionary::new()),
+        };
+        dictionary.insert(b"Resources".to_vec(), resources);
         dictionary.insert(b"Parent".to_vec(), reference(PAGES));
         Ok(dictionary)
     }

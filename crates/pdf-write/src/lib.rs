@@ -50,7 +50,9 @@ impl fmt::Display for Error {
             Self::NullInName => f.write_str("a name holds the byte 0"),
             Self::InvalidObjectNumber(n) => write!(f, "object number {n} is 0 or given twice"),
             Self::TooLarge { limit } => write!(f, "the file would exceed {limit} bytes"),
-            Self::InvalidPlan => f.write_str("the page plan is empty or names pages the document lacks"),
+            Self::InvalidPlan => {
+                f.write_str("the page plan is empty or names pages the document lacks")
+            }
             Self::Syntax(error) => write!(f, "reading the source failed: {error}"),
         }
     }
