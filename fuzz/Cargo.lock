@@ -244,6 +244,7 @@ dependencies = [
  "pdf-render",
  "pdf-syntax",
  "pdf-worker",
+ "pdf-write",
 ]
 
 [[package]]
@@ -270,6 +271,14 @@ version = "0.1.0-alpha.5"
 dependencies = [
  "pdf-document",
  "pdf-render",
+ "pdf-syntax",
+]
+
+[[package]]
+name = "pdf-write"
+version = "0.1.0-alpha.5"
+dependencies = [
+ "pdf-document",
  "pdf-syntax",
 ]
 

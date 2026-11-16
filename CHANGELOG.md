@@ -9,6 +9,23 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur et CLI : **réécriture complète d'un document** (ADR-0008, tranche 4.2).
+  `pdf_write::rewrite` écrit les pages d'un plan (page, rotation ajoutée) et les objets qu'elles
+  atteignent, renumérotés, les flux copiés tels quels ; chaque page reçoit ses attributs hérités
+  (boîtes, rotation, ressources), et `/Resources` vide si elle n'en a aucune. Une page absente
+  du plan n'est jamais copiée : une référence vers elle, vers ses annotations, vers l'ancien
+  catalogue, les nœuds de l'arbre des pages ou les racines des entrées de catalogue non
+  gardées devient `null`, et un objet page hors du plan atteint autrement est écrit `null`.
+  Les articles (`/B`) ne sont pas gardés. Le catalogue garde `Metadata`, `ViewerPreferences`, `PageLayout`,
+  `PageMode`, `Lang`, `OutputIntents`, `OCProperties` et `Extensions` ; le reste (signets,
+  formulaire, arbre de structure, `Names`, `OpenAction`...) est listé comme non conservé, avec
+  la signature quand le document est signé. `castle-pdf rewrite <fichier> <sortie.pdf>` réécrit
+  le document entier, le relit en lecture stricte avant de l'écrire dans un fichier nouveau
+  (jamais la source) et liste ce qui n'est pas gardé. Sur le corpus, tous les documents ouverts
+  (1 940 et 2 282) sont réécrits et relus strictement avec les mêmes pages, et chaque première
+  page qui se rendait se rend au pixel près à l'identique ; taille médiane inchangée. Nouvelle
+  cible de fuzzing `write`, contrôle `qpdf --check` des fixtures réécrites.
+
 - Crate **`pdf-write`** (ADR-0008, tranche 4.1) : sérialisation de tous les objets PDF telle
   que le lecteur du projet les relit à l'identique (noms échappés `#xx`, chaînes littérales
   échappées, réels écrits en entier sans exposant et avec un point décimal), et fichiers complets

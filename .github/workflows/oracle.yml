@@ -59,6 +59,7 @@ jobs:
           grep -q "fixtures: pages match qpdf" oracle.log
           grep -q "streams: decoded data match qpdf" oracle.log
           grep -q "written files: qpdf --check finds no error" oracle.log
+          grep -q "rewritten fixtures: qpdf --check finds no error" oracle.log
 
   pdftoppm:
     runs-on: ubuntu-latest

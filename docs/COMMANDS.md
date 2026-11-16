@@ -88,7 +88,7 @@ cargo install --locked cargo-fuzz@0.13.2
 cargo fuzz run lexer -- -max_total_time=300 -rss_limit_mb=2048 -dict=dict/pdf.dict   # ou objects
 ```
 
-Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType, CFF ou Type 1 arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `tint` (programme PostScript et table d'échantillons arbitraires comme fonctions de teinte d'espaces Separation et DeviceN, tranche 3.15 ; graines dans `fuzz/seeds/tint`), `ccitt` (données CCITTFax arbitraires, paramètres tirés des trois premiers octets ; graines dans `fuzz/seeds/ccitt`), `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `search` (texte et requête arbitraires : chaque occurrence dans le texte, dans l'ordre de lecture), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
+Cibles : `lexer`, `objects`, `xref` (lecture stricte), `repair` (reconstruction, ADR-0004), `font` (programme TrueType, CFF ou Type 1 arbitraire, police simple ou Type 0 ; graines dans `fuzz/seeds/font`), `image` (image XObject arbitraire : filtre, espace de couleur, bits, masques ; graines dans `fuzz/seeds/image`), `document`, `flate`, `write` (document arbitraire réécrit inchangé : la sortie se relit en lecture stricte avec le même nombre de pages, ADR-0008), `tint` (programme PostScript et table d'échantillons arbitraires comme fonctions de teinte d'espaces Separation et DeviceN, tranche 3.15 ; graines dans `fuzz/seeds/tint`), `ccitt` (données CCITTFax arbitraires, paramètres tirés des trois premiers octets ; graines dans `fuzz/seeds/ccitt`), `render` (contenu de page arbitraire ; graines dans `fuzz/seeds/render`), `cmap` (CMap arbitraire, puis chaque code de l'entrée cherché ; graines dans `fuzz/seeds/cmap`), `search` (texte et requête arbitraires : chaque occurrence dans le texte, dans l'ordre de lecture), `protocol` (octets arbitraires décodés en requête et en réponse du worker ; un message accepté se réencode à l'identique). Un crash est écrit dans `fuzz/artifacts/<cible>/` ; le minimiser (`cargo fuzz tmin`)
 puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`) lance
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 
@@ -122,6 +122,7 @@ Interface effective, relevée sur `--help` :
 ```sh
 cargo run -p pdf-cli -- inspect <fichier>   # castle-pdf inspect <fichier>
 cargo run -p pdf-cli -- render <fichier> <page> <sortie.ppm> [--scale <facteur>]
+cargo run -p pdf-cli -- rewrite <fichier> <sortie.pdf>   # réécriture complète (ADR-0008)
 cargo run -p pdf-cli -- text <fichier> [--page <n>]
 cargo run -p pdf-cli -- search <fichier> <requête> [--match-case] [--match-diacritics]
 cargo run -p pdf-cli -- survey <répertoire> [--timeout <secondes>] [--jobs <n>] [--paths]

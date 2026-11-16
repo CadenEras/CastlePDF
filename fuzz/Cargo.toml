@@ -16,6 +16,7 @@ pdf-document = { path = "../crates/pdf-document" }
 pdf-render = { path = "../crates/pdf-render" }
 pdf-syntax = { path = "../crates/pdf-syntax" }
 pdf-worker = { path = "../crates/pdf-worker" }
+pdf-write = { path = "../crates/pdf-write" }
 
 [[bin]]
 name = "lexer"
@@ -113,6 +114,13 @@ bench = false
 [[bin]]
 name = "tint"
 path = "fuzz_targets/tint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "write"
+path = "fuzz_targets/write.rs"
 test = false
 doc = false
 bench = false

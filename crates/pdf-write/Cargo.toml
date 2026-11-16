@@ -8,9 +8,11 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+pdf-document.workspace = true
 pdf-syntax.workspace = true
 
 [dev-dependencies]
+pdf-render.workspace = true
 # Property tests (ADR-0002, ADR-0008); test-only, MIT OR Apache-2.0.
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 

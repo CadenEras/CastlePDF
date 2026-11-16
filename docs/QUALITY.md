@@ -200,6 +200,31 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranches 4.1 et 4.2, écriture (ADR-0008, 2026-11-16, release, WSL ; test ignoré `rewrite_corpus`) :
+- chaque document des deux corpus réécrit inchangé : 1 940 sur 1 940 (SafeDocs) et 2 282 sur
+  2 282 (UNSAFE) réécrits, relus par le lecteur strict avec le même nombre de pages ;
+- première page : identique au pixel près (et mêmes manques signalés) pour les 1 920 et 2 229
+  qui se rendaient ; aucune rendue autrement, aucune qui n'échoue qu'après ; 9 et 26 qui
+  échouaient se rendent après la réécriture (fichier sain : flux terminés, table juste) ;
+- taille de sortie rapportée à l'entrée : médiane 1,00, p95 1,02, maximum 1,37 et 1,85 ;
+  temps de réécriture médian sous la milliseconde, maximum 0,7 s ;
+- non conservé, par fichier : surtout `StructTreeRoot` et `MarkInfo` (documents balisés),
+  `OpenAction`, `Outlines`, `Names`, `PageLabels`, `AcroForm` ; 18 et 15 documents signés ;
+  `OCProperties`, d'abord perdu (78 et 125 fichiers : des calques masqués seraient apparus
+  ailleurs), est désormais gardé ;
+- oracles : `qpdf --check` sans erreur sur un fichier écrit et sur les 22 fixtures réécrites
+  (qpdf 10.6 en local, 11 en CI, qui a relevé une page sans `/Resources`, désormais toujours
+  écrit) ; propriété aller-retour des objets (`proptest`) ; réécriture déterministe, et
+  réécrire un fichier réécrit redonne les mêmes octets ;
+- tests : `rewrite.rs` (fixtures rendues à l'identique, page hors plan absente du fichier et
+  lien vers elle nul, rotations et boîtes héritées, catalogue gardé et perdu, plans invalides,
+  limite de taille, `OCProperties`, rien de ce qui est laissé de côté ne revient par un autre
+  objet — catalogue, réponse `/IRT`, page orpheline d'une mise à jour incrémentale —, deux
+  tests qui échouaient avant la relecture) ;
+- limite connue : les ressources partagées entre pages (un `/XObject` hérité de l'arbre)
+  sont copiées entières ; l'élagage aux noms utilisés vient avec la suppression de pages
+  (tranche 4.3), avant qu'un plan qui retire des pages soit proposé.
+
 Tranche 3.17, motifs de dégradé (`survey`, 2026-11-16, même protocole) :
 - premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; `Pattern` 39 → 24
   et 22 → 18, les autres décomptes inchangés ;

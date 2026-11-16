@@ -105,7 +105,7 @@ pub fn run(request: &Request<'_>, out: &mut dyn Write, err: &mut dyn Write) -> i
 /// the data goes to a temporary file next to it (created exclusively), which
 /// is then hard-linked to `output` (refused if `output` exists) and removed.
 /// After any failure, nothing is left at `output` nor in the temporary file.
-fn publish(output: &Path, write: impl FnOnce(File) -> io::Result<()>) -> io::Result<()> {
+pub(crate) fn publish(output: &Path, write: impl FnOnce(File) -> io::Result<()>) -> io::Result<()> {
     let name = output
         .file_name()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;

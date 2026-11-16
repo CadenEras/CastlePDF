@@ -16,6 +16,7 @@ mod inspect;
 mod open;
 mod probe;
 mod render;
+mod rewrite;
 mod search;
 mod survey;
 mod text;
@@ -31,6 +32,11 @@ Usage:
   castle-pdf render <file> <page> <output.ppm> [--scale <factor>]
                               Render a page (numbered from 1) to a new PPM
                               image; scale 1 is 72 pixels per inch
+  castle-pdf rewrite <file> <output.pdf>
+                              Write the document again whole, every page in
+                              order, to a new file; the result is read back
+                              strictly before it is written, and what is not
+                              kept (outlines, forms...) is listed
   castle-pdf text <file> [--page <n>]
                               Print the text of a page (numbered from 1), or
                               of every page separated by form feeds, in
@@ -86,6 +92,9 @@ fn run(args: &[std::ffi::OsString], out: &mut dyn Write, err: &mut dyn Write) ->
             Some(request) => render::run(&request, out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),
         },
+        [command, input, output] if *command == "rewrite" => {
+            rewrite::run(input.as_ref(), output.as_ref(), out, err)
+        }
         [command, rest @ ..] if *command == "text" => match text::Request::parse(rest) {
             Some(request) => text::run(&request, out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),
