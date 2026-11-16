@@ -62,6 +62,9 @@ fn written() -> Vec<u8> {
                     ]),
                 ),
                 ("Contents", reference(5)),
+                // Required of a page, possibly inherited (7.7.3.3): qpdf
+                // 11 warns without it.
+                ("Resources", Object::Dictionary(Dictionary::new())),
                 ("A#B C", name(b"x/y(z)\xE9")),
             ])),
         )
