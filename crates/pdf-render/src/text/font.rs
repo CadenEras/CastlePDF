@@ -31,7 +31,9 @@ use skrifa::raw::TableProvider;
 use skrifa::raw::ps::cff::CffFontRef;
 use skrifa::raw::ps::type1::Type1Font;
 use skrifa::raw::tables::cmap::{CmapSubtable, PlatformId};
-use skrifa::{FontRef, GlyphId, GlyphNames, MetadataProvider};
+use skrifa::raw::tables::post::DEFAULT_GLYPH_NAMES;
+use skrifa::raw::types::Version16Dot16;
+use skrifa::{FontRef, GlyphId, GlyphNameSource, GlyphNames, MetadataProvider};
 
 use super::cmap::{CMap, CMapError, Code as CodeKey};
 use super::encodings::{
@@ -1175,6 +1177,66 @@ pub(crate) fn unicode(name: &[u8]) -> Option<u32> {
 /// Returns the glyphs and the codes whose name finds no glyph. A name that
 /// is not in the Adobe Glyph List as written (`a.sc`, `g12`) is first
 /// looked up among the program's own glyph names (`post` table).
+/// The glyph names a font program gives, by name (a name given twice keeps
+/// its last glyph). Never synthesized ones (`gid123`), which name nothing:
+/// skrifa makes one for every glyph `maxp` counts beyond the names, so a
+/// font of a few kilobytes declaring 65 535 glyphs cost a third of a second
+/// per load, the `font` fuzz target's timeouts. Here the work is in
+/// proportion to the names the program holds: none without a `post` table
+/// or a CFF charset, the 258 standard names for `post` 1.0, and for `post`
+/// 2.0 its glyph name indices (2 bytes each in the program) with its
+/// strings read once.
+fn program_glyph_names(font: &FontRef<'_>) -> BTreeMap<String, u16> {
+    let all = GlyphNames::new(font);
+    match all.source() {
+        GlyphNameSource::Synthesized => BTreeMap::new(),
+        GlyphNameSource::Cff => all
+            .iter()
+            .filter(|(_, name)| !name.is_synthesized())
+            .filter_map(|(gid, name)| {
+                u16::try_from(gid.to_u32())
+                    .ok()
+                    .map(|gid| (name.as_str().to_owned(), gid))
+            })
+            .collect(),
+        GlyphNameSource::Post => {
+            let glyphs = font.maxp().map_or(0, |maxp| usize::from(maxp.num_glyphs()));
+            let mut names = BTreeMap::new();
+            let Ok(post) = font.post() else {
+                return names;
+            };
+            let mut keep = |gid: u16, name: Option<&str>| {
+                if let Some(name) = name.filter(|name| !name.is_empty()) {
+                    names.insert(name.to_owned(), gid);
+                }
+            };
+            if post.version() == Version16Dot16::VERSION_2_0 {
+                let indices = post.glyph_name_index().unwrap_or_default();
+                // Each string once, in order; one that is not ASCII is no name.
+                let strings: Vec<Option<&str>> = post
+                    .string_data()
+                    .map(|data| data.iter().map(|s| s.ok().map(|s| s.as_str())).collect())
+                    .unwrap_or_default();
+                for (gid, index) in (0_u16..).zip(indices.iter().take(glyphs)) {
+                    let index = usize::from(index.get());
+                    keep(
+                        gid,
+                        match index.checked_sub(DEFAULT_GLYPH_NAMES.len()) {
+                            None => DEFAULT_GLYPH_NAMES.get(index).copied(),
+                            Some(custom) => strings.get(custom).copied().flatten(),
+                        },
+                    );
+                }
+            } else {
+                for (gid, name) in (0_u16..).zip(DEFAULT_GLYPH_NAMES.iter().take(glyphs)) {
+                    keep(gid, Some(name));
+                }
+            }
+            names
+        }
+    }
+}
+
 fn simple_glyphs(
     font: &FontRef<'_>,
     names: &[Option<Vec<u8>>],
@@ -1213,17 +1275,7 @@ fn simple_glyphs(
     // The program's own glyph names, read once if a name needs them.
     let mut post: Option<BTreeMap<String, u16>> = None;
     let mut post_glyph = |name: &[u8]| -> Option<u16> {
-        let names = post.get_or_insert_with(|| {
-            GlyphNames::new(font)
-                .iter()
-                .filter(|(_, name)| !name.is_synthesized())
-                .filter_map(|(gid, name)| {
-                    u16::try_from(gid.to_u32())
-                        .ok()
-                        .map(|gid| (name.as_str().to_owned(), gid))
-                })
-                .collect()
-        });
+        let names = post.get_or_insert_with(|| program_glyph_names(font));
         std::str::from_utf8(name)
             .ok()
             .and_then(|name| names.get(name))
@@ -1765,6 +1817,132 @@ fn cid_widths<S: Source>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// skrifa's names, synthesized ones left out: what
+    /// `program_glyph_names` must give for a well-formed font.
+    fn skrifa_names(font: &FontRef<'_>) -> BTreeMap<String, u16> {
+        GlyphNames::new(font)
+            .iter()
+            .filter(|(_, name)| !name.is_synthesized())
+            .filter_map(|(gid, name)| {
+                u16::try_from(gid.to_u32())
+                    .ok()
+                    .map(|gid| (name.as_str().to_owned(), gid))
+            })
+            .collect()
+    }
+
+    /// A font program of `tables` (tag, data), in tag order.
+    fn sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let count = u16::try_from(tables.len()).expect("tables");
+        let mut out = vec![0, 1, 0, 0];
+        out.extend_from_slice(&count.to_be_bytes());
+        out.extend_from_slice(&[0; 6]);
+        let mut offset = 12 + 16 * tables.len();
+        let mut data = Vec::new();
+        for (tag, table) in tables {
+            out.extend_from_slice(*tag);
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&u32::try_from(offset).expect("offset").to_be_bytes());
+            out.extend_from_slice(&u32::try_from(table.len()).expect("len").to_be_bytes());
+            data.extend_from_slice(table);
+            offset += table.len();
+        }
+        out.extend(data);
+        out
+    }
+
+    /// `maxp` version 0.5 declaring `glyphs`.
+    fn maxp(glyphs: u16) -> Vec<u8> {
+        let mut table = vec![0, 0, 0x50, 0];
+        table.extend_from_slice(&glyphs.to_be_bytes());
+        table
+    }
+
+    /// `post` version 2.0 naming its glyphs by `indices`, with `strings`.
+    fn post_v2(indices: &[u16], strings: &[&str]) -> Vec<u8> {
+        let mut table = vec![0, 2, 0, 0];
+        table.resize(32, 0);
+        let count = u16::try_from(indices.len()).expect("glyphs");
+        table.extend_from_slice(&count.to_be_bytes());
+        for index in indices {
+            table.extend_from_slice(&index.to_be_bytes());
+        }
+        for string in strings {
+            table.push(u8::try_from(string.len()).expect("length"));
+            table.extend_from_slice(string.as_bytes());
+        }
+        table
+    }
+
+    #[test]
+    fn glyph_names_are_skrifas_for_real_fonts() {
+        // The replacement fonts and the test subset (TrueType, `post` 2.0
+        // or 3.0): the names read in one pass are skrifa's.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut checked = 0;
+        for path in [dir.join("fonts"), dir.join("../../tests/fonts")] {
+            for entry in std::fs::read_dir(path).expect("fonts") {
+                let path = entry.expect("entry").path();
+                if path.extension().is_none_or(|e| e != "ttf") {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).expect("font");
+                let font = FontRef::new(&bytes).expect("font");
+                assert_eq!(program_glyph_names(&font), skrifa_names(&font), "{path:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 14, "{checked}");
+        // `post` 2.0 with standard and custom names, out of order, an
+        // empty one (synthesized by skrifa) and a name given twice.
+        let bytes = sfnt(&[
+            (b"maxp", maxp(5)),
+            (
+                b"post",
+                post_v2(&[0, 259, 36, 258, 260], &["one", "two", ""]),
+            ),
+        ]);
+        let font = FontRef::new(&bytes).expect("font");
+        let names = program_glyph_names(&font);
+        assert_eq!(names, skrifa_names(&font));
+        assert_eq!(names.get("A"), Some(&2));
+        assert_eq!(names.get("one"), Some(&3));
+        assert_eq!(names.get("two"), Some(&1));
+    }
+
+    #[test]
+    fn glyph_names_cost_what_the_program_holds() {
+        // Found by the `font` fuzz target: 7 KB whose extended `MAXP` table
+        // declares 16 million glyphs (a 24-bit count, preferred to `maxp`
+        // by read-fonts), without a readable `post`: skrifa synthesized a
+        // name for each glyph, 0.4 s per load in release. No name is made
+        // now; nor for 65 535 glyphs counted by `maxp`; a `post` 2.0
+        // naming 2 glyphs of 65 535 gives those 2. The results were the
+        // same before; the cost is what changed: the bound is far above a
+        // few iterations, far below 16 million names made.
+        let start = std::time::Instant::now();
+        let extended = vec![0, 1, 0, 0, 0xFF, 0xFF, 0xFF];
+        let bytes = sfnt(&[(b"MAXP", extended), (b"maxp", maxp(u16::MAX))]);
+        let font = FontRef::new(&bytes).expect("font");
+        assert!(program_glyph_names(&font).is_empty());
+        let bytes = sfnt(&[(b"maxp", maxp(u16::MAX))]);
+        let font = FontRef::new(&bytes).expect("font");
+        assert!(program_glyph_names(&font).is_empty());
+        let bytes = sfnt(&[
+            (b"maxp", maxp(u16::MAX)),
+            (b"post", post_v2(&[36, 258], &["custom"])),
+        ]);
+        let font = FontRef::new(&bytes).expect("font");
+        let names = program_glyph_names(&font);
+        assert_eq!(names.len(), 2);
+        assert_eq!(names.get("custom"), Some(&1));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "{elapsed:?}"
+        );
+    }
 
     #[test]
     fn type1_programs_are_bounded_before_reading() {
