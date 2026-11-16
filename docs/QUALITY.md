@@ -218,7 +218,12 @@ Tranches 4.1 et 4.2, écriture (ADR-0008, 2026-11-16, release, WSL ; test ignor�
   réécrire un fichier réécrit redonne les mêmes octets ;
 - tests : `rewrite.rs` (fixtures rendues à l'identique, page hors plan absente du fichier et
   lien vers elle nul, rotations et boîtes héritées, catalogue gardé et perdu, plans invalides,
-  limite de taille, `OCProperties`).
+  limite de taille, `OCProperties`, rien de ce qui est laissé de côté ne revient par un autre
+  objet — catalogue, réponse `/IRT`, page orpheline d'une mise à jour incrémentale —, deux
+  tests qui échouaient avant la relecture) ;
+- limite connue : les ressources partagées entre pages (un `/XObject` hérité de l'arbre)
+  sont copiées entières ; l'élagage aux noms utilisés vient avec la suppression de pages
+  (tranche 4.3), avant qu'un plan qui retire des pages soit proposé.
 
 Tranche 3.17, motifs de dégradé (`survey`, 2026-11-16, même protocole) :
 - premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; `Pattern` 39 → 24

@@ -13,10 +13,10 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   `pdf_write::rewrite` écrit les pages d'un plan (page, rotation ajoutée) et les objets qu'elles
   atteignent, renumérotés, les flux copiés tels quels ; chaque page reçoit ses attributs hérités
   (boîtes, rotation, ressources), et `/Resources` vide si elle n'en a aucune. Une page absente
-  du plan n'est jamais copiée (une référence vers elle devient `null`) ; `/Parent` n'est
-  remis que sur les pages, si bien que ni l'ancien arbre des pages ni celui des champs ne
-  ramènent de contenu ; les actions automatiques des pages (`/AA`) et les articles (`/B`) ne
-  sont pas gardés. Le catalogue garde `Metadata`, `ViewerPreferences`, `PageLayout`,
+  du plan n'est jamais copiée : une référence vers elle, vers ses annotations, vers l'ancien
+  catalogue, les nœuds de l'arbre des pages ou les racines des entrées de catalogue non
+  gardées devient `null`, et un objet page hors du plan atteint autrement est écrit `null`.
+  Les articles (`/B`) ne sont pas gardés. Le catalogue garde `Metadata`, `ViewerPreferences`, `PageLayout`,
   `PageMode`, `Lang`, `OutputIntents`, `OCProperties` et `Extensions` ; le reste (signets,
   formulaire, arbre de structure, `Names`, `OpenAction`...) est listé comme non conservé, avec
   la signature quand le document est signé. `castle-pdf rewrite <fichier> <sortie.pdf>` réécrit
