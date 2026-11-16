@@ -22,7 +22,7 @@ Poppler (`pdftoppm`, `pdftotext`, `pdfimages`, 22.02 en CI) et qpdf, lancés par
 ## Mesure sur corpus
 
 Sortie de `castle-pdf survey`, premières pages (release, WSL, 2026-11-16, après la tranche
-3.15, détails dans `docs/QUALITY.md`) :
+3.16, détails dans `docs/QUALITY.md`) :
 
 | Corpus | Fichiers | Ouverts | Dont par réparation | Première page rendue | Crash, timeout |
 | --- | --- | --- | --- | --- | --- |
@@ -38,7 +38,7 @@ rendues qui signalent chaque manque (une page peut en avoir plusieurs) :
 | `ColorSpace` | 16 | 12 |
 | `SoftMask` | 91 | 34 |
 | `BlendMode` | 75 | 32 |
-| `Shading` | 69 | 46 |
+| `Shading` | 9 | 3 |
 | `AlphaIsShape` | 60 | 27 |
 | `OptionalContent` | 56 | 53 |
 | `Image` | 48 | 65 |
@@ -91,7 +91,9 @@ signalés et jamais devinés.
 | Indexed sur Separation, DeviceN ou Lab | Signalé (`ColorSpace`) | **Le tracé ou le texte peint dans cet espace n'est pas dessiné** | Tests `colors.rs` |
 | Alpha constant (`/CA`, `/ca`) | Pris en charge | | `forms.pdf` |
 | XObjects de formulaire, groupes de transparence | Pris en charge | Groupe à élimination (`/K true`) dessiné comme un groupe ordinaire, signalé (`BlendMode`) | `forms.pdf`, `pdftoppm` |
-| Dégradés (`sh`, `Shading`) | Signalé (`Shading`) | | — |
+| Dégradés axiaux et radiaux peints par `sh` (types 2 et 3) | Pris en charge | Extension, découpe courante et `/BBox` suivies ; couleurs par leurs fonctions et leur espace (ceux des tracés), 256 teintes par dégradé ; calculés sur le rectangle de la découpe, dans une image d'au plus 1 Mpx lissée au-delà | Tests `shadings.rs` (tuiles comprises), fuzzing `render` ; comparé à l'œil à `pdftoppm` |
+| Dégradés de fonction (type 1) et maillés (types 4 à 7) | Signalé (`Shading`) | 9 et 3 premières pages du corpus | Tests `shadings.rs` |
+| Motifs de dégradé (`Pattern` de type 2) et motifs pavés | Signalé (`Pattern`) | Remplissage ou contour avec un motif | — |
 | Motifs (`Pattern`) | Signalé (`Pattern`) | | — |
 | Masques adoucis (`/SMask` d'un `ExtGState`) | Signalé (`SoftMask`) | Contenu peint sans masque : le rendu peut montrer trop | — |
 | Modes de fusion autres que `Normal` | Signalé (`BlendMode`) | Peint en `Normal` | — |

@@ -1,6 +1,7 @@
 //! Renders arbitrary bytes as the content stream of a 64 x 64 page whose
 //! resources name ExtGStates (one with stream-valued `/TR` and `/HT`), a
-//! device, an ICC, an Indexed, a CalGray and a pattern colour space, a
+//! device, an ICC, an Indexed, a CalGray and a pattern colour space, an
+//! axial and a radial shading (tranche 3.16), a
 //! `DefaultCMYK` of another kind (tranche 3.14), an XObject, two form XObjects
 //! whose content is the same bytes, scaled and moved (`/X1`: a
 //! transparency group without resources of its own; `/X2`: a plain form
@@ -32,7 +33,14 @@ const PAGE: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Resour
     /ColorSpace << /CS0 /DeviceRGB /CS1 [/ICCBased 6 0 R] /CS2 /Pattern \
     /CS3 [/Indexed /DeviceRGB 2 <FF0000 00FF00 0000FF>] /CS4 [/CalGray << /WhitePoint [1 1 1] >>] \
     /DefaultCMYK [/ICCBased 6 0 R] >> \
-    /XObject << /X0 6 0 R /X1 8 0 R /X2 9 0 R >> /Shading << /Sh0 6 0 R >> /Pattern << /P0 6 0 R >> \
+    /XObject << /X0 6 0 R /X1 8 0 R /X2 9 0 R >> /Shading << /Sh0 6 0 R \
+    /Sh1 << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 64 64] /Extend [true false] \
+    /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1.5 >> >> \
+    /Sh2 << /ShadingType 3 /ColorSpace [/Indexed /DeviceRGB 2 <FF0000 00FF00 0000FF>] \
+    /Coords [20 20 0 40 40 30] /Extend [false true] /BBox [0 0 50 50] \
+    /Function << /FunctionType 3 /Domain [0 1] /Bounds [0.5] /Encode [0 1 1 0] \
+    /Functions [<< /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [2] /N 1 >> \
+    << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [2] /N 1 >>] >> >> >> /Pattern << /P0 6 0 R >> \
     /Properties << /MC0 << /Type /OCG >> >> /Font << /T3 10 0 R >> \
     >> /Contents 4 0 R >>";
 
@@ -90,13 +98,18 @@ fn pdf(content: &[u8]) -> Vec<u8> {
         out.extend_from_slice(b"\nendobj\n");
     }
     let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", bodies.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", bodies.len() + 1).as_bytes(),
+    );
     for offset in offsets {
         out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
     out.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", bodies.len() + 1)
-            .as_bytes(),
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            bodies.len() + 1
+        )
+        .as_bytes(),
     );
     out
 }
@@ -157,7 +170,9 @@ fuzz_target!(|data: &[u8]| {
         for y in 0..area.height {
             for x in 0..area.width {
                 let got = part.bitmap.pixel(x, y).expect("inside the area");
-                let want = bitmap.pixel(area.x + x, area.y + y).expect("inside the page");
+                let want = bitmap
+                    .pixel(area.x + x, area.y + y)
+                    .expect("inside the page");
                 assert_eq!(
                     got, want,
                     "pixel ({x}, {y}) of the area: {got:?} != {want:?}"
@@ -175,7 +190,10 @@ fuzz_target!(|data: &[u8]| {
         let words: usize = text_lines(&text).iter().map(|line| line.words.len()).sum();
         assert!(words <= text.glyphs.len() + text.actual_texts.len());
         // Reading order keeps every word.
-        let ordered: usize = reading_lines(&text).iter().map(|line| line.words.len()).sum();
+        let ordered: usize = reading_lines(&text)
+            .iter()
+            .map(|line| line.words.len())
+            .sum();
         assert_eq!(ordered, words);
     }
 });

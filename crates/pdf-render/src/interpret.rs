@@ -13,6 +13,7 @@ use crate::function::{self, Function};
 use crate::geometry::{Matrix, Path, Point, Segment, Window};
 use crate::image;
 use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
+use crate::shading;
 use crate::text::cmap::Code as CodeKey;
 use crate::text::unicode::TextMap;
 use crate::text::{self, Selected, TextState, font, type3};
@@ -160,6 +161,15 @@ fn lab_to_rgb(l: f64, a: f64, b: f64, range: [f64; 4]) -> [f32; 3] {
 /// Distinct mapped spaces in one render at most; another is reported.
 const MAX_MAPPED: usize = 4096;
 
+/// A shading to draw and its `/BBox`.
+type ShadingAndBox = (shading::Shading, Option<[f64; 4]>);
+
+/// A shading as read, or `None` when it cannot be drawn.
+type ReadShading = Option<Arc<ShadingAndBox>>;
+
+/// Shadings kept per render at most (each holds `shading::STEPS` colours).
+const MAX_SHADINGS: usize = 4096;
+
 /// `color_spaces` key of the device space a `Default` resource replaces:
 /// not a resource name (a name cannot hold byte 0).
 fn default_key(space: ColorSpace) -> Option<&'static [u8]> {
@@ -276,6 +286,21 @@ struct GraphicsState {
     text: TextState,
     /// Clip paths pushed on the canvas since the matching `q`.
     clips: u32,
+    /// A device rectangle holding the current clip `[x0, y0, x1, y1]`
+    /// (the intersection of the clip paths' bounds); `None` before any
+    /// clip. What a shading may cover, so the area it is computed over.
+    clip_box: Option<[f64; 4]>,
+    /// A text rendering mode that adds to the clip (4 to 7) was set: the
+    /// clip may hold text, which is not applied (`TextClip`).
+    text_clip: bool,
+}
+
+/// The intersection of two device rectangles (possibly empty: x0 > x1).
+fn intersect(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
+    match a {
+        None => b,
+        Some([x0, y0, x1, y1]) => [x0.max(b[0]), y0.max(b[1]), x1.min(b[2]), y1.min(b[3])],
+    }
 }
 
 /// One parameter of an `ExtGState` that this renderer applies.
@@ -476,6 +501,10 @@ pub(crate) struct Interpreter<'a, S> {
     /// (by the value that describes it).
     mapped: Vec<Mapped>,
     mapped_numbers: BTreeMap<String, u16>,
+    /// Shadings read by this render, by object, so that one painted many
+    /// times is read and its colours made once; `None` for one that
+    /// cannot be drawn.
+    shadings: BTreeMap<ObjectId, ReadShading>,
     /// Open marked-content sequences when text is extracted, one per
     /// `BMC`/`BDC` of the current content: the index of the `/ActualText`
     /// span it opened, if any.
@@ -530,6 +559,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 },
                 text: TextState::default(),
                 clips: 0,
+                clip_box: None,
+                text_clip: false,
             },
             saved: Vec::new(),
             path: Path::default(),
@@ -560,6 +591,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             palette_numbers: BTreeMap::new(),
             mapped: Vec::new(),
             mapped_numbers: BTreeMap::new(),
+            shadings: BTreeMap::new(),
             marks: Vec::new(),
             actual_texts: Vec::new(),
         }
@@ -1112,6 +1144,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 }
                 if mode >= 4.0 {
                     self.skipped.insert(Unsupported::TextClip);
+                    self.state.text_clip = true;
                 }
                 // Checked above: an integer from 0 to 7.
                 self.state.text.render_mode = mode as u8;
@@ -1196,8 +1229,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 let [Object::Name(name)] = ops else {
                     return Err(bad());
                 };
-                self.require_resource(b"Shading", name, at, budget)?;
-                self.skipped.insert(Unsupported::Shading);
+                let object = self.resource(b"Shading", name, at, budget)?;
+                if self.drawing {
+                    self.shade(&object, at, budget)?;
+                }
             }
             b"BI" => {
                 if let Some((dictionary, data)) = op.inline_image {
@@ -2083,6 +2118,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.canvas.push_clip(clip, device, false);
             self.state.clips += 1;
             self.active_clips += 1;
+            if let Some(bounds) = clip.bounds(device) {
+                self.state.clip_box = Some(intersect(self.state.clip_box, bounds));
+            }
         }
         let layer = match nested.group {
             Some(layer) => {
@@ -2294,6 +2332,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.canvas.push_clip(&self.path, &matrix, even_odd);
             self.state.clips += 1;
             self.active_clips += 1;
+            if let Some(bounds) = self.path.bounds(&matrix) {
+                self.state.clip_box = Some(intersect(self.state.clip_box, bounds));
+            }
         }
         self.path.clear();
         Ok(())
@@ -2599,6 +2640,330 @@ impl<'a, S: Source> Interpreter<'a, S> {
             vec![0.0; 3]
         };
         self.mapped_color(number, &values)
+    }
+
+    /// `sh` (8.7.4.2): paints the shading `object` over the current clip,
+    /// in the current user space, clipped to its `/BBox`. Axial and radial
+    /// shadings (types 2 and 3) are drawn; the other types, and a shading
+    /// that cannot be read, are reported (`Shading`).
+    fn shade(&mut self, object: &Object, at: u64, budget: &mut Budget) -> Result<(), Error> {
+        // Under a clip that may hold text, which is not applied, the shading
+        // would cover what that text outlines (shaded text): reported.
+        if self.state.text_clip {
+            self.skipped.insert(Unsupported::Shading);
+            return Ok(());
+        }
+        // A shading is kept by object, unless this scope has a `Default`
+        // colour space, which may give its device space other colours.
+        let defaults = {
+            let spaces = self.category(b"ColorSpace", at, budget)?;
+            [b"DefaultGray".as_slice(), b"DefaultRGB", b"DefaultCMYK"]
+                .iter()
+                .any(|key| spaces.get(key).is_some())
+        };
+        let id = match object {
+            Object::Reference(id) if !defaults => Some(*id),
+            _ => None,
+        };
+        let read = match id.and_then(|id| self.shadings.get(&id)) {
+            Some(read) => read.clone(),
+            None => {
+                let dictionary = match object {
+                    Object::Dictionary(dictionary) => Some(dictionary.clone()),
+                    Object::Reference(id) => match self.file.resolve(*id, budget) {
+                        Ok(IndirectValue::Object(Object::Dictionary(dictionary))) => {
+                            Some(dictionary)
+                        }
+                        Ok(IndirectValue::Stream(stream)) => Some(stream.dictionary),
+                        Ok(_)
+                        | Err(
+                            pdf_syntax::Error::Malformed { .. }
+                            | pdf_syntax::Error::Truncated { .. },
+                        ) => None,
+                        Err(other) => return Err(Error::Syntax(other)),
+                    },
+                    _ => None,
+                };
+                let read = match dictionary {
+                    Some(dictionary) => self.read_shading(&dictionary, at, budget)?.map(Arc::new),
+                    None => None,
+                };
+                if let Some(id) = id
+                    && self.shadings.len() < MAX_SHADINGS
+                {
+                    self.shadings.insert(id, read.clone());
+                }
+                read
+            }
+        };
+        let Some(read) = read else {
+            self.skipped.insert(Unsupported::Shading);
+            return Ok(());
+        };
+        let (shading, bbox) = (&read.0, read.1);
+        let matrix = self.state.ctm.then(&self.base);
+        // A flat matrix paints nothing (8.7.4.2 leaves no area).
+        let Some(to_shading) = matrix.invert() else {
+            return Ok(());
+        };
+        // The device area to shade: this canvas, within the rectangles of
+        // the current clip and of the /BBox, whole pixels; in an image of
+        // at most `shading::MAX_PIXELS`, each pixel a square of side `step`.
+        let mut area = [
+            self.window.x0,
+            self.window.y0,
+            self.window.x1,
+            self.window.y1,
+        ];
+        if let Some(clip) = self.state.clip_box {
+            area = intersect(Some(area), clip);
+        }
+        if let Some([x0, y0, x1, y1]) = bbox {
+            let mut rect = Path::default();
+            rect.rectangle(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs());
+            if let Some(bounds) = rect.bounds(&matrix) {
+                area = intersect(Some(area), bounds);
+            }
+        }
+        let [ax0, ay0, ax1, ay1] = area;
+        let (ax0, ay0) = (ax0.floor(), ay0.floor());
+        let (width, height) = ((ax1.ceil() - ax0).max(0.0), (ay1.ceil() - ay0).max(0.0));
+        if width < 1.0 || height < 1.0 || !width.is_finite() || !height.is_finite() {
+            return Ok(());
+        }
+        let step = (width * height / shading::MAX_PIXELS as f64)
+            .sqrt()
+            .max(1.0);
+        let columns = (width / step).ceil().min(f64::from(u16::MAX)) as u16;
+        let rows = (height / step).ceil().min(f64::from(u16::MAX)) as u16;
+        let pixels = u64::from(columns) * u64::from(rows);
+        budget.charge_decoded_bytes(pixels * 4)?;
+        self.charge_work(pixels as f64)?;
+        let rgba = shading.render(&to_shading, ax0, ay0, step, columns, rows);
+        let image = raster::pixmap(rgba, columns, rows, true);
+        let clipped = match bbox {
+            Some([x0, y0, x1, y1]) => {
+                let mut rect = Path::default();
+                rect.rectangle(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs());
+                if !rect.is_within(&matrix, 0.0, MAX_DEVICE_COORDINATE) {
+                    return Err(self.error(at, ContentErrorKind::NumberOutOfRange));
+                }
+                self.charge_work(rect.work(&matrix, 0.0, &self.window))?;
+                self.canvas.push_clip(&rect, &matrix, false);
+                true
+            }
+            None => false,
+        };
+        // The unit square onto the image's device rectangle (row 0 on top).
+        let (w, h) = (f64::from(columns) * step, f64::from(rows) * step);
+        let device = Matrix::new(w, 0.0, 0.0, -h, ax0, ay0 + h);
+        self.canvas
+            .draw_image(&image, &device, self.state.fill.alpha, step > 1.0);
+        if clipped {
+            self.canvas.pop_clip();
+        }
+        Ok(())
+    }
+
+    /// An axial or radial shading dictionary (8.7.4.5.3, 8.7.4.5.4), with
+    /// its colours over the parameter made once: `None` for another type
+    /// or what cannot be read (coordinates, domain, functions, a colour
+    /// space not drawn).
+    fn read_shading(
+        &mut self,
+        dictionary: &Dictionary,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<Option<ShadingAndBox>, Error> {
+        let numbers_of = |object: Option<&Object>| -> Option<Vec<f64>> {
+            object
+                .and_then(Object::as_array)
+                .and_then(|a| a.iter().map(number_of).collect())
+        };
+        let kind = dictionary.get(b"ShadingType").and_then(Object::as_integer);
+        let Some(coords) = numbers_of(dictionary.get(b"Coords")) else {
+            return Ok(None);
+        };
+        let geometry = match (kind, coords.as_slice()) {
+            (Some(2), [x0, y0, x1, y1]) => shading::Geometry::Axial {
+                x0: *x0,
+                y0: *y0,
+                x1: *x1,
+                y1: *y1,
+            },
+            (Some(3), [x0, y0, r0, x1, y1, r1]) if *r0 >= 0.0 && *r1 >= 0.0 => {
+                shading::Geometry::Radial {
+                    x0: *x0,
+                    y0: *y0,
+                    r0: *r0,
+                    x1: *x1,
+                    y1: *y1,
+                    r1: *r1,
+                }
+            }
+            _ => return Ok(None),
+        };
+        let (t0, t1) = match numbers_of(dictionary.get(b"Domain")).as_deref() {
+            None => (0.0, 1.0),
+            Some([t0, t1]) => (*t0, *t1),
+            Some(_) => return Ok(None),
+        };
+        let extend = match dictionary.get(b"Extend").and_then(Object::as_array) {
+            None => [false; 2],
+            Some([Object::Boolean(start), Object::Boolean(end)]) => [*start, *end],
+            Some(_) => return Ok(None),
+        };
+        let bbox = match numbers_of(dictionary.get(b"BBox")).as_deref() {
+            None => None,
+            Some([x0, y0, x1, y1]) => Some([*x0, *y0, *x1, *y1]),
+            Some(_) => return Ok(None),
+        };
+        // The colour space: a device name, or a space object.
+        let Some(space) = dictionary.get(b"ColorSpace") else {
+            return Ok(None);
+        };
+        let space = match self.direct(space, at, budget) {
+            Ok(space) => space,
+            Err(Error::Content { .. }) => return Ok(None),
+            Err(other) => return Err(other),
+        };
+        let space = match &space {
+            Object::Name(name) => match device_space(name) {
+                Some(device @ (ColorSpace::Gray | ColorSpace::Rgb | ColorSpace::Cmyk)) => {
+                    self.device(device, at, budget)?
+                }
+                _ => return Ok(None),
+            },
+            other => self.resolved_space(other, budget)?,
+        };
+        let components = match space {
+            ColorSpace::Mapped(number) => self.mapped.get(usize::from(number)).map(|m| m.inputs),
+            other => other.components(),
+        };
+        let Some(components) = components else {
+            return Ok(None);
+        };
+        // One function of n outputs, or n functions of one output.
+        let functions = match dictionary.get(b"Function") {
+            Some(Object::Array(items)) => {
+                if items.len() != components {
+                    return Ok(None);
+                }
+                let mut functions = Vec::with_capacity(items.len());
+                for item in items {
+                    match function::read(self.file, item, budget)? {
+                        Some(f) if f.inputs() == 1 && f.outputs() == 1 => functions.push(f),
+                        _ => return Ok(None),
+                    }
+                }
+                functions
+            }
+            Some(item) => match function::read(self.file, item, budget)? {
+                Some(f) if f.inputs() == 1 && f.outputs() == components => vec![f],
+                _ => return Ok(None),
+            },
+            None => return Ok(None),
+        };
+        // The colours over the parameter, each evaluation counted.
+        let cost: u64 = functions.iter().map(Function::cost).sum();
+        self.operations = self
+            .operations
+            .saturating_add(cost.saturating_mul(shading::STEPS as u64));
+        if self.operations > self.limits.max_operations {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::Operations,
+                limit: self.limits.max_operations,
+            });
+        }
+        budget.charge_decoded_bytes((shading::STEPS * 4) as u64)?;
+        let mut colors = Vec::with_capacity(shading::STEPS);
+        for step in 0..shading::STEPS {
+            let s = step as f64 / (shading::STEPS - 1) as f64;
+            let t = t0 + s * (t1 - t0);
+            let mut values = Vec::with_capacity(components);
+            for function in &functions {
+                let Some(out) = function.eval(&[t]) else {
+                    return Ok(None);
+                };
+                values.extend(out);
+            }
+            let Some(rgb) = self.components_rgb(space, &values)? else {
+                return Ok(None);
+            };
+            colors.push(rgb);
+        }
+        Ok(Some((
+            shading::Shading {
+                geometry,
+                extend,
+                colors,
+            },
+            bbox,
+        )))
+    }
+
+    /// The RGBA colour (alpha 0 when it paints nothing) of `values` in
+    /// `space`, as paints are converted; `None` when it has none.
+    fn components_rgb(
+        &mut self,
+        space: ColorSpace,
+        values: &[f64],
+    ) -> Result<Option<[u8; 4]>, Error> {
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let rgba = match space {
+            ColorSpace::Gray | ColorSpace::Rgb | ColorSpace::Cmyk | ColorSpace::Indexed(_) => {
+                if Some(values.len()) != space.components() {
+                    return Ok(None);
+                }
+                let mut components = [0.0f32; 4];
+                for (slot, value) in components.iter_mut().zip(values) {
+                    *slot = *value as f32;
+                }
+                if let ColorSpace::Indexed(palette) = space {
+                    let entries = self.palettes.get(usize::from(palette)).map_or(1, |p| {
+                        p.lookup.len() / p.base.components().unwrap_or(1).max(1)
+                    });
+                    let last = entries.saturating_sub(1) as f32;
+                    components[0] = components[0].round().clamp(0.0, last);
+                } else {
+                    for slot in &mut components {
+                        *slot = slot.clamp(0.0, 1.0);
+                    }
+                }
+                let paint = Paint {
+                    space,
+                    components,
+                    alpha: 1.0,
+                };
+                match paint.rgba(&self.palettes, &self.mapped) {
+                    Ok(color) => color,
+                    Err(_) => return Ok(None),
+                }
+            }
+            ColorSpace::Mapped(number) => {
+                let Some(mapped) = self.mapped.get(usize::from(number)) else {
+                    return Ok(None);
+                };
+                if values.len() != mapped.inputs {
+                    return Ok(None);
+                }
+                let invisible = mapped.invisible;
+                let [r, g, b, _] = self.mapped_color(number, values)?;
+                Rgba {
+                    r,
+                    g,
+                    b,
+                    a: if invisible { 0.0 } else { 1.0 },
+                }
+            }
+            ColorSpace::Pattern | ColorSpace::Other => return Ok(None),
+        };
+        Ok(Some([
+            byte(rgba.r),
+            byte(rgba.g),
+            byte(rgba.b),
+            byte(rgba.a),
+        ]))
     }
 
     /// Resolves a colour space name: the device families directly, other

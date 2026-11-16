@@ -49,6 +49,24 @@ impl Matrix {
     pub fn coefficients(&self) -> [f64; 6] {
         [self.a, self.b, self.c, self.d, self.e, self.f]
     }
+
+    /// The inverse transform; `None` when the matrix flattens the plane
+    /// (its determinant is 0, or the result is not finite).
+    pub fn invert(&self) -> Option<Self> {
+        let det = self.a * self.d - self.b * self.c;
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        let inverse = Self {
+            a: self.d / det,
+            b: -self.b / det,
+            c: -self.c / det,
+            d: self.a / det,
+            e: (self.c * self.f - self.d * self.e) / det,
+            f: (self.b * self.e - self.a * self.f) / det,
+        };
+        inverse.is_finite().then_some(inverse)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,6 +184,20 @@ impl Path {
             let q = matrix.apply(p);
             q.x.abs() + pad <= limit && q.y.abs() + pad <= limit
         })
+    }
+
+    /// The device rectangle `[x0, y0, x1, y1]` holding this path through
+    /// `matrix` (control points included, so it may be larger than the
+    /// path); `None` for an empty path.
+    pub fn bounds(&self, matrix: &Matrix) -> Option<[f64; 4]> {
+        self.points()
+            .map(|p| matrix.apply(p))
+            .fold(None, |bounds, q| {
+                Some(match bounds {
+                    None => [q.x, q.y, q.x, q.y],
+                    Some([x0, y0, x1, y1]) => [x0.min(q.x), y0.min(q.y), x1.max(q.x), y1.max(q.y)],
+                })
+            })
     }
 
     fn points(&self) -> impl Iterator<Item = Point> + '_ {
@@ -354,6 +386,17 @@ impl Bounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_matrix_and_its_inverse_cancel_out() {
+        let m = Matrix::new(2.0, 0.5, -1.0, 3.0, 10.0, -4.0);
+        let inverse = m.invert().expect("invertible");
+        let p = Point { x: 7.0, y: -3.0 };
+        let back = inverse.apply(m.apply(p));
+        assert!((back.x - p.x).abs() < 1e-9 && (back.y - p.y).abs() < 1e-9);
+        assert_eq!(Matrix::new(1.0, 2.0, 2.0, 4.0, 0.0, 0.0).invert(), None);
+        assert_eq!(Matrix::new(1e300, 0.0, 0.0, 1e300, 0.0, 0.0).invert(), None);
+    }
 
     #[test]
     fn then_applies_left_first() {

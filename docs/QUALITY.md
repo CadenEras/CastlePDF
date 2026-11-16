@@ -200,6 +200,35 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 3.16, dégradés axiaux et radiaux (`survey`, 2026-11-16, même protocole) :
+- recensement préalable (test ignoré `color_census`, `shadings_of_pages_reporting_shading`) des
+  69 et 46 premières pages qui signalaient `Shading` : surtout axiaux (type 2), puis radiaux
+  (type 3), presque toujours étendus aux deux bouts, avec des fonctions assemblées, en ICC, CMJN
+  ou DeviceN ; une dizaine de maillés (type 7), aucun de type 1 ;
+- premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; `Shading` 69 → 9
+  et 46 → 3, les autres décomptes inchangés ;
+- deux régressions trouvées par cette mesure et corrigées avant la PR : chaque `sh` était calculé
+  sur toute la surface du canevas, si bien que 8 et 2 premières pages riches en petits dégradés
+  dépassaient `max_path_work` (désormais calculé sur le rectangle de la découpe) ; une page
+  peignant 63 dégradés 1 403 fois dépassait `max_operations` (désormais lus une fois par rendu,
+  table de 256 teintes). Chacune a son test, vérifié en échec sans la correction ;
+- douze premières pages SafeDocs qui ne signalent plus `Shading`, comparées à `pdftoppm` à
+  72 dpi : un fond radial à 0,9 % de pixels écartés (bords des glyphes), les autres écarts venant
+  du texte et des limites déjà connues ; vues à l'œil sur trois pages ;
+- fuzzing `render` 10 min, avec un dégradé axial et un radial dans les ressources : 220 111
+  exécutions, aucun crash ni délai ;
+- tests : unitaires de `shading.rs` (paramètres axiaux et radiaux, extension, cône), `shadings.rs`
+  (axe, extension, rayons, découpe et `/BBox`, DeviceN et ICC, types signalés, tuiles identiques
+  à la page, grande surface, coût d'une découpe, dégradé peint 500 fois) ;
+- relecture indépendante : un texte en dégradé (`7 Tr`, puis `sh`) aurait peint un rectangle plein,
+  la découpe par le texte n'étant pas appliquée : signalé désormais, sans peindre ; un même dégradé
+  peint sous deux portées aux `Default*` différents reprenait les couleurs de la première : il
+  n'est plus gardé là où la portée définit un `Default*`. Aussi : racines du cas radial calculées
+  sans annulation, seuil du cas linéaire relatif, table de couleurs imputée au budget ; chaque
+  correction a son test, vérifié en échec sans elle. Limites connues : au-delà de 1 Mpx de
+  surface, l'image est réduite, si bien qu'une tuile et la page entière peuvent différer d'un
+  niveau sur un dégradé lissé ; une fonction à ruptures nettes est échantillonnée sur 256 teintes.
+
 Tranche 3.15, Separation, DeviceN et Lab (`survey`, 2026-11-16, même protocole) :
 - recensement préalable (test ignoré `color_census`) des 91 et 75 premières pages qui signalaient
   encore `ColorSpace` : surtout Separation (fonctions de type 2, puis 0 et 4) et DeviceN
