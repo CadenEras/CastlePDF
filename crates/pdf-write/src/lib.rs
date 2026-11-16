@@ -9,10 +9,14 @@
 //! written in full without an exponent (7.3.3), with a decimal point so
 //! that they stay reals.
 
+mod document;
+
 use std::collections::BTreeMap;
 use std::fmt;
 
 use pdf_syntax::{Dictionary, Object, is_delimiter, is_regular, is_whitespace};
+
+pub use document::{PlanPage, Rewritten, identity_plan, rewrite};
 
 /// What can stop a write: the input, never a panic.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +30,17 @@ pub enum Error {
     InvalidObjectNumber(u32),
     /// The file would exceed `limit` bytes.
     TooLarge { limit: u64 },
+    /// A page plan that is empty, names a page the document does not have,
+    /// or turns a page by other than a multiple of 90 degrees.
+    InvalidPlan,
+    /// Reading the source failed: limits, cancellation, input.
+    Syntax(pdf_syntax::Error),
+}
+
+impl From<pdf_syntax::Error> for Error {
+    fn from(error: pdf_syntax::Error) -> Self {
+        Self::Syntax(error)
+    }
 }
 
 impl fmt::Display for Error {
@@ -35,6 +50,8 @@ impl fmt::Display for Error {
             Self::NullInName => f.write_str("a name holds the byte 0"),
             Self::InvalidObjectNumber(n) => write!(f, "object number {n} is 0 or given twice"),
             Self::TooLarge { limit } => write!(f, "the file would exceed {limit} bytes"),
+            Self::InvalidPlan => f.write_str("the page plan is empty or names pages the document lacks"),
+            Self::Syntax(error) => write!(f, "reading the source failed: {error}"),
         }
     }
 }

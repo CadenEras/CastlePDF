@@ -2276,6 +2276,7 @@ dependencies = [
  "pdf-document",
  "pdf-render",
  "pdf-syntax",
+ "pdf-write",
 ]
 
 [[package]]
@@ -2317,6 +2318,8 @@ dependencies = [
 name = "pdf-write"
 version = "0.1.0-alpha.5"
 dependencies = [
+ "pdf-document",
+ "pdf-render",
  "pdf-syntax",
  "proptest",
 ]
