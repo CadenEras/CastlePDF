@@ -19,10 +19,22 @@ pas un booléen « compatible PDF 2.0 ».
 
 Ordre ([ADR-0008](adr/0008-p4-writing.md), accepté le 2026-11-16 : réécriture complète depuis
 un plan de pages, « Enregistrer sous » transactionnel vers un autre fichier que la source) :
-4.1 sérialiseur et aller-retour des objets ; 4.2 réécriture d'un document inchangé
-(`castle-pdf rewrite`) ; 4.3 rotation, suppression, réordonnancement ; 4.4 fusion et découpe ;
+4.1 sérialiseur et aller-retour des objets (fait) ; 4.2 réécriture d'un document inchangé
+(`castle-pdf rewrite`, fait) ; 4.3 rotation, suppression, réordonnancement (avec l'élagage
+des ressources partagées, avant qu'un plan qui retire des pages soit proposé) ; 4.4 fusion et découpe ;
 4.5 sauvegarde transactionnelle, worker et shell ; 4.6 interface, annuler et rétablir ; 4.7
 signets et liens recalculés, si la mesure le justifie.
+
+### Limites ouvertes de P4 (écriture)
+
+- Ressources partagées non élaguées : une page garde tout un dictionnaire de ressources
+  hérité, y compris ce que seules des pages retirées dessinent. Levée en 4.3, avant toute
+  suppression de page proposée.
+- Structures de document non conservées (ADR-0008, point 3) : signets, formulaire, arbre de
+  structure, `Names`, `OpenAction`, `PageLabels`, signature ; listées à chaque réécriture.
+  Signets et liens : 4.7 si la mesure le justifie ; les autres restent hors périmètre de P4.
+- `castle-pdf rewrite` publie par lien dur, qui échoue sur FAT ou partage SMB ; la
+  sauvegarde transactionnelle de 4.5 remplace ce chemin pour l'application.
 
 ## P3 terminée (`v0.1.0-alpha.4`)
 
