@@ -170,6 +170,8 @@ describe("documents and tiles", () => {
   it("labels skipped capabilities", () => {
     expect(skippedLabels(0)).toEqual([]);
     expect(skippedLabels(1 | (1 << 2) | (1 << 15))).toEqual(["texte", "images", "autres éléments"]);
+    // Protocol 7: annotations shown by other readers, not drawn.
+    expect(skippedLabels(1 << 13)).toEqual(["annotations et champs de formulaire"]);
   });
 
   it("checks text layers and keeps their known fields only", () => {

@@ -195,6 +195,10 @@ pub enum Unsupported {
     /// damaged program. Positions and widths are the PDF's; the
     /// glyphs only resemble the original ones (ADR-0005).
     FontSubstituted,
+    /// Annotations not drawn (12.5): the page has one that other readers
+    /// show, with an appearance stream (`/AP`) or as a form field, neither
+    /// hidden nor a pop-up. Annotations are drawn in a later phase (P5).
+    Annotation,
 }
 
 /// RGBA8 pixels with straight alpha, rows from top to bottom.
@@ -632,7 +636,20 @@ fn render<S: Source>(
     );
     let (result, caches) = interpreter.run(&content, budget);
     cache.caches = caches;
-    let (canvas, skipped) = result?;
+    let (canvas, mut skipped) = result?;
+    let annotated = match cache.caches.annotations.get(&page.id) {
+        Some(annotated) => *annotated,
+        None => {
+            let annotated = has_shown_annotations(file, page, budget)?;
+            if cache.caches.reserve(ANNOTATION_ENTRY_BYTES) {
+                cache.caches.annotations.insert(page.id, annotated);
+            }
+            annotated
+        }
+    };
+    if annotated {
+        skipped.insert(Unsupported::Annotation);
+    }
     Ok(Rendering {
         bitmap: Bitmap {
             width: u32::from(width),
@@ -759,6 +776,84 @@ fn page_content<S: Source>(
         content.push(b'\n');
     }
     Ok(content)
+}
+
+/// Entries of `/Annots` read at most; a page with more is reported as
+/// having annotations shown, which cannot be told without reading them.
+const MAX_ANNOTATIONS_READ: usize = 4096;
+
+/// Bytes counted for a page's cached answer.
+const ANNOTATION_ENTRY_BYTES: usize = 64;
+
+/// Whether the page has an annotation that other readers show and this
+/// renderer does not draw yet (ISO 32000-2, 12.5): one with an appearance
+/// stream (`/AP`) or a form field widget, neither hidden (`/F` bits 2,
+/// Hidden, and 6, NoView) nor a pop-up (shown on demand). A damaged entry
+/// is passed over; limits and cancellation are errors.
+fn has_shown_annotations<S: Source>(
+    file: &PdfFile<S>,
+    page: &Page,
+    budget: &mut Budget,
+) -> Result<bool, Error> {
+    const HIDDEN: i64 = 1 << 1;
+    const NO_VIEW: i64 = 1 << 5;
+    let Some(annotations) = page.annotations.as_ref() else {
+        return Ok(false);
+    };
+    // A direct array is read in place; the bound is checked before reading.
+    let resolved;
+    let entries = match annotations {
+        Object::Array(entries) => entries,
+        other => match readable(file, other, budget)? {
+            Some(Object::Array(entries)) => {
+                resolved = entries;
+                &resolved
+            }
+            _ => return Ok(false),
+        },
+    };
+    if entries.len() > MAX_ANNOTATIONS_READ {
+        return Ok(true);
+    }
+    for entry in entries {
+        let Some(Object::Dictionary(annotation)) = readable(file, entry, budget)? else {
+            continue;
+        };
+        let subtype = annotation.get(b"Subtype").and_then(Object::as_name);
+        let flags = annotation
+            .get(b"F")
+            .and_then(Object::as_integer)
+            .unwrap_or(0);
+        if subtype == Some(b"Popup".as_slice()) || flags & (HIDDEN | NO_VIEW) != 0 {
+            continue;
+        }
+        if annotation.get(b"AP").is_some() || subtype == Some(b"Widget".as_slice()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `object`, resolved if it is a reference; `None` for a stream or an
+/// object that cannot be read (damaged syntax).
+fn readable<S: Source>(
+    file: &PdfFile<S>,
+    object: &Object,
+    budget: &mut Budget,
+) -> Result<Option<Object>, Error> {
+    match object {
+        Object::Reference(id) => match file.resolve(*id, budget) {
+            Ok(IndirectValue::Object(object)) => Ok(Some(object)),
+            Ok(IndirectValue::Stream(_)) => Ok(None),
+            Err(
+                pdf_syntax::Error::Malformed { .. }
+                | pdf_syntax::Error::Truncated { .. }
+                | pdf_syntax::Error::Unsupported(_),
+            ) => Ok(None),
+            Err(other) => Err(Error::Syntax(other)),
+        },
+        other => Ok(Some(other.clone())),
+    }
 }
 
 fn resource_dictionary<S: Source>(

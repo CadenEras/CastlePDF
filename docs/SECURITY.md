@@ -18,7 +18,7 @@ décompression et codecs doivent échouer proprement. Les annulations interrompe
 étapes longues ; si un codec ne peut pas être interrompu, le worker doit pouvoir être
 tué sans bloquer l'application. Définir droits et limites de processus pour chaque OS.
 
-État du worker (protocole v6) :
+État du worker (protocole v7) :
 - le chemin d'un document est choisi par le shell, jamais transmis par l'UI ; le worker
   le lit sous `max_input_bytes`, refuse ce qui n'est pas un fichier régulier et ne
   reçoit pas plus de 4 096 octets de chemin en UTF-8 ;

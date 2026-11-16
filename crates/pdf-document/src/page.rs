@@ -93,6 +93,9 @@ pub struct Page {
     pub resources: Option<Arc<Object>>,
     /// `/Contents` as written (stream reference or array of references).
     pub contents: Option<Object>,
+    /// `/Annots` as written (array, or reference to one; not inherited,
+    /// 7.7.3.3). Not read further here: annotations are not drawn yet.
+    pub annotations: Option<Object>,
 }
 
 /// Never prints resources or contents: they hold document data.
@@ -106,6 +109,7 @@ impl fmt::Debug for Page {
             .field("rotation", &self.rotation)
             .field("resources", &self.resources.is_some())
             .field("contents", &self.contents.is_some())
+            .field("annotations", &self.annotations.is_some())
             .finish()
     }
 }
@@ -340,6 +344,10 @@ pub(crate) fn collect_pages<S: Source>(
                 None | Some(Object::Null) => None,
                 Some(contents) => Some(contents),
             };
+            let annotations = match node.remove(b"Annots") {
+                None | Some(Object::Null) => None,
+                Some(annotations) => Some(annotations),
+            };
             pages.push(Page {
                 id,
                 media_box,
@@ -348,6 +356,7 @@ pub(crate) fn collect_pages<S: Source>(
                 rotation: inherited.rotation.unwrap_or(0),
                 resources: inherited.resources,
                 contents,
+                annotations,
             });
         }
     }

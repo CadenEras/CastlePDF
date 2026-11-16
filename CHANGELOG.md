@@ -41,6 +41,18 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur, worker et UI : **ce qui manquait en silence est signalé** (tranche 3.13). Une page
+  avec une annotation que les autres lecteurs montrent (apparence `/AP`, ou champ de
+  formulaire), ni cachée ni pop-up, est signalée par la nouvelle capacité `Annotation` : bit
+  `Skipped::ANNOTATION` (protocole du worker **v7**), « annotations et champs de formulaire »
+  dans la note « Rendu partiel ». Les annotations ne sont toujours pas dessinées (P5).
+  `Page::annotations` donne `/Annots` tel qu'écrit. Une image JPEG que le PDF déclare en
+  Indexed, Separation, DeviceN ou Lab n'est plus dessinée en gris, RVB ou CMJN : elle est
+  signalée (`ColorSpace`). Une image dessinée sans son `DefaultGray`, `DefaultRGB` ou
+  `DefaultCMYK` est signalée `ColorSpace`, une image d'un calque (`/OC`) `OptionalContent`.
+  Premières pages concernées : `Annotation` 42 et 40, `ColorSpace` 380 → 392 et 409 → 417,
+  `OptionalContent` 54 → 56 (SafeDocs).
+
 - Documentation : **matrice de support** (`docs/SUPPORT.md`, tranche 3.12), critère de sortie
   de P3. Capacités du fichier, des filtres, du dessin, des polices, des images, du texte, de
   l'interactivité, de l'application et des plateformes, chacune avec son état (pris en charge,
