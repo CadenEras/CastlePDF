@@ -1,0 +1,18 @@
+[package]
+name = "pdf-write"
+description = "PDF serialization: objects, files with a classic cross-reference table"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pdf-syntax.workspace = true
+
+[dev-dependencies]
+# Property tests (ADR-0002, ADR-0008); test-only, MIT OR Apache-2.0.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

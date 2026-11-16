@@ -2314,6 +2314,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdf-write"
+version = "0.1.0-alpha.5"
+dependencies = [
+ "pdf-syntax",
+ "proptest",
+]
+
+[[package]]
 name = "peniko"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

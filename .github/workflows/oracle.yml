@@ -54,10 +54,11 @@ jobs:
         run: |
           set -o pipefail
           export CASTLE_QPDF="$(command -v qpdf)"
-          cargo test -p pdf-syntax -p pdf-document --locked --test qpdf_oracle -- --nocapture 2>&1 | tee oracle.log
+          cargo test -p pdf-syntax -p pdf-document -p pdf-write --locked --test qpdf_oracle -- --nocapture 2>&1 | tee oracle.log
           grep -q "fixtures match qpdf" oracle.log
           grep -q "fixtures: pages match qpdf" oracle.log
           grep -q "streams: decoded data match qpdf" oracle.log
+          grep -q "written files: qpdf --check finds no error" oracle.log
 
   pdftoppm:
     runs-on: ubuntu-latest

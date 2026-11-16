@@ -46,6 +46,7 @@ raison.
 crates/
   pdf-syntax/      budgets, annulation, source d'entrée, tokenizer, objets, xref (tables, flux, hybrides), Flate
   pdf-document/    catalogue, arbre des pages, attributs hérités
+  pdf-write/       sérialisation des objets et fichiers à table xref classique (P4)
   pdf-cli/         binaire castle-pdf : diagnostic `inspect` (structure, pages)
   pdf-worker/      processus isolé : trames bornées, protocole versionné, annulation
 apps/desktop/

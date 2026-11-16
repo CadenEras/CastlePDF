@@ -93,7 +93,8 @@ puis en faire un test de régression dans la crate concernée. La CI (`fuzz.yml`
 5 minutes par cible chaque semaine et sur les PR touchant le parseur.
 
 Oracle qpdf (ADR-0002, jamais livré) : avec qpdf installé, sous Linux ou macOS,
-`CASTLE_QPDF="$(command -v qpdf)" cargo test -p pdf-syntax -p pdf-document --locked --test qpdf_oracle -- --nocapture`
+`CASTLE_QPDF="$(command -v qpdf)" cargo test -p pdf-syntax -p pdf-document -p pdf-write --locked --test qpdf_oracle -- --nocapture`
+(`pdf-write` : `qpdf --check` ne trouve aucune erreur dans un fichier écrit, ADR-0008)
 compare, pour chaque fixture de `tests/corpus/public` (toutes valides), les entrées xref à
 `qpdf --show-xref`, chaque flux décodé à `qpdf --filtered-stream-data` et l'ordre des
 pages à `qpdf --show-pages`. Sans `CASTLE_QPDF`, le test est sauté ; le workflow `oracle` l'impose.
