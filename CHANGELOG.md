@@ -7,6 +7,30 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+## [0.1.0-alpha.5] — 2026-11-16
+
+Préversion intermédiaire après la fin de P3 : le rendu de la couleur et des dégradés. Les tracés
+et le texte en ICCBased, CalRGB, Indexed (alpha.4), puis en Separation, DeviceN et Lab, les
+dégradés axiaux et radiaux et les motifs de dégradé sont désormais dessinés. Les fonctions PDF
+(types 0, 2, 3 et 4) sont évaluées par le moteur, sous des bornes explicites. Sur le corpus de
+mesure, les premières pages qui laissaient de la couleur de côté passent de 91 à 16 (SafeDocs) et
+de 75 à 12 (UNSAFE), celles qui laissaient des dégradés de 69 à 9 et de 46 à 3, celles qui
+laissaient des motifs de 39 à 24 et de 22 à 18 ; la première page est toujours rendue pour
+1 920 fichiers sur 2 000 et 2 229 sur 2 636, sans crash ni timeout. Toujours **aucun binaire
+distribué**.
+
+### Limites connues
+
+- Pas de gestion de couleur : un profil ICC est réduit à son nombre de composantes et le CMJN
+  converti par la formule d'ISO 32000-2, plus saturé qu'avec un profil (tons directs compris).
+- Restent signalés, pas dessinés : images en Separation, DeviceN ou Lab ; dégradés de fonction
+  et maillés ; motifs pavés et contour avec un motif ; masques adoucis, modes de fusion,
+  transparence de forme, découpe par le texte (un dégradé sous elle est signalé), contenu
+  optionnel ; annotations et champs de formulaire (P5) ; images JBIG2 et JPX (en attente d'une
+  version de leur décodeur qui borne la mémoire).
+- Les autres limites de `v0.1.0-alpha.4` restent valables (pas d'écriture, de zoom ni
+  d'impression ; vérifications à la main sous Windows seulement).
+
 ### Ajouté
 
 - Moteur : **motifs de dégradé** en remplissage (tranche 3.17). Une couleur `/Pattern` dont le motif
@@ -700,7 +724,8 @@ l'architecture, le worker, les budgets et la CI. Aucun binaire n'est distribué.
 - Isolation OS du worker (sandbox) non implémentée.
 - Licence du projet non décidée.
 
-[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.4...HEAD
+[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.5...HEAD
+[0.1.0-alpha.5]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.2
