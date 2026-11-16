@@ -6,6 +6,7 @@ members = [
     "crates/pdf-document",
     "crates/pdf-render",
     "crates/pdf-syntax",
+    "crates/pdf-write",
     "crates/pdf-worker",
 ]
 
@@ -21,6 +22,7 @@ pdf-document = { path = "crates/pdf-document" }
 pdf-render = { path = "crates/pdf-render" }
 pdf-syntax = { path = "crates/pdf-syntax" }
 pdf-worker = { path = "crates/pdf-worker" }
+pdf-write = { path = "crates/pdf-write" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

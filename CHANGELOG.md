@@ -7,6 +7,18 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+### Ajouté
+
+- Crate **`pdf-write`** (ADR-0008, tranche 4.1) : sérialisation de tous les objets PDF telle
+  que le lecteur du projet les relit à l'identique (noms échappés `#xx`, chaînes littérales
+  échappées, réels écrits en entier sans exposant et avec un point décimal), et fichiers complets
+  (`FileWriter`) : en-tête binaire, objets indirects numérotés par l'appelant, flux copiés tels
+  quels avec un `/Length` direct, table xref classique avec ses entrées libres, trailer avec
+  `/Size` et un `/ID` déterministe ; taille de sortie bornée. Propriété : tout objet écrit se
+  relit identique ; un fichier écrit s'ouvre en lecture stricte et se relit ; la même entrée
+  donne les mêmes octets ; `qpdf --check` ne trouve aucune erreur (workflow `oracle`). Aucune
+  opération sur les documents encore (tranches 4.2 et suivantes).
+
 ## [0.1.0-alpha.5] — 2026-11-16
 
 Préversion intermédiaire après la fin de P3 : le rendu de la couleur et des dégradés. Les tracés
