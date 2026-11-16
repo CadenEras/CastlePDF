@@ -241,7 +241,12 @@ impl FileWriter {
     /// from the bytes written, so that the same file gets the same
     /// identifier), `startxref` and `%%EOF`.
     pub fn finish(mut self, trailer: &Dictionary) -> Result<Vec<u8>, Error> {
-        let size = self.offsets.keys().next_back().map_or(1, |last| last + 1);
+        let size = match self.offsets.keys().next_back() {
+            None => 1,
+            Some(last) => last
+                .checked_add(1)
+                .ok_or(Error::InvalidObjectNumber(*last))?,
+        };
         let id = file_id(&self.out);
         let xref = self.out.len() as u64;
         self.append(format!("xref\n0 {size}\n").as_bytes())?;

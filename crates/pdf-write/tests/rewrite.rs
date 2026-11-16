@@ -272,3 +272,108 @@ fn optional_content_properties_are_kept() {
         Some(&pdf_syntax::Object::String(b"Hidden".to_vec()))
     );
 }
+
+/// A PDF of `bodies` (objects 1, 2...), object 1 the catalog.
+fn assemble(bodies: &[&str]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", bodies.len() + 1).as_bytes(),
+    );
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            bodies.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+#[test]
+fn nothing_left_out_comes_back_through_another_object() {
+    // Found in review: page 1 is kept; its annotation refers to the
+    // catalog (whose form holds a marker), replies (/IRT) to an annotation
+    // of page 2, which is left out, and links to a page object outside the
+    // page tree. None of them is copied: each reference becomes null.
+    let pdf = assemble(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 9 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 100 100] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [5 0 R] /AA << /O << /S /Named /N /NextPage >> >> >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>",
+        "<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /X 1 0 R /IRT 6 0 R \
+         /A << /S /GoTo /D [7 0 R /Fit] >> >>",
+        "<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (marker-of-annotation-2) >>",
+        "<< /Type /Page /MediaBox [0 0 10 10] /Contents 8 0 R >>",
+        "<< /Length 21 >>\nstream\n% marker-of-orphan\n\nendstream",
+        "<< /Fields [] /DA (marker-of-form) >>",
+    ]);
+    let original = open(pdf);
+    assert_eq!(original.page_count(), 2);
+    let plan = [PlanPage {
+        page: 0,
+        rotation: 0,
+    }];
+    let rewritten = rewrite(&original, &plan, LIMIT, &mut budget()).expect("rewrite");
+    for marker in [
+        &b"marker-of-annotation-2"[..],
+        b"marker-of-orphan",
+        b"marker-of-form",
+    ] {
+        assert!(
+            !contains(&rewritten.bytes, marker),
+            "{}",
+            String::from_utf8_lossy(marker)
+        );
+    }
+    assert_eq!(rewritten.dropped, vec!["AcroForm"]);
+    let written = open_strict(rewritten.bytes);
+    let page = &written.pages()[0];
+    // The page keeps its own additional actions (document content, never
+    // run by this engine).
+    let Ok(pdf_syntax::IndirectValue::Object(pdf_syntax::Object::Dictionary(own))) =
+        written.file().resolve(page.id, &mut budget())
+    else {
+        panic!("page");
+    };
+    assert!(own.get(b"AA").is_some());
+    let Some(pdf_syntax::Object::Array(annotations)) = page.annotations.clone() else {
+        panic!("annotations");
+    };
+    let Ok(pdf_syntax::IndirectValue::Object(pdf_syntax::Object::Dictionary(annotation))) =
+        written.file().resolve(
+            annotations[0].as_reference().expect("reference"),
+            &mut budget(),
+        )
+    else {
+        panic!("annotation");
+    };
+    assert_eq!(annotation.get(b"X"), Some(&pdf_syntax::Object::Null));
+    assert_eq!(annotation.get(b"IRT"), Some(&pdf_syntax::Object::Null));
+}
+
+#[test]
+fn a_page_object_outside_the_tree_is_written_as_null() {
+    // The page object reached only through a link, never through the page
+    // tree: written as null (its number exists, its content does not).
+    let pdf = assemble(&[
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [<< /Subtype /Link /Rect [0 0 1 1] /Dest [4 0 R /Fit] >>] >>",
+        "<< /Type /Page /MediaBox [0 0 10 10] /Contents 5 0 R >>",
+        "<< /Length 18 >>\nstream\n% marker-of-orphan\nendstream",
+    ]);
+    let original = open(pdf);
+    let rewritten =
+        rewrite(&original, &identity_plan(&original), LIMIT, &mut budget()).expect("rewrite");
+    assert!(!contains(&rewritten.bytes, b"marker-of-orphan"));
+    assert_eq!(open_strict(rewritten.bytes).page_count(), 1);
+}

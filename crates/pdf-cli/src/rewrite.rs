@@ -38,7 +38,11 @@ pub fn run(
             return Ok(1);
         }
     };
-    let limit = input_len.saturating_mul(GROWTH).max(MIN_LIMIT);
+    // Never more than the reader takes back (it reads the result again).
+    let limit = input_len
+        .saturating_mul(GROWTH)
+        .max(MIN_LIMIT)
+        .min(limits.max_input_bytes);
     let plan = identity_plan(&document);
     let rewritten = match rewrite(&document, &plan, limit, &mut budget) {
         Ok(rewritten) => rewritten,
