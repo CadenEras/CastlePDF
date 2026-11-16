@@ -32,7 +32,7 @@ mémoire bornée, réactivité et maintenabilité.
 | P0 — fondations | Workspace, UI vide, protocole worker, budgets, corpus, CI trois OS | Terminée (`v0.1.0-alpha.1`) |
 | P1 — lecture structurée | Tokenizer, objets, xref classique, pages, CLI de diagnostic | Terminée (`v0.1.0-alpha.2`) : xref classique, pages, CLI `inspect` |
 | P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | Terminée (`v0.1.0-alpha.3`) : PDF 1.5+, réparation, texte, images, formulaires, Type 3, défilement continu ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) |
-| P3 — compatibilité et texte | Filtres secondaires, texte/ToUnicode, recherche/sélection | Terminée (`v0.1.0-alpha.4`) : texte Unicode, sélection, copie, recherche, Type 1, CMap CJK, CCITTFax, espaces ICC ; [matrice de support](docs/SUPPORT.md) |
+| P3 — compatibilité et texte | Filtres secondaires, texte/ToUnicode, recherche/sélection | Terminée (`v0.1.0-alpha.4`, complétée par `v0.1.0-alpha.5`) : texte Unicode, sélection, copie, recherche, Type 1, CMap CJK, CCITTFax, espaces de couleur, dégradés ; [matrice de support](docs/SUPPORT.md) |
 | P4 et suivantes | Écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
 
 Le support PDF est publié dans la [matrice de support](docs/SUPPORT.md). Une capacité
