@@ -191,3 +191,129 @@ fn colour_spaces_of_pages_still_reporting_colour_space() {
         eprintln!("  {count:5}  {family}");
     }
 }
+
+/// Shading types (and their colour space families) declared by
+/// `resources`, and by the forms it names (two levels).
+fn shading_census(
+    file: &PdfFile<MemorySource>,
+    resources: &Object,
+    out: &mut Vec<String>,
+    depth: u8,
+) {
+    let Some(resources) = dictionary(file, resources) else {
+        return;
+    };
+    if let Some(shadings) = resources.get(b"Shading").and_then(|s| dictionary(file, s)) {
+        for (_, shading) in shadings.iter() {
+            let Some(shading) = dictionary(file, shading) else {
+                continue;
+            };
+            let kind = shading.get(b"ShadingType").and_then(Object::as_integer);
+            let mut space = Vec::new();
+            if let Some(cs) = shading.get(b"ColorSpace") {
+                families(file, cs, &mut space);
+            }
+            let function = match shading.get(b"Function").and_then(|f| direct(file, f)) {
+                Some(Object::Dictionary(d)) => d
+                    .get(b"FunctionType")
+                    .and_then(Object::as_integer)
+                    .map_or("f?".to_owned(), |t| format!("f{t}")),
+                Some(Object::Array(a)) => format!("{} functions", a.len()),
+                _ => "no function".to_owned(),
+            };
+            let extend = shading
+                .get(b"Extend")
+                .map_or("extend default".to_owned(), |e| {
+                    format!("{e:?}").replace("Boolean", "")
+                });
+            out.push(format!(
+                "type {} {}",
+                kind.map_or("?".to_owned(), |k| k.to_string()),
+                function
+            ));
+            out.push(format!(
+                "type {} in {}",
+                kind.unwrap_or(0),
+                space.first().cloned().unwrap_or_default()
+            ));
+            out.push(format!("type {} {extend}", kind.unwrap_or(0)));
+        }
+    }
+    if let Some(xobjects) = resources.get(b"XObject").and_then(|x| dictionary(file, x)) {
+        for (_, xobject) in xobjects.iter() {
+            if depth < 2
+                && let Some(xobject) = dictionary(file, xobject)
+                && let Some(inner) = xobject.get(b"Resources")
+            {
+                shading_census(file, inner, out, depth + 1);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "measurement on a local corpus: CASTLE_CENSUS_DIR"]
+fn shadings_of_pages_reporting_shading() {
+    let Ok(dir) = std::env::var("CASTLE_CENSUS_DIR") else {
+        eprintln!("CASTLE_CENSUS_DIR not set");
+        return;
+    };
+    let mut paths = Vec::new();
+    let mut pending = vec![std::path::PathBuf::from(dir)];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let (mut pages, mut counts) = (0, BTreeMap::<String, usize>::new());
+    for path in &paths {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(source) = MemorySource::from_vec(bytes, &ResourceLimits::default()) else {
+            continue;
+        };
+        let Ok(document) = Document::open(source, &mut budget()) else {
+            continue;
+        };
+        let Some(page) = document.page(0) else {
+            continue;
+        };
+        let Ok(rendering) = render_page(
+            document.file(),
+            page,
+            &RenderOptions::default(),
+            &mut budget(),
+        ) else {
+            continue;
+        };
+        if !rendering.skipped.contains(&Unsupported::Shading) {
+            continue;
+        }
+        pages += 1;
+        let mut found = Vec::new();
+        if let Some(resources) = page.resources.as_deref() {
+            shading_census(document.file(), resources, &mut found, 0);
+        }
+        found.sort();
+        found.dedup();
+        for item in found {
+            *counts.entry(item).or_default() += 1;
+        }
+    }
+    eprintln!("{pages} first pages reporting Shading; pages declaring:");
+    let mut rows: Vec<_> = counts.into_iter().collect();
+    rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    for (item, count) in rows {
+        eprintln!("  {count:5}  {item}");
+    }
+}

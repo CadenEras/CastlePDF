@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **dégradés axiaux et radiaux** peints par `sh` (tranche 3.16). Le paramètre de
+  chaque pixel est calculé (projection sur l'axe, ou cercle le plus grand passant par le point
+  entre les deux cercles), avec l'extension voulue à chaque bout, sous la découpe courante et la
+  `/BBox` ; les couleurs viennent des fonctions et de l'espace du dégradé (ceux des tracés,
+  Separation et DeviceN compris), 256 teintes calculées une fois par dégradé et par rendu. Le
+  dégradé est calculé sur le rectangle de la découpe, dans une image d'au plus 1 Mpx lissée
+  au-delà, et compté dans le travail du rendu. Premières pages signalant `Shading` : 69 → 9
+  (SafeDocs) et 46 → 3 (UNSAFE) ; dégradés de fonction, maillés et motifs restent signalés.
+
 - Moteur : **tracés et texte en Separation, DeviceN et Lab** (tranche 3.15). Les fonctions PDF
   (ISO 32000-2, 7.10) sont évaluées par le moteur : échantillonnées (type 0, interpolation
   multilinéaire jusqu'à six entrées), exponentielles (type 2), assemblées (type 3) et

@@ -43,6 +43,7 @@ mod interpret;
 mod layout;
 mod raster;
 pub mod search;
+mod shading;
 mod text;
 
 use std::collections::BTreeSet;
