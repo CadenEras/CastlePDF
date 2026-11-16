@@ -7,6 +7,21 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+### Ajouté
+
+- Moteur : **tracés et texte en Separation, DeviceN et Lab** (tranche 3.15). Les fonctions PDF
+  (ISO 32000-2, 7.10) sont évaluées par le moteur : échantillonnées (type 0, interpolation
+  multilinéaire jusqu'à six entrées), exponentielles (type 2), assemblées (type 3) et
+  calculatrices PostScript (type 4, sans boucle). Elles sont lues sous le budget, avec des bornes
+  explicites : table d'échantillons comptée avant lecture (2^22 au plus), imbrication de 4
+  niveaux, programme de 4 096 opérateurs et pile de 100 ; chaque évaluation compte ses étapes
+  dans `max_operations`, et un domaine ou un intervalle de sortie inversé refuse la fonction. Une couleur Separation ou DeviceN passe
+  par sa fonction de teinte vers son espace de remplacement (périphérique, ICC, Cal* ou Lab),
+  une seule fois par opérateur de couleur ; Lab est converti en sRGB. `/None` ne peint rien ; une
+  fonction qui ne donne pas de valeur peint en noir et le signale. Premières pages signalant
+  `ColorSpace` : 91 → 16 (SafeDocs) et 75 → 12 (UNSAFE). Nouvelle cible de fuzzing `tint`, test
+  de mesure ignoré `color_census`.
+
 ## [0.1.0-alpha.4] — 2026-11-16
 
 Fin de la phase P3 (compatibilité et texte). Le texte des pages est extrait en Unicode,

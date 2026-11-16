@@ -36,6 +36,7 @@
 mod content;
 mod error;
 mod fonts;
+mod function;
 mod geometry;
 mod image;
 mod interpret;

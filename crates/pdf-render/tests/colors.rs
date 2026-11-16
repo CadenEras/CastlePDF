@@ -205,15 +205,19 @@ fn default_spaces_of_the_same_kind_keep_the_device_space() {
 
 #[test]
 fn other_spaces_are_still_reported() {
-    // Lab, Separation, DeviceN, an ICCBased profile of 2 components, an
-    // Indexed space over Lab: reported, not painted (tranche 3.14 leaves
-    // them for the tint functions).
+    // What cannot be read stays reported, not painted: a tint transform of
+    // the wrong arity (1 input for 2 colorants, 4 outputs for an RGB
+    // alternate), a missing one, an alternate that is a Pattern, a Lab
+    // space without white point, an ICCBased profile of 2 components, an
+    // Indexed space over Lab.
     let function = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0 0 0] /N 1 >>";
     let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
     for space in [
-        "[/Lab << /WhitePoint [0.9505 1 1.089] >>]",
-        "[/Separation /Spot /DeviceCMYK 6 0 R]",
         "[/DeviceN [/A /B] /DeviceCMYK 6 0 R]",
+        "[/Separation /Spot /DeviceRGB 6 0 R]",
+        "[/Separation /Spot /DeviceCMYK 9 0 R]",
+        "[/Separation /Spot /Pattern 6 0 R]",
+        "[/Lab << >>]",
         "[/ICCBased 7 0 R]",
         "[/Indexed [/Lab << /WhitePoint [0.9505 1 1.089] >>] 0 <000000>]",
     ] {
@@ -225,5 +229,326 @@ fn other_spaces_are_still_reported() {
         let page = render(&document, &mut RenderCache::default());
         assert_eq!(skipped(&page), vec![Unsupported::ColorSpace], "{space}");
         assert_eq!(at(&page, 50, 50), [255, 255, 255], "{space}");
+    }
+}
+
+/// Whether two colours are within `tolerance` on every channel.
+fn near(got: [u8; 3], want: [u8; 3], tolerance: u8) -> bool {
+    got.iter()
+        .zip(want)
+        .all(|(g, w)| g.abs_diff(w) <= tolerance)
+}
+
+#[test]
+fn separation_and_device_n_colours_go_through_their_tint_transform() {
+    // Tranche 3.15. Each space fills a square at tint 0.5 (or its own
+    // values), with an exponential, a sampled and a calculator function,
+    // over CMYK, gray, RGB, an ICC profile and Lab.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let magenta = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 0 0] /N 1 >>";
+    let gray = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    // Sampled, 2 samples of 3 outputs (8 bits): black then red.
+    let sampled = "<< /FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2] \
+                   /BitsPerSample 8 /Filter /ASCIIHexDecode /Length 13 >>\nstream\n000000FF0000>\nendstream";
+    // Calculator: two colorants onto cyan and magenta.
+    let program = "{ 0 0 }";
+    let calculator = format!(
+        "<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1] /Length {} >>\nstream\n{program}\nendstream",
+        program.len()
+    );
+    // Onto Lab: tint 1 is the L*a*b* of sRGB red.
+    let lab_red = "<< /FunctionType 2 /Domain [0 1] /C0 [100 0 0] /C1 [53.24 80.09 67.2] /N 1 >>";
+    let spaces = format!(
+        "/M [/Separation /Magenta /DeviceCMYK 6 0 R] /G [/Separation /Black /DeviceGray 7 0 R] \
+         /R [/Separation /Red /DeviceRGB 8 0 R] /N [/DeviceN [/Cyan /Magenta] /DeviceCMYK 9 0 R] \
+         /I [/Separation /Gray [/ICCBased 10 0 R] 7 0 R] \
+         /L [/Separation /Red [/Lab << {WHITE_POINT} >>] 11 0 R]"
+    );
+    let gray_profile = profile(1);
+    let more = [
+        form,
+        magenta,
+        gray,
+        sampled,
+        &calculator,
+        &gray_profile,
+        lab_red,
+    ];
+    for (content, expected, tolerance) in [
+        ("/M cs 0.5 sc", [255, 128, 255], 1),
+        ("/G cs 0.25 sc", [191, 191, 191], 1),
+        ("/R cs 1 sc", [255, 0, 0], 0),
+        ("/R cs 0.5 sc", [128, 0, 0], 1),
+        ("/N cs 1 0.5 sc", [0, 128, 255], 1),
+        ("/I cs 1 sc", [0, 0, 0], 0),
+        ("/L cs 1 sc", [255, 0, 0], 3),
+        // `cs` alone: every tint 1 (8.6.8).
+        ("/M cs", [255, 0, 255], 0),
+        ("/M CS 8 w 50 50 20 20 re S /M cs", [255, 0, 255], 0),
+    ] {
+        let document = document(&format!("{content} 0 0 100 100 re f"), &spaces, &more);
+        let page = render(&document, &mut RenderCache::default());
+        assert!(skipped(&page).is_empty(), "{content}: {:?}", skipped(&page));
+        assert!(
+            near(at(&page, 20, 20), expected, tolerance),
+            "{content}: {:?}",
+            at(&page, 20, 20)
+        );
+    }
+}
+
+#[test]
+fn lab_colours_are_converted_to_srgb() {
+    // L*a*b* of sRGB primaries and white, relative to D65 (and to D50,
+    // adapted to D65 by the white point); a* and b* clamped to /Range.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    for (space, values, expected) in [
+        (WHITE_POINT, "53.24 80.09 67.2", [255, 0, 0]),
+        (WHITE_POINT, "87.73 -86.18 83.18", [0, 255, 0]),
+        // b* beyond the default range (-100 to 100): a range that holds it.
+        (
+            "/WhitePoint [0.9505 1 1.089] /Range [-128 127 -128 127]",
+            "32.3 79.19 -107.86",
+            [0, 0, 255],
+        ),
+        (WHITE_POINT, "32.3 79.19 -107.86", [67, 0, 241]),
+        (WHITE_POINT, "100 0 0", [255, 255, 255]),
+        (WHITE_POINT, "0 0 0", [0, 0, 0]),
+        ("/WhitePoint [0.9642 1 0.8249]", "100 0 0", [255, 255, 255]),
+        (
+            "/WhitePoint [0.9505 1 1.089] /Range [0 0 0 0]",
+            "53.24 80.09 67.2",
+            [126, 126, 126],
+        ),
+    ] {
+        let document = document(
+            &format!("/L cs {values} sc 0 0 100 100 re f"),
+            &format!("/L [/Lab << {space} >>]"),
+            &[form],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert!(skipped(&page).is_empty(), "{values}: {:?}", skipped(&page));
+        assert!(
+            near(at(&page, 20, 20), expected, 3),
+            "{space} {values}: {:?}",
+            at(&page, 20, 20)
+        );
+    }
+}
+
+#[test]
+fn the_none_colorant_paints_nothing() {
+    // Separation /None (8.6.6.4): neither painted nor reported. Its tint
+    // transform gives black, the page stays white; the same transform
+    // under a named colorant paints black.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let function = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    for (colorant, expected) in [("None", [255, 255, 255]), ("Black", [0, 0, 0])] {
+        let document = document(
+            "/S cs 1 sc 20 20 60 60 re f",
+            &format!("/S [/Separation /{colorant} /DeviceGray 6 0 R]"),
+            &[form, function],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert!(skipped(&page).is_empty(), "{:?}", skipped(&page));
+        assert_eq!(at(&page, 50, 50), expected, "{colorant}");
+    }
+}
+
+#[test]
+fn a_tint_transform_that_fails_paints_black_and_says_so() {
+    // A calculator program, 1 / tint, that divides by zero at tint 0: no
+    // colour, so black, and the colour space reported; tint 1 gives white.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let program = "{ 1 exch div }";
+    let function = format!(
+        "<< /FunctionType 4 /Domain [0 1] /Range [0 1] /Length {} >>\nstream\n{program}\nendstream",
+        program.len()
+    );
+    for (tint, expected, reported) in [("1", [255, 255, 255], false), ("0", [0, 0, 0], true)] {
+        let document = document(
+            &format!("/S cs {tint} sc 0 0 100 100 re f"),
+            "/S [/Separation /Spot /DeviceGray 6 0 R]",
+            &[form, &function],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert_eq!(
+            skipped(&page),
+            if reported {
+                vec![Unsupported::ColorSpace]
+            } else {
+                vec![]
+            },
+            "{tint}"
+        );
+        assert_eq!(at(&page, 50, 50), expected, "{tint}");
+    }
+}
+
+#[test]
+fn stitching_and_bounded_sampled_functions_read_from_the_file() {
+    // A stitching function (type 3) of two exponential ones: white to
+    // black over tints 0 to 0.5, then black. A sampled table of 2^21 x 3
+    // samples (over the bound of 2^22) is refused before it is read: the
+    // space is reported.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let stitching = "<< /FunctionType 3 /Domain [0 1] /Bounds [0.5] /Encode [0 1 0 1] \
+                     /Functions [<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> \
+                     << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [0] /N 1 >>] >>";
+    let huge = "<< /FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2097152] \
+                /BitsPerSample 8 /Length 0 >>\nstream\n\nendstream";
+    let spaces = "/T [/Separation /T /DeviceGray 6 0 R] /H [/Separation /H /DeviceRGB 7 0 R]";
+    for (content, expected, reported) in [
+        ("/T cs 0.25 sc", [128, 128, 128], false),
+        ("/T cs 0.75 sc", [0, 0, 0], false),
+        ("/H cs 0.5 sc", [255, 255, 255], true),
+    ] {
+        let document = document(
+            &format!("{content} 0 0 100 100 re f"),
+            spaces,
+            &[form, stitching, huge],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert_eq!(
+            skipped(&page),
+            if reported {
+                vec![Unsupported::ColorSpace]
+            } else {
+                vec![]
+            },
+            "{content}"
+        );
+        assert!(
+            near(at(&page, 50, 50), expected, 1),
+            "{content}: {:?}",
+            at(&page, 50, 50)
+        );
+    }
+}
+
+#[test]
+fn reversed_domains_and_ranges_are_refused_not_fatal() {
+    // Found in review: /Domain [1 0] or /Range [1 0] made the clipping of
+    // an input or output panic (min above max). Such a function is
+    // refused, the space reported; also inside a stitching function.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    for function in [
+        "<< /FunctionType 2 /Domain [1 0] /C0 [0] /C1 [1] /N 1 >>",
+        "<< /FunctionType 2 /Domain [0 1] /Range [1 0] /C0 [0] /C1 [1] /N 1 >>",
+        "<< /FunctionType 3 /Domain [0 1] /Bounds [] /Encode [0 1] \
+         /Functions [<< /FunctionType 2 /Domain [1 0] /C0 [0] /C1 [1] /N 1 >>] >>",
+    ] {
+        let document = document(
+            "/S cs 0.5 sc 0 0 100 100 re f",
+            "/S [/Separation /Spot /DeviceGray 6 0 R]",
+            &[form, function],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert_eq!(skipped(&page), vec![Unsupported::ColorSpace], "{function}");
+    }
+}
+
+#[test]
+fn malformed_function_entries_refuse_the_function() {
+    // Found in review: an invalid entry was read as absent, so its default
+    // applied (/C0 [true] as [0]). It refuses the function now, as do
+    // stitching bounds outside the domain or out of order.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let exponential = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    for function in [
+        "<< /FunctionType 2 /Domain [0 1] /C0 [true] /C1 [1] /N 1 >>",
+        "<< /FunctionType 2 /Domain [0 1] /C0 [0] /C1 (one) /N 1 >>",
+        "<< /FunctionType 2 /Domain [0 1 2] /C0 [0] /C1 [1] /N 1 >>",
+        "<< /FunctionType 3 /Domain [0 1] /Bounds [1.5] /Encode [0 1 0 1] /Functions [7 0 R 7 0 R] >>",
+        "<< /FunctionType 3 /Domain [0 1] /Bounds [/x] /Encode [0 1 0 1] /Functions [7 0 R 7 0 R] >>",
+        "<< /FunctionType 3 /Domain [0 1] /Bounds [0.6 0.4] /Encode [0 1 0 1 0 1] \
+         /Functions [7 0 R 7 0 R 7 0 R] >>",
+    ] {
+        let document = document(
+            "/S cs 0.5 sc 0 0 100 100 re f",
+            "/S [/Separation /Spot /DeviceGray 6 0 R]",
+            &[form, function, exponential],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        assert_eq!(skipped(&page), vec![Unsupported::ColorSpace], "{function}");
+    }
+}
+
+#[test]
+fn tint_evaluations_count_against_the_operation_limit() {
+    // Found in review: every `sc` evaluates its tint transform, up to 4096
+    // calculator operators, unlike any other operator. Each evaluation now
+    // counts its steps in `max_operations`: 100 colours through a program
+    // of 41 operators exceed 2 000 operations; through an exponential
+    // function (1 step each) they do not.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let program = format!("{{ {} }}", "1 add ".repeat(20) + "20 sub");
+    let calculator = format!(
+        "<< /FunctionType 4 /Domain [0 1] /Range [0 1] /Length {} >>\nstream\n{program}\nendstream",
+        program.len()
+    );
+    let exponential = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    let content = "/S cs 0.5 sc ".repeat(100);
+    let mut options = RenderOptions::default();
+    options.limits.max_operations = 2000;
+    for (function, fails) in [(calculator.as_str(), true), (exponential, false)] {
+        let document = document(
+            &content,
+            "/S [/Separation /Spot /DeviceGray 6 0 R]",
+            &[form, function],
+        );
+        let page = document.page(0).expect("page");
+        let result = render_page_cached(
+            document.file(),
+            page,
+            &options,
+            &mut RenderCache::default(),
+            &mut budget(),
+        );
+        assert_eq!(
+            matches!(
+                result,
+                Err(pdf_render::Error::LimitExceeded {
+                    kind: pdf_render::RenderLimitKind::Operations,
+                    ..
+                })
+            ),
+            fails,
+            "{function}"
+        );
+    }
+}
+
+#[test]
+fn sample_tables_are_bounded_before_they_are_read() {
+    // 2^22 samples at most, counted before the table is read: a table of
+    // exactly 2^22 (one output) is read and used, one sample more is
+    // refused although its data is all there.
+    let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream";
+    let samples = 1usize << 22;
+    let data = "@".repeat(samples + 1);
+    for (size, drawn) in [(samples, true), (samples + 1, false)] {
+        let table = format!(
+            "<< /FunctionType 0 /Domain [0 1] /Range [0 1] /Size [{size}] /BitsPerSample 8 \
+             /Length {} >>\nstream\n{data}\nendstream",
+            data.len()
+        );
+        let document = document(
+            "/S cs 0.5 sc 0 0 100 100 re f",
+            "/S [/Separation /Spot /DeviceGray 6 0 R]",
+            &[form, &table],
+        );
+        let page = render(&document, &mut RenderCache::default());
+        if drawn {
+            // '@' is 64 of 255: gray 64.
+            assert!(skipped(&page).is_empty(), "{size}: {:?}", skipped(&page));
+            assert!(
+                near(at(&page, 50, 50), [64, 64, 64], 1),
+                "{:?}",
+                at(&page, 50, 50)
+            );
+        } else {
+            assert_eq!(skipped(&page), vec![Unsupported::ColorSpace], "{size}");
+        }
     }
 }

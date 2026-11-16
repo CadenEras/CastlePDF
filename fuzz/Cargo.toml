@@ -109,3 +109,10 @@ path = "fuzz_targets/protocol.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tint"
+path = "fuzz_targets/tint.rs"
+test = false
+doc = false
+bench = false
