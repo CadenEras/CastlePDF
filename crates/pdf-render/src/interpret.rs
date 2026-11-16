@@ -40,11 +40,37 @@ enum ColorSpace {
     Gray,
     Rgb,
     Cmyk,
+    /// Indexed (8.6.6.3): the number of its palette in the render's
+    /// `palettes`. Never kept in a cached scope (`Scope::keepable`).
+    Indexed(u16),
     /// Pattern colour space: painting is skipped and reported.
     Pattern,
-    /// Any other family, or a device family replaced by a `Default` colour
-    /// space resource: painting is skipped and reported.
+    /// Any other family (Lab, Separation, DeviceN), or a device family
+    /// replaced by a `Default` colour space resource of another kind:
+    /// painting is skipped and reported.
     Other,
+}
+
+/// Colours of an Indexed space: its base and `hival + 1` entries of the
+/// base's components, 0 to 255 each.
+pub(crate) struct Palette {
+    base: ColorSpace,
+    lookup: Vec<u8>,
+}
+
+/// Distinct palettes in one render at most; another Indexed space is
+/// reported, not drawn.
+const MAX_PALETTES: usize = 4096;
+
+/// `color_spaces` key of the device space a `Default` resource replaces:
+/// not a resource name (a name cannot hold byte 0).
+fn default_key(space: ColorSpace) -> Option<&'static [u8]> {
+    match space {
+        ColorSpace::Gray => Some(b"\0DefaultGray"),
+        ColorSpace::Rgb => Some(b"\0DefaultRGB"),
+        ColorSpace::Cmyk => Some(b"\0DefaultCMYK"),
+        _ => None,
+    }
 }
 
 impl ColorSpace {
@@ -53,6 +79,7 @@ impl ColorSpace {
             Self::Gray => Some(1),
             Self::Rgb => Some(3),
             Self::Cmyk => Some(4),
+            Self::Indexed(_) => Some(1),
             Self::Pattern | Self::Other => None,
         }
     }
@@ -81,10 +108,33 @@ impl Paint {
     };
 
     /// Device RGB. CMYK uses the conversion of ISO 32000-2, 10.4.2.4
-    /// (`red = 1 - min(1, cyan + black)`...), without colour management.
-    fn rgba(&self) -> Result<Rgba, Unsupported> {
-        let [c0, c1, c2, c3] = self.components;
-        let (r, g, b) = match self.space {
+    /// (`red = 1 - min(1, cyan + black)`...), without colour management;
+    /// an Indexed colour is its palette entry in the base space.
+    fn rgba(&self, palettes: &[Palette]) -> Result<Rgba, Unsupported> {
+        let (space, [c0, c1, c2, c3]) = match self.space {
+            ColorSpace::Indexed(palette) => {
+                let palette = palettes
+                    .get(usize::from(palette))
+                    .ok_or(Unsupported::ColorSpace)?;
+                let n = palette.base.components().unwrap_or(1);
+                // The index was rounded and clamped to the palette when set.
+                let start = (self.components[0] as usize).saturating_mul(n);
+                let mut base = [0.0; 4];
+                for (slot, byte) in base.iter_mut().zip(
+                    palette
+                        .lookup
+                        .get(start..)
+                        .unwrap_or_default()
+                        .iter()
+                        .take(n),
+                ) {
+                    *slot = f32::from(*byte) / 255.0;
+                }
+                (palette.base, base)
+            }
+            space => (space, self.components),
+        };
+        let (r, g, b) = match space {
             ColorSpace::Gray => (c0, c0, c0),
             ColorSpace::Rgb => (c0, c1, c2),
             ColorSpace::Cmyk => (
@@ -93,7 +143,7 @@ impl Paint {
                 1.0 - (c2 + c3).min(1.0),
             ),
             ColorSpace::Pattern => return Err(Unsupported::Pattern),
-            ColorSpace::Other => return Err(Unsupported::ColorSpace),
+            ColorSpace::Indexed(_) | ColorSpace::Other => return Err(Unsupported::ColorSpace),
         };
         Ok(Rgba {
             r,
@@ -146,6 +196,17 @@ struct Scope {
     color_spaces: BTreeMap<Vec<u8>, ColorSpace>,
     ext_g_states: BTreeMap<Vec<u8>, ExtGState>,
     fonts: BTreeMap<Vec<u8>, Selected>,
+}
+
+impl Scope {
+    /// The scope as kept in the caches for later renders: without its
+    /// Indexed spaces, whose palettes belong to this render; they are
+    /// resolved again where they are used.
+    fn keepable(mut self) -> Self {
+        self.color_spaces
+            .retain(|_, space| !matches!(space, ColorSpace::Indexed(_)));
+        self
+    }
 }
 
 /// A form XObject as read once (8.10.1): what drawing it needs.
@@ -294,6 +355,10 @@ pub(crate) struct Interpreter<'a, S> {
     /// Bytes of strings shown in a font that cannot be read, when text is
     /// extracted: their glyphs are not recorded.
     unread_bytes: u64,
+    /// Palettes of the Indexed spaces this render resolved, numbered in
+    /// order, each once (by base and colours), charged to the budget.
+    palettes: Vec<Palette>,
+    palette_numbers: BTreeMap<(u8, Vec<u8>), u16>,
     /// Open marked-content sequences when text is extracted, one per
     /// `BMC`/`BDC` of the current content: the index of the `/ActualText`
     /// span it opened, if any.
@@ -374,6 +439,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             text_glyphs: None,
             unreadable_to_unicode: 0,
             unread_bytes: 0,
+            palettes: Vec::new(),
+            palette_numbers: BTreeMap::new(),
             marks: Vec::new(),
             actual_texts: Vec::new(),
         }
@@ -832,6 +899,16 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     ColorSpace::Gray | ColorSpace::Rgb | ColorSpace::Cmyk => {
                         let components = color_components(ops, space).ok_or_else(bad)?;
                         self.paint_mut(op.operator).components = components;
+                    }
+                    // An index, rounded and clamped to the palette (8.6.6.3).
+                    ColorSpace::Indexed(palette) => {
+                        let [index] = numbers(ops).ok_or_else(bad)?;
+                        let entries = self.palettes.get(usize::from(palette)).map_or(1, |p| {
+                            p.lookup.len() / p.base.components().unwrap_or(1).max(1)
+                        });
+                        let last = entries.saturating_sub(1) as f64;
+                        let index = index.round().clamp(0.0, last) as f32;
+                        self.paint_mut(op.operator).components = [index, 0.0, 0.0, 0.0];
                     }
                     // `scn` with a pattern name, after the components of an
                     // uncoloured pattern (8.7.3.3).
@@ -1335,7 +1412,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if let Some(scope) = scope
             && self.caches.form_scopes.len() < MAX_FORM_SCOPES
         {
-            self.caches.form_scopes.insert(id, scope);
+            self.caches.form_scopes.insert(id, scope.keepable());
         }
         self.nested_result(result, Unsupported::XObject)
     }
@@ -1393,7 +1470,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
             return Some([0; 3]);
         }
-        match self.state.fill.rgba() {
+        match self.state.fill.rgba(&self.palettes) {
             Ok(color) => {
                 let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
                 Some([byte(color.r), byte(color.g), byte(color.b)])
@@ -1848,7 +1925,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if let Some(scope) = scope
             && self.caches.type3_scopes.len() < MAX_FORM_SCOPES
         {
-            self.caches.type3_scopes.insert(number, scope);
+            self.caches.type3_scopes.insert(number, scope.keepable());
         }
         self.nested_result(result, Unsupported::Text)
     }
@@ -2047,7 +2124,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             if let Some(even_odd) = fill {
                 self.charge_work(self.path.work(&matrix, 0.0, &self.window))?;
-                match self.state.fill.rgba() {
+                match self.state.fill.rgba(&self.palettes) {
                     Ok(color) => self.canvas.fill(&self.path, &matrix, even_odd, color),
                     Err(capability) => {
                         self.skipped.insert(capability);
@@ -2056,7 +2133,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             if stroke {
                 self.charge_work(self.stroke_work(&matrix, pad))?;
-                match self.state.stroke.rgba() {
+                match self.state.stroke.rgba(&self.palettes) {
                     Ok(color) => {
                         self.canvas
                             .stroke(&self.path, &matrix, &self.state.style, color);
@@ -2134,22 +2211,81 @@ impl<'a, S: Source> Interpreter<'a, S> {
         }
     }
 
-    /// A device colour space, or `Other` when the page replaces it with a
-    /// `DefaultGray`, `DefaultRGB` or `DefaultCMYK` resource (8.6.5.6).
+    /// A device colour space as the page uses it (8.6.5.6): itself, unless
+    /// a `DefaultGray`, `DefaultRGB` or `DefaultCMYK` resource replaces
+    /// it. A replacement of the same components (an ICCBased profile, a
+    /// CIE-based space), drawn the same without colour management, keeps
+    /// the device space; any other is `Other`. Resolved once per scope.
     fn device(
         &mut self,
         space: ColorSpace,
         at: u64,
         budget: &mut Budget,
     ) -> Result<ColorSpace, Error> {
-        let key: &[u8] = match space {
-            ColorSpace::Gray => b"DefaultGray",
-            ColorSpace::Rgb => b"DefaultRGB",
-            ColorSpace::Cmyk => b"DefaultCMYK",
-            other => return Ok(other),
+        let Some(key) = default_key(space) else {
+            return Ok(space);
         };
-        let replaced = self.category(b"ColorSpace", at, budget)?.get(key).is_some();
-        Ok(if replaced { ColorSpace::Other } else { space })
+        if let Some(resolved) = self.color_spaces.get(key) {
+            return Ok(*resolved);
+        }
+        let name = key.get(1..).unwrap_or_default();
+        let resolved = match self.category(b"ColorSpace", at, budget)?.get(name).cloned() {
+            None | Some(Object::Null) => space,
+            Some(object) => match image::color_space(self.file, &object, budget)? {
+                Some(image::Space::Gray) if space == ColorSpace::Gray => space,
+                Some(image::Space::Rgb) if space == ColorSpace::Rgb => space,
+                Some(image::Space::Cmyk) if space == ColorSpace::Cmyk => space,
+                _ => ColorSpace::Other,
+            },
+        };
+        self.color_spaces.insert(key.to_vec(), resolved);
+        Ok(resolved)
+    }
+
+    /// The colour space of a `/ColorSpace` resource value that is not a
+    /// device name or Pattern: ICCBased by its number of components,
+    /// CalGray and CalRGB as gray and RGB (as for images, without colour
+    /// management), Indexed with its palette kept in the caches. `Other`
+    /// for the rest (Lab, Separation, DeviceN) and what cannot be read.
+    fn resolved_space(&mut self, value: &Object, budget: &mut Budget) -> Result<ColorSpace, Error> {
+        let to_device = |space: &image::Space| match space {
+            image::Space::Gray => Some(ColorSpace::Gray),
+            image::Space::Rgb => Some(ColorSpace::Rgb),
+            image::Space::Cmyk => Some(ColorSpace::Cmyk),
+            image::Space::Indexed { .. } => None,
+        };
+        Ok(match image::color_space(self.file, value, budget)? {
+            None => ColorSpace::Other,
+            Some(image::Space::Indexed { base, lookup }) => {
+                let Some(base) = to_device(&base) else {
+                    return Ok(ColorSpace::Other);
+                };
+                let tag = match base {
+                    ColorSpace::Gray => 1,
+                    ColorSpace::Rgb => 3,
+                    _ => 4,
+                };
+                let key = (tag, lookup);
+                if let Some(number) = self.palette_numbers.get(&key) {
+                    return Ok(ColorSpace::Indexed(*number));
+                }
+                let Some(number) = u16::try_from(self.palettes.len())
+                    .ok()
+                    .filter(|_| self.palettes.len() < MAX_PALETTES)
+                else {
+                    return Ok(ColorSpace::Other);
+                };
+                // Kept twice (palette and key), at most 1 KiB each.
+                budget.charge_decoded_bytes(2 * key.1.len() as u64)?;
+                self.palettes.push(Palette {
+                    base,
+                    lookup: key.1.clone(),
+                });
+                self.palette_numbers.insert(key, number);
+                ColorSpace::Indexed(number)
+            }
+            Some(space) => to_device(&space).unwrap_or(ColorSpace::Other),
+        })
     }
 
     /// Resolves a colour space name: the device families directly, other
@@ -2183,7 +2319,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let space = match (&value, device_space(family)) {
             (Object::Name(_), Some(space)) => self.device(space, at, budget)?,
             _ if family == b"Pattern" => ColorSpace::Pattern,
-            _ => ColorSpace::Other,
+            _ => self.resolved_space(&value, budget)?,
         };
         self.color_spaces.insert(name.to_vec(), space);
         Ok(space)

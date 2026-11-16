@@ -658,7 +658,9 @@ fn an_image_drawn_without_its_default_space_or_its_layer_says_so() {
     // Tranche 3.13: a `DefaultRGB` resource replaces DeviceRGB (8.6.5.6),
     // and `/OC` puts an image in an optional content group (8.11.3.1).
     // Neither is applied: the image is drawn as before, and reported, on
-    // every render, the decoded image coming from the cache or not.
+    // every render, the decoded image coming from the cache or not. Since
+    // 3.14, a replacement of the same kind (an RGB profile, CalRGB) keeps
+    // the device space unreported: Lab here, of another kind.
     let image = |extra: &str| {
         format!(
             "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB \
@@ -666,7 +668,7 @@ fn an_image_drawn_without_its_default_space_or_its_layer_says_so() {
         )
     };
     let draw = b"q 100 0 0 100 50 50 cm /I Do Q";
-    let defaults = "/ColorSpace << /DefaultRGB [/CalRGB << /WhitePoint [0.9505 1 1.089] >>] >>";
+    let defaults = "/ColorSpace << /DefaultRGB [/Lab << /WhitePoint [0.9505 1 1.089] >>] >>";
     let layer = "<< /Type /OCG /Name (Layer) >>";
     for (resources, extra, expected) in [
         (defaults, "", Unsupported::ColorSpace),

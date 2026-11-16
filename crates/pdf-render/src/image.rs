@@ -42,7 +42,7 @@ pub(crate) struct Decoded {
 
 /// Colour space of image samples.
 #[derive(Debug, Clone, PartialEq)]
-enum Space {
+pub(crate) enum Space {
     Gray,
     Rgb,
     Cmyk,
@@ -534,7 +534,7 @@ fn foreign_jpeg_space<S: Source>(
     ))
 }
 
-fn color_space<S: Source>(
+pub(crate) fn color_space<S: Source>(
     file: &PdfFile<S>,
     object: &Object,
     budget: &mut Budget,

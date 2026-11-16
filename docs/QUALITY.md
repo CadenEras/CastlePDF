@@ -200,6 +200,29 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 3.14, espaces de couleur des tracés et du texte (`survey`, 2026-11-16, même protocole) :
+- premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; temps par
+  fichier médian 29 → 34 ms et 16 → 20 ms, p95 236 → 263 ms et 128 → 141 ms : ces pages
+  peignent désormais ce qu'elles sautaient ;
+- `ColorSpace` 392 → 91 (SafeDocs) et 417 → 75 (UNSAFE) ; `Image` 63 → 64 sur UNSAFE
+  (probablement un masque de pochoir dont la couleur de remplissage est désormais lue, puis
+  dont le décodage échoue) ;
+- douze premières pages SafeDocs qui signalaient `ColorSpace` et ne le font plus, rendues à
+  72 dpi et comparées à `pdftoppm` : 3 à 36 % de pixels écartés de plus de 24 sur un canal,
+  écarts vus à l'œil sur trois d'entre elles : bords des glyphes (rasterisation de Poppler) et
+  dégradés non dessinés (`Shading`), aucune couleur fausse ; Poppler applique les profils ICC,
+  nous non (documenté dans `docs/SUPPORT.md`) ;
+- fuzzing `render` 10 min avec les nouveaux espaces : 142 312 exécutions, aucun crash ni délai
+  (un premier essai, lancé pendant les tests de l'espace de travail, a signalé un délai non
+  reproductible : 0,13 s sur la même entrée, sur `main` comme sur la branche) ;
+- tests : `colors.rs` (ICCBased, CalGray, CalRGB en remplissage et contour, Indexed et ses
+  bornes, `Default*` de même nature ou non, espaces encore signalés ; 500 rendus d'une page
+  et d'un formulaire en Indexed avec un même cache, et un rendu avec un cache vide) ;
+- relecture indépendante : la première version gardait les palettes dans le cache du document,
+  si bien qu'après environ 400 tuiles d'une page à dix palettes l'Indexed n'était plus dessiné,
+  ni jamais avec un cache vide. Les palettes appartiennent désormais au rendu ; le test des
+  500 rendus échoue avec la première version.
+
 Tranche 3.13, signaler ce qui manquait en silence (`survey`, 2026-11-15, même protocole) :
 - premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout, temps par
   fichier inchangé (médiane 29 et 16 ms) ;
