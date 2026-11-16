@@ -9,6 +9,18 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur et CLI : **plan de pages** (ADR-0008, tranche 4.3) : réordonner, supprimer et tourner
+  des pages. `castle-pdf pages <fichier> <sortie.pdf> <plan>` prend une liste de pages numérotées
+  depuis 1, d'intervalles (`2-5`, `5-2`) et de rotations (`@90`, `@180`, `@270`) ; une page
+  absente du plan est supprimée. Quand le plan retire une page, les ressources de chaque page
+  gardée sont réduites aux noms que son contenu emploie, pour qu'un dictionnaire partagé
+  (hérité de l'arbre des pages) n'emporte pas ce que seule une page retirée dessinait ; elles
+  restent entières quand ce n'est pas sûr (contenu illisible, image en ligne sans fin, forme,
+  motif, police Type 3 ou apparence d'annotation sans ressources propres), et ces pages sont
+  listées. Les noms d'espaces de couleur employés par une image, un dégradé ou un motif sont
+  gardés, et une image en ligne se lit comme au rendu (`/L`). Une suppression ne
+  garantit pas l'effacement du contenu (ADR-0008) : ce n'est pas un caviardage.
+
 - Moteur et CLI : **réécriture complète d'un document** (ADR-0008, tranche 4.2).
   `pdf_write::rewrite` écrit les pages d'un plan (page, rotation ajoutée) et les objets qu'elles
   atteignent, renumérotés, les flux copiés tels quels ; chaque page reçoit ses attributs hérités

@@ -123,6 +123,7 @@ Interface effective, relevée sur `--help` :
 cargo run -p pdf-cli -- inspect <fichier>   # castle-pdf inspect <fichier>
 cargo run -p pdf-cli -- render <fichier> <page> <sortie.ppm> [--scale <facteur>]
 cargo run -p pdf-cli -- rewrite <fichier> <sortie.pdf>   # réécriture complète (ADR-0008)
+cargo run -p pdf-cli -- pages <fichier> <sortie.pdf> "3,1-2@90"   # plan : ordre, suppression, rotation
 cargo run -p pdf-cli -- text <fichier> [--page <n>]
 cargo run -p pdf-cli -- search <fichier> <requête> [--match-case] [--match-diacritics]
 cargo run -p pdf-cli -- survey <répertoire> [--timeout <secondes>] [--jobs <n>] [--paths]
