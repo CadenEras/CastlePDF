@@ -7,6 +7,37 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ## [Non publié]
 
+## [0.1.0-alpha.4] — 2026-11-16
+
+Fin de la phase P3 (compatibilité et texte). Le texte des pages est extrait en Unicode,
+sélectionnable, copiable, lu par un lecteur d'écran et cherchable dans l'application ; les
+polices Type 1 incluses, les CMap CJK d'Adobe, les images CCITTFax et les tracés en ICCBased,
+CalRGB et Indexed sont pris en charge, et ce qui manquait en silence (annotations, champs de
+formulaire) est signalé. Ce qui est pris en charge, partiel, signalé ou refusé est publié dans
+la [matrice de support](docs/SUPPORT.md). Sur le corpus de mesure, la première page est
+rendue pour 1 920 fichiers sur 2 000 (SafeDocs) et 2 229 sur 2 636 (UNSAFE), sans crash ni
+timeout ; 0,53 % des glyphes de leur texte restent sans Unicode connu, signalés et jamais
+devinés. Toujours **aucun binaire distribué** : version de développement, à construire
+depuis les sources.
+
+### Limites connues
+
+- Rendu partiel, signalé page par page dans l'application : dégradés, motifs, masques adoucis,
+  modes de fusion, transparence de forme, découpe par le texte, fonctions de transfert,
+  contenu optionnel, espaces Lab, Separation et DeviceN, **annotations et champs de
+  formulaire** (non dessinés avant P5). Polices non incluses remplacées par des polices libres
+  aux mêmes largeurs ; polices CJK non incluses non dessinées (texte extrait).
+- Pas de gestion de couleur : un profil ICC est réduit à son nombre de composantes, le CMJN
+  converti par la formule d'ISO 32000-2.
+- Images JBIG2 et JPX signalées, pas dessinées : les décodeurs retenus (ADR-0007) attendent une
+  version qui borne leur mémoire. Une page dont les données décodées dépassent 256 Mio est
+  refusée (4 premières pages du corpus).
+- Pas d'écriture (P4), de zoom ni d'impression ; fichiers chiffrés refusés avec une erreur de
+  capacité explicite.
+- Sélection, copie, recherche et Narrateur vérifiés à la main sous Windows seulement ; sous
+  macOS et Linux, l'affichage est vu sur captures CI, aucun geste n'a été fait à la main.
+- Mémoire mesurée sur runners CI partagés : ordres de grandeur, pas des seuils.
+
 ### Corrigé
 
 - Moteur : **une police déclarant des millions de glyphes ne coûte plus en proportion.**
@@ -639,7 +670,8 @@ l'architecture, le worker, les budgets et la CI. Aucun binaire n'est distribué.
 - Isolation OS du worker (sandbox) non implémentée.
 - Licence du projet non décidée.
 
-[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.3...HEAD
+[Non publié]: https://github.com/CadenEras/CastlePDF/compare/v0.1.0-alpha.4...HEAD
+[0.1.0-alpha.4]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/CadenEras/CastlePDF/releases/tag/v0.1.0-alpha.1

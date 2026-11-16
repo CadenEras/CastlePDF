@@ -20,8 +20,9 @@ sans interface. Priorités : exactitude, sécurité face aux documents non fiabl
 mémoire bornée, réactivité et maintenabilité.
 
 > [!WARNING]
-> Projet expérimental. CastlePDF **affiche** des PDF (P2), avec un rendu encore partiel
-> signalé dans l'application ; il ne permet ni de sélectionner du texte ni d'écrire.
+> Projet expérimental. CastlePDF **affiche** des PDF et permet d'en sélectionner, copier et
+> chercher le texte (P3), avec un rendu encore partiel signalé dans l'application ; il ne
+> permet pas d'écrire.
 > Aucun binaire n'est distribué et aucune version n'est destinée à un usage réel.
 
 ## État
@@ -31,7 +32,8 @@ mémoire bornée, réactivité et maintenabilité.
 | P0 — fondations | Workspace, UI vide, protocole worker, budgets, corpus, CI trois OS | Terminée (`v0.1.0-alpha.1`) |
 | P1 — lecture structurée | Tokenizer, objets, xref classique, pages, CLI de diagnostic | Terminée (`v0.1.0-alpha.2`) : xref classique, pages, CLI `inspect` |
 | P2 — lecteur utile | Flate, flux xref, interpréteur, rendu tuilé, polices, images | Terminée (`v0.1.0-alpha.3`) : PDF 1.5+, réparation, texte, images, formulaires, Type 3, défilement continu ([ADR-0003](docs/adr/0003-p2-render-pipeline.md)) |
-| P3 et suivantes | Texte, écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
+| P3 — compatibilité et texte | Filtres secondaires, texte/ToUnicode, recherche/sélection | Terminée (`v0.1.0-alpha.4`) : texte Unicode, sélection, copie, recherche, Type 1, CMap CJK, CCITTFax, espaces ICC ; [matrice de support](docs/SUPPORT.md) |
+| P4 et suivantes | Écriture, annotations, fonctions avancées | Voir la [feuille de route](docs/ROADMAP.md) |
 
 Le support PDF est publié dans la [matrice de support](docs/SUPPORT.md). Une capacité
 manquante est signalée (rendu partiel) ou refusée par une erreur explicite. Ce qui

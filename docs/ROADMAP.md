@@ -15,13 +15,20 @@ pas un booléen « compatible PDF 2.0 ».
 | P6 — fonctions avancées séparées | OCR, édition de texte existant, chiffrement, signatures, caviardage | Étude et tests propres à chaque fonction ; aucune promesse de sécurité avant validation dédiée |
 | Stabilisation — diffusion | Packaging, signatures OS, mises à jour, guide utilisateur | Release depuis tag testé, corpus accepté, mesures et limites publiques, récupération après erreur |
 
-## P3 en cours
+## P3 terminée (`v0.1.0-alpha.4`)
 
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
 glyphes et `castle-pdf text` (fait) ; 3.4 encodages composites (3.4a `Identity-V` et CMap
 incluses, fait ; 3.4b police « texte seulement », fait) ; 3.5 mise en page (3.5a mots, lignes et `/ActualText`, fait ; 3.5b ordre de lecture, fait) ; 3.6 couche de
 texte, sélection et copie (fait ; vérifiée à la main sous Windows le 2026-11-14) ; 3.7 recherche (3.7a moteur, CLI, worker et shell, fait ; interface, fait, vérifiée à la main sous Windows le 2026-11-14) ; 3.7b CMap prédéfinies d'Adobe (CJK, fait) ; 3.8 Type 1 inclus (fait, ADR-0005 amendé) ; 3.9 CCITTFax (fait) ; 3.10 JBIG2 et
-JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 (fait : remesurées, aucune optimisation justifiée, voir plus bas) ; 3.12 matrice de support ([`docs/SUPPORT.md`](SUPPORT.md), fait) ; 3.13 signaler ce qui manquait en silence (annotations, champs de formulaire, espace et calque des images ; fait) ; 3.14 espaces de couleur des tracés et du texte (ICCBased, CalGray, CalRGB, Indexed ; fait) ; puis `v0.1.0-alpha.4`.
+JPX ([ADR-0007](adr/0007-jbig2-jpx-decoders.md), accepté le 2026-11-15 : 3.10a JBIG2, 3.10b JPX) ; 3.11 limites reportées de P2 (fait : remesurées, aucune optimisation justifiée, voir plus bas) ; 3.12 matrice de support ([`docs/SUPPORT.md`](SUPPORT.md), fait) ; 3.13 signaler ce qui manquait en silence (annotations, champs de formulaire, espace et calque des images ; fait) ; 3.14 espaces de couleur des tracés et du texte (ICCBased, CalGray, CalRGB, Indexed ; fait) ; `v0.1.0-alpha.4` le 2026-11-16.
+
+3.10 (JBIG2 et JPX) reste ouverte après la fin de P3 : `hayro-jbig2` 0.4.0 laisse 140 octets
+coûter 7 s et 423 Mo hors du budget (trouvé par fuzzing, défaut amont #1701 corrigé sur la
+branche principale de hayro mais pas encore publié). Le travail est gardé sur une branche
+locale et reprendra avec la version qui borne la mémoire du décodeur ; ces images restent
+signalées (`Image`). Les autres limites ouvertes ci-dessous sont publiées comme limites
+connues de `v0.1.0-alpha.4`.
 
 ### Limites ouvertes de P3 (texte)
 
