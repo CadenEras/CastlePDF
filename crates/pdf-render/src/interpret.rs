@@ -170,6 +170,9 @@ type ReadShading = Option<Arc<ShadingAndBox>>;
 /// Shadings kept per render at most (each holds `shading::STEPS` colours).
 const MAX_SHADINGS: usize = 4096;
 
+/// Shading patterns set per render at most; another is reported.
+const MAX_SHADING_PATTERNS: usize = 4096;
+
 /// `color_spaces` key of the device space a `Default` resource replaces:
 /// not a resource name (a name cannot hold byte 0).
 fn default_key(space: ColorSpace) -> Option<&'static [u8]> {
@@ -206,6 +209,10 @@ struct Paint {
     space: ColorSpace,
     components: [f32; 4],
     alpha: f32,
+    /// With the Pattern space, the shading pattern set by `scn`: its
+    /// number in the render's `shading_patterns`; `None` for another
+    /// pattern (tiling), which is not drawn.
+    pattern: Option<u16>,
 }
 
 impl Paint {
@@ -213,6 +220,7 @@ impl Paint {
         space: ColorSpace::Gray,
         components: [0.0; 4],
         alpha: 1.0,
+        pattern: None,
     };
 
     /// Device RGB. CMYK uses the conversion of ISO 32000-2, 10.4.2.4
@@ -505,6 +513,15 @@ pub(crate) struct Interpreter<'a, S> {
     /// times is read and its colours made once; `None` for one that
     /// cannot be drawn.
     shadings: BTreeMap<ObjectId, ReadShading>,
+    /// Shading patterns set by `scn` in this render: the shading and the
+    /// matrix from pattern space to the page's user space.
+    shading_patterns: Vec<(Arc<ShadingAndBox>, Matrix)>,
+    /// Their numbers, by pattern object and matrix, so that one set again
+    /// (`q /P scn Q` in a loop) takes no new entry.
+    shading_pattern_numbers: BTreeMap<String, u16>,
+    /// The CTM at the start of the current content stream: the default
+    /// space of a pattern it uses (8.7.2), the page's or a form's.
+    pattern_space: Matrix,
     /// Open marked-content sequences when text is extracted, one per
     /// `BMC`/`BDC` of the current content: the index of the `/ActualText`
     /// span it opened, if any.
@@ -592,6 +609,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             mapped: Vec::new(),
             mapped_numbers: BTreeMap::new(),
             shadings: BTreeMap::new(),
+            shading_patterns: Vec::new(),
+            shading_pattern_numbers: BTreeMap::new(),
+            pattern_space: Matrix::IDENTITY,
             marks: Vec::new(),
             actual_texts: Vec::new(),
         }
@@ -1019,7 +1039,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 if close {
                     self.path.close();
                 }
-                self.paint(at, fill, stroke)?;
+                self.paint(at, fill, stroke, budget)?;
             }
             // Colour (8.6.8).
             b"g" | b"G" | b"rg" | b"RG" | b"k" | b"K" => {
@@ -1046,6 +1066,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 let paint = self.paint_mut(op.operator);
                 paint.space = space;
                 paint.components = components;
+                paint.pattern = None;
             }
             b"sc" | b"SC" | b"scn" | b"SCN" => {
                 let space = self.paint_mut(op.operator).space;
@@ -1089,6 +1110,17 @@ impl<'a, S: Source> Interpreter<'a, S> {
                             return Err(bad());
                         }
                         self.require_resource(b"Pattern", name, at, budget)?;
+                        // A coloured pattern only: an uncoloured one (with
+                        // components) is a tiling pattern.
+                        // A stroke with a pattern is not drawn: nothing to read;
+                        // nor when only the text is extracted.
+                        let fill = op.operator == b"scn";
+                        let pattern = if components.is_empty() && fill && self.drawing {
+                            self.shading_pattern(name, at, budget)?
+                        } else {
+                            None
+                        };
+                        self.paint_mut(op.operator).pattern = pattern;
                     }
                     ColorSpace::Other => {
                         if ops.is_empty()
@@ -1934,7 +1966,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             return Ok(());
         }
         self.path = path;
-        self.paint(at, fill.then_some(false), stroke)
+        self.paint(at, fill.then_some(false), stroke, budget)
     }
 
     /// Shows the strings of `items` in a Type 3 font (9.6.4): each code's
@@ -2114,6 +2146,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         self.save()?;
         let outer_floor = std::mem::replace(&mut self.floor, self.saved.len());
         self.state.ctm = nested.ctm;
+        let outer_pattern_space = std::mem::replace(&mut self.pattern_space, nested.ctm);
         if let Some((clip, device)) = &nested.clip {
             self.canvas.push_clip(clip, device, false);
             self.state.clips += 1;
@@ -2171,6 +2204,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.canvas.pop_layer();
         }
         self.floor = outer_floor;
+        self.pattern_space = outer_pattern_space;
         self.restore();
         (
             self.path,
@@ -2278,7 +2312,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
     }
 
     /// Paints the current path, applies a pending clip, then ends the path.
-    fn paint(&mut self, at: u64, fill: Option<bool>, stroke: bool) -> Result<(), Error> {
+    fn paint(
+        &mut self,
+        at: u64,
+        fill: Option<bool>,
+        stroke: bool,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
         if !self.drawing {
             self.pending_clip = None;
             self.path.clear();
@@ -2296,11 +2336,17 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             if let Some(even_odd) = fill {
                 self.charge_work(self.path.work(&matrix, 0.0, &self.window))?;
-                match self.state.fill.rgba(&self.palettes, &self.mapped) {
-                    Ok(color) => self.canvas.fill(&self.path, &matrix, even_odd, color),
-                    Err(capability) => {
-                        self.skipped.insert(capability);
+                let fill_paint = self.state.fill;
+                match (fill_paint.space, fill_paint.pattern) {
+                    (ColorSpace::Pattern, Some(number)) => {
+                        self.fill_with_pattern(number, even_odd, &matrix, at, budget)?;
                     }
+                    _ => match fill_paint.rgba(&self.palettes, &self.mapped) {
+                        Ok(color) => self.canvas.fill(&self.path, &matrix, even_odd, color),
+                        Err(capability) => {
+                            self.skipped.insert(capability);
+                        }
+                    },
                 }
             }
             if stroke {
@@ -2653,6 +2699,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
             self.skipped.insert(Unsupported::Shading);
             return Ok(());
         }
+        let Some(read) = self.shading_of(object, at, budget)? else {
+            self.skipped.insert(Unsupported::Shading);
+            return Ok(());
+        };
+        let matrix = self.state.ctm.then(&self.base);
+        let alpha = self.state.fill.alpha;
+        self.draw_shading(&read, &matrix, None, alpha, at, budget)
+    }
+
+    /// The shading `object` (a dictionary or a stream, possibly by
+    /// reference), read once per render: `None` when it is not drawn.
+    fn shading_of(
+        &mut self,
+        object: &Object,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<ReadShading, Error> {
         // A shading is kept by object, unless this scope has a `Default`
         // colour space, which may give its device space other colours.
         let defaults = {
@@ -2696,12 +2759,23 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 read
             }
         };
-        let Some(read) = read else {
-            self.skipped.insert(Unsupported::Shading);
-            return Ok(());
-        };
+        Ok(read)
+    }
+
+    /// Draws a shading whose space maps to device pixels by `matrix`,
+    /// under the current clip, within `limit` (a device rectangle) when
+    /// given, with `alpha`.
+    fn draw_shading(
+        &mut self,
+        read: &ShadingAndBox,
+        matrix: &Matrix,
+        limit: Option<[f64; 4]>,
+        alpha: f32,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
         let (shading, bbox) = (&read.0, read.1);
-        let matrix = self.state.ctm.then(&self.base);
+        let matrix = *matrix;
         // A flat matrix paints nothing (8.7.4.2 leaves no area).
         let Some(to_shading) = matrix.invert() else {
             return Ok(());
@@ -2717,6 +2791,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
         ];
         if let Some(clip) = self.state.clip_box {
             area = intersect(Some(area), clip);
+        }
+        if let Some(limit) = limit {
+            area = intersect(Some(area), limit);
         }
         if let Some([x0, y0, x1, y1]) = bbox {
             let mut rect = Path::default();
@@ -2757,12 +2834,117 @@ impl<'a, S: Source> Interpreter<'a, S> {
         // The unit square onto the image's device rectangle (row 0 on top).
         let (w, h) = (f64::from(columns) * step, f64::from(rows) * step);
         let device = Matrix::new(w, 0.0, 0.0, -h, ax0, ay0 + h);
-        self.canvas
-            .draw_image(&image, &device, self.state.fill.alpha, step > 1.0);
+        self.canvas.draw_image(&image, &device, alpha, step > 1.0);
         if clipped {
             self.canvas.pop_clip();
         }
         Ok(())
+    }
+
+    /// The shading pattern (8.7.4.3) named `name`, set by `scn`: its
+    /// number in `shading_patterns`; `None` for a tiling pattern or one
+    /// that cannot be drawn (reported when painted).
+    fn shading_pattern(
+        &mut self,
+        name: &[u8],
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<Option<u16>, Error> {
+        let object = self.resource(b"Pattern", name, at, budget)?;
+        let dictionary = match &object {
+            Object::Dictionary(dictionary) => dictionary.clone(),
+            Object::Reference(id) => match self.file.resolve(*id, budget) {
+                Ok(IndirectValue::Object(Object::Dictionary(dictionary))) => dictionary,
+                Ok(IndirectValue::Stream(stream)) => stream.dictionary,
+                Ok(_)
+                | Err(pdf_syntax::Error::Malformed { .. } | pdf_syntax::Error::Truncated { .. }) => {
+                    return Ok(None);
+                }
+                Err(other) => return Err(Error::Syntax(other)),
+            },
+            _ => return Ok(None),
+        };
+        if dictionary.get(b"PatternType").and_then(Object::as_integer) != Some(2) {
+            return Ok(None);
+        }
+        let Some(shading) = dictionary.get(b"Shading") else {
+            return Ok(None);
+        };
+        let Some(read) = self.shading_of(shading, at, budget)? else {
+            return Ok(None);
+        };
+        let pattern_matrix = match dictionary.get(b"Matrix").and_then(Object::as_array) {
+            None => Matrix::IDENTITY,
+            Some(values) => {
+                let values: Option<Vec<f64>> = values.iter().map(number_of).collect();
+                match values.as_deref() {
+                    Some([a, b, c, d, e, f]) => Matrix::new(*a, *b, *c, *d, *e, *f),
+                    _ => return Ok(None),
+                }
+            }
+        };
+        let matrix = pattern_matrix.then(&self.pattern_space);
+        let key = format!("{object:?} {:?}", matrix.coefficients());
+        if let Some(number) = self.shading_pattern_numbers.get(&key) {
+            return Ok(Some(*number));
+        }
+        let Some(number) = u16::try_from(self.shading_patterns.len())
+            .ok()
+            .filter(|_| self.shading_patterns.len() < MAX_SHADING_PATTERNS)
+        else {
+            return Ok(None);
+        };
+        budget.charge_decoded_bytes(2 * key.len() as u64)?;
+        self.shading_patterns.push((read, matrix));
+        self.shading_pattern_numbers.insert(key, number);
+        Ok(Some(number))
+    }
+
+    /// Fills the current path with shading pattern `number`: its
+    /// background, then the shading, clipped to the path.
+    fn fill_with_pattern(
+        &mut self,
+        number: u16,
+        even_odd: bool,
+        matrix: &Matrix,
+        at: u64,
+        budget: &mut Budget,
+    ) -> Result<(), Error> {
+        let Some((read, pattern)) = self.shading_patterns.get(usize::from(number)).cloned() else {
+            self.skipped.insert(Unsupported::Pattern);
+            return Ok(());
+        };
+        // The background (outside the shading's area, 8.7.4.3) and the
+        // shading over it are one paint: composited together, then at the
+        // fill alpha, so that the background does not show through.
+        let alpha = self.state.fill.alpha;
+        let layer = alpha < 1.0;
+        if layer {
+            self.canvas.push_opacity(alpha);
+        }
+        let work = self.path.work(matrix, 0.0, &self.window);
+        if let Some([r, g, b, a]) = read.0.background {
+            self.charge_work(work)?;
+            let unit = |v: u8| f32::from(v) / 255.0;
+            let color = Rgba {
+                r: unit(r),
+                g: unit(g),
+                b: unit(b),
+                a: unit(a),
+            };
+            self.canvas.fill(&self.path, matrix, even_odd, color);
+        }
+        // The path as a clip costs its rasterisation once more.
+        self.charge_work(work)?;
+        let limit = self.path.bounds(matrix);
+        let path = self.path.clone();
+        self.canvas.push_clip(&path, matrix, even_odd);
+        let result = self.draw_shading(&read, &pattern.then(&self.base), limit, 1.0, at, budget);
+        self.canvas.pop_clip();
+        if layer {
+            self.canvas.pop_layer();
+        }
+        result
     }
 
     /// An axial or radial shading dictionary (8.7.4.5.3, 8.7.4.5.4), with
@@ -2892,11 +3074,18 @@ impl<'a, S: Source> Interpreter<'a, S> {
             };
             colors.push(rgb);
         }
+        // /Background: components in the shading's space (8.7.4.3);
+        // one that cannot be read is left out.
+        let background = match numbers_of(dictionary.get(b"Background")) {
+            Some(values) => self.components_rgb(space, &values)?,
+            None => None,
+        };
         Ok(Some((
             shading::Shading {
                 geometry,
                 extend,
                 colors,
+                background,
             },
             bbox,
         )))
@@ -2934,6 +3123,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     space,
                     components,
                     alpha: 1.0,
+                    pattern: None,
                 };
                 match paint.rgba(&self.palettes, &self.mapped) {
                     Ok(color) => color,
