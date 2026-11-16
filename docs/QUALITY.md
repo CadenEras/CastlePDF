@@ -200,6 +200,34 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 3.15, Separation, DeviceN et Lab (`survey`, 2026-11-16, même protocole) :
+- recensement préalable (test ignoré `color_census`) des 91 et 75 premières pages qui signalaient
+  encore `ColorSpace` : surtout Separation (fonctions de type 2, puis 0 et 4) et DeviceN
+  (type 4), sur CMJN, ICC, gris et parfois Lab ;
+- premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; temps par fichier
+  médian 31 et 19 ms ;
+- `ColorSpace` 91 → 16 et 75 → 12 ; `Image` 64 → 65 sur UNSAFE ;
+- douze premières pages SafeDocs qui ne signalent plus `ColorSpace`, comparées à `pdftoppm` à
+  72 dpi : formes et positions justes, couleurs plus saturées que chez Poppler sur les tons
+  directs remplacés en CMJN (formule d'ISO 32000-2 sans profil, contre la gestion de couleur de
+  Poppler), écart déjà connu pour DeviceCMYK ; vues à l'œil sur trois pages ;
+- fuzzing `tint` (programme PostScript et table d'échantillons arbitraires) 10 min : 966 755
+  exécutions, aucun crash ni délai ;
+- tests : unitaires de `function.rs` (calculatrice, erreurs, bornes, interpolation, assemblage),
+  `colors.rs` (Separation et DeviceN sur CMJN, gris, RVB, ICC et Lab avec les types 0, 2, 3 et 4,
+  couleur initiale, `/None`, fonction qui échoue, table au-delà de la borne, conversions Lab) ;
+- relecture indépendante : un `/Domain` ou un `/Range` inversé (`[1 0]`) faisait **paniquer**
+  le bornage des entrées (`f64::clamp`), donc le worker : de tels intervalles refusent désormais
+  la fonction (test de régression, reproduit avant correction ; la cible `tint` fait varier ces
+  tableaux, qu'elle fixait). Aussi corrigés : chaque évaluation compte ses étapes dans
+  `max_operations` (100 `sc` d'un programme de 41 opérateurs dépassent 2 000), un tableau
+  invalide refuse la fonction au lieu de prendre la valeur par défaut, des bornes d'assemblage
+  hors du domaine sont refusées, la calculatrice refuse un booléen après un bloc en attente et
+  `if` sur un nombre, `atan 0 0` n'a pas de valeur, un décalage de 64 bits ou plus donne 0, la
+  borne des espaces par rendu est vérifiée avant leur lecture ; le test de `/None` peint sur
+  fond blanc (il passait aussi si `/None` peignait), celui de la borne des tables fournit les
+  données (2^22 échantillons lus, un de plus refusé).
+
 Tranche 3.14, espaces de couleur des tracés et du texte (`survey`, 2026-11-16, même protocole) :
 - premières pages rendues inchangées (1 920 et 2 229), aucun crash ni timeout ; temps par
   fichier médian 29 → 34 ms et 16 → 20 ms, p95 236 → 263 ms et 128 → 141 ms : ces pages

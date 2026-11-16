@@ -9,6 +9,7 @@ use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, PdfFile, S
 
 use crate::content::{ContentReader, Operation};
 use crate::error::{ContentErrorKind, Error, RenderLimitKind};
+use crate::function::{self, Function};
 use crate::geometry::{Matrix, Path, Point, Segment, Window};
 use crate::image;
 use crate::raster::{self, Canvas, HAIRLINE, LineCap, LineJoin, Rgba, StrokeStyle};
@@ -43,6 +44,10 @@ enum ColorSpace {
     /// Indexed (8.6.6.3): the number of its palette in the render's
     /// `palettes`. Never kept in a cached scope (`Scope::keepable`).
     Indexed(u16),
+    /// Separation, DeviceN or Lab (8.6.6.4, 8.6.6.5, 8.6.5.4): the number of
+    /// its description in the render's `mapped`. A paint in it holds the
+    /// colour already converted to RGB. Never kept in a cached scope.
+    Mapped(u16),
     /// Pattern colour space: painting is skipped and reported.
     Pattern,
     /// Any other family (Lab, Separation, DeviceN), or a device family
@@ -62,6 +67,99 @@ pub(crate) struct Palette {
 /// reported, not drawn.
 const MAX_PALETTES: usize = 4096;
 
+/// A Separation, DeviceN or Lab space: `inputs` components, through the
+/// tint transform when there is one, onto `target`.
+pub(crate) struct Mapped {
+    inputs: usize,
+    function: Option<Function>,
+    target: Target,
+    /// The colorant `None` (8.6.6.4): nothing is painted.
+    invisible: bool,
+}
+
+/// What a mapped colour ends in: a device space (an ICC or CIE-based
+/// alternate reduced to its components, as elsewhere), or CIE L*a*b*.
+#[derive(Clone, Copy)]
+enum Target {
+    Gray,
+    Rgb,
+    Cmyk,
+    /// L*, a*, b* relative to the space's white point; a* and b* within
+    /// `range`.
+    Lab {
+        range: [f64; 4],
+    },
+}
+
+impl Target {
+    fn components(self) -> usize {
+        match self {
+            Target::Gray => 1,
+            Target::Rgb | Target::Lab { .. } => 3,
+            Target::Cmyk => 4,
+        }
+    }
+
+    /// Components of this space to RGB, 0 to 1.
+    fn rgb(self, c: &[f64]) -> [f32; 3] {
+        let get = |i: usize| c.get(i).copied().unwrap_or(0.0);
+        let unit = |v: f64| v.clamp(0.0, 1.0) as f32;
+        match self {
+            Target::Gray => [unit(get(0)); 3],
+            Target::Rgb => [unit(get(0)), unit(get(1)), unit(get(2))],
+            // ISO 32000-2, 10.4.2.4, as for DeviceCMYK paints.
+            Target::Cmyk => {
+                let k = get(3);
+                [
+                    unit(1.0 - (get(0) + k).min(1.0)),
+                    unit(1.0 - (get(1) + k).min(1.0)),
+                    unit(1.0 - (get(2) + k).min(1.0)),
+                ]
+            }
+            Target::Lab { range } => lab_to_rgb(get(0), get(1), get(2), range),
+        }
+    }
+}
+
+/// CIE L*a*b* (8.6.5.4) to sRGB. The formula gives XYZ relative to the
+/// space's white point; scaled by D65's (a von Kries adaptation in XYZ),
+/// then the sRGB matrix and transfer curve. No colour management beyond
+/// that, as for the other spaces.
+fn lab_to_rgb(l: f64, a: f64, b: f64, range: [f64; 4]) -> [f32; 3] {
+    let l = l.clamp(0.0, 100.0);
+    let a = a.clamp(range[0].min(range[1]), range[1].max(range[0]));
+    let b = b.clamp(range[2].min(range[3]), range[3].max(range[2]));
+    let m = (l + 16.0) / 116.0;
+    let g = |x: f64| {
+        if x >= 6.0 / 29.0 {
+            x * x * x
+        } else {
+            108.0 / 841.0 * (x - 4.0 / 29.0)
+        }
+    };
+    // Relative to the white point, then onto D65's.
+    let x = g(m + a / 500.0) * 0.9505;
+    let y = g(m);
+    let z = g(m - b / 200.0) * 1.089;
+    let linear = [
+        3.2406 * x - 1.5372 * y - 0.4986 * z,
+        -0.9689 * x + 1.8758 * y + 0.0415 * z,
+        0.0557 * x - 0.2040 * y + 1.0570 * z,
+    ];
+    linear.map(|v| {
+        let v = v.clamp(0.0, 1.0);
+        let encoded = if v <= 0.003_130_8 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        encoded as f32
+    })
+}
+
+/// Distinct mapped spaces in one render at most; another is reported.
+const MAX_MAPPED: usize = 4096;
+
 /// `color_spaces` key of the device space a `Default` resource replaces:
 /// not a resource name (a name cannot hold byte 0).
 fn default_key(space: ColorSpace) -> Option<&'static [u8]> {
@@ -80,7 +178,7 @@ impl ColorSpace {
             Self::Rgb => Some(3),
             Self::Cmyk => Some(4),
             Self::Indexed(_) => Some(1),
-            Self::Pattern | Self::Other => None,
+            Self::Mapped(_) | Self::Pattern | Self::Other => None,
         }
     }
 
@@ -110,7 +208,7 @@ impl Paint {
     /// Device RGB. CMYK uses the conversion of ISO 32000-2, 10.4.2.4
     /// (`red = 1 - min(1, cyan + black)`...), without colour management;
     /// an Indexed colour is its palette entry in the base space.
-    fn rgba(&self, palettes: &[Palette]) -> Result<Rgba, Unsupported> {
+    fn rgba(&self, palettes: &[Palette], mapped: &[Mapped]) -> Result<Rgba, Unsupported> {
         let (space, [c0, c1, c2, c3]) = match self.space {
             ColorSpace::Indexed(palette) => {
                 let palette = palettes
@@ -132,6 +230,19 @@ impl Paint {
                 }
                 (palette.base, base)
             }
+            ColorSpace::Mapped(number) => {
+                let invisible = mapped
+                    .get(usize::from(number))
+                    .ok_or(Unsupported::ColorSpace)?
+                    .invisible;
+                let [r, g, b, _] = self.components;
+                return Ok(Rgba {
+                    r,
+                    g,
+                    b,
+                    a: if invisible { 0.0 } else { self.alpha },
+                });
+            }
             space => (space, self.components),
         };
         let (r, g, b) = match space {
@@ -143,7 +254,9 @@ impl Paint {
                 1.0 - (c2 + c3).min(1.0),
             ),
             ColorSpace::Pattern => return Err(Unsupported::Pattern),
-            ColorSpace::Indexed(_) | ColorSpace::Other => return Err(Unsupported::ColorSpace),
+            ColorSpace::Indexed(_) | ColorSpace::Mapped(_) | ColorSpace::Other => {
+                return Err(Unsupported::ColorSpace);
+            }
         };
         Ok(Rgba {
             r,
@@ -204,7 +317,7 @@ impl Scope {
     /// resolved again where they are used.
     fn keepable(mut self) -> Self {
         self.color_spaces
-            .retain(|_, space| !matches!(space, ColorSpace::Indexed(_)));
+            .retain(|_, space| !matches!(space, ColorSpace::Indexed(_) | ColorSpace::Mapped(_)));
         self
     }
 }
@@ -359,6 +472,10 @@ pub(crate) struct Interpreter<'a, S> {
     /// order, each once (by base and colours), charged to the budget.
     palettes: Vec<Palette>,
     palette_numbers: BTreeMap<(u8, Vec<u8>), u16>,
+    /// Separation, DeviceN and Lab spaces this render resolved, each once
+    /// (by the value that describes it).
+    mapped: Vec<Mapped>,
+    mapped_numbers: BTreeMap<String, u16>,
     /// Open marked-content sequences when text is extracted, one per
     /// `BMC`/`BDC` of the current content: the index of the `/ActualText`
     /// span it opened, if any.
@@ -441,6 +558,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             unread_bytes: 0,
             palettes: Vec::new(),
             palette_numbers: BTreeMap::new(),
+            mapped: Vec::new(),
+            mapped_numbers: BTreeMap::new(),
             marks: Vec::new(),
             actual_texts: Vec::new(),
         }
@@ -888,9 +1007,13 @@ impl<'a, S: Source> Interpreter<'a, S> {
                     return Err(bad());
                 };
                 let space = self.color_space(name, at, budget)?;
+                let components = match space {
+                    ColorSpace::Mapped(number) => self.mapped_initial(number)?,
+                    _ => space.initial(),
+                };
                 let paint = self.paint_mut(op.operator);
                 paint.space = space;
-                paint.components = space.initial();
+                paint.components = components;
             }
             b"sc" | b"SC" | b"scn" | b"SCN" => {
                 let space = self.paint_mut(op.operator).space;
@@ -898,6 +1021,17 @@ impl<'a, S: Source> Interpreter<'a, S> {
                 match space {
                     ColorSpace::Gray | ColorSpace::Rgb | ColorSpace::Cmyk => {
                         let components = color_components(ops, space).ok_or_else(bad)?;
+                        self.paint_mut(op.operator).components = components;
+                    }
+                    // The colour, converted once (8.6.6.4, 8.6.6.5, 8.6.5.4); one
+                    // the tint transform cannot give is black, and reported.
+                    ColorSpace::Mapped(number) => {
+                        let inputs = self.mapped.get(usize::from(number)).map_or(0, |m| m.inputs);
+                        if ops.len() != inputs || ops.iter().any(|c| number_of(c).is_none()) {
+                            return Err(bad());
+                        }
+                        let values: Vec<f64> = ops.iter().filter_map(number_of).collect();
+                        let components = self.mapped_color(number, &values)?;
                         self.paint_mut(op.operator).components = components;
                     }
                     // An index, rounded and clamped to the palette (8.6.6.3).
@@ -1470,7 +1604,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
         if dictionary.get(b"ImageMask") != Some(&Object::Boolean(true)) {
             return Some([0; 3]);
         }
-        match self.state.fill.rgba(&self.palettes) {
+        match self.state.fill.rgba(&self.palettes, &self.mapped) {
             Ok(color) => {
                 let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
                 Some([byte(color.r), byte(color.g), byte(color.b)])
@@ -2124,7 +2258,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             if let Some(even_odd) = fill {
                 self.charge_work(self.path.work(&matrix, 0.0, &self.window))?;
-                match self.state.fill.rgba(&self.palettes) {
+                match self.state.fill.rgba(&self.palettes, &self.mapped) {
                     Ok(color) => self.canvas.fill(&self.path, &matrix, even_odd, color),
                     Err(capability) => {
                         self.skipped.insert(capability);
@@ -2133,7 +2267,7 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             if stroke {
                 self.charge_work(self.stroke_work(&matrix, pad))?;
-                match self.state.stroke.rgba(&self.palettes) {
+                match self.state.stroke.rgba(&self.palettes, &self.mapped) {
                     Ok(color) => {
                         self.canvas
                             .stroke(&self.path, &matrix, &self.state.style, color);
@@ -2248,6 +2382,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
     /// management), Indexed with its palette kept in the caches. `Other`
     /// for the rest (Lab, Separation, DeviceN) and what cannot be read.
     fn resolved_space(&mut self, value: &Object, budget: &mut Budget) -> Result<ColorSpace, Error> {
+        if let Some(space) = self.mapped_space(value, budget)? {
+            return Ok(space);
+        }
         let to_device = |space: &image::Space| match space {
             image::Space::Gray => Some(ColorSpace::Gray),
             image::Space::Rgb => Some(ColorSpace::Rgb),
@@ -2286,6 +2423,182 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             Some(space) => to_device(&space).unwrap_or(ColorSpace::Other),
         })
+    }
+
+    /// A Separation, DeviceN or Lab space described by `value`, kept once
+    /// per render; `Some(Other)` for one that cannot be read (an unknown
+    /// alternate, a tint transform of the wrong arity); `None` for any other
+    /// family.
+    fn mapped_space(
+        &mut self,
+        value: &Object,
+        budget: &mut Budget,
+    ) -> Result<Option<ColorSpace>, Error> {
+        let Object::Array(items) = value else {
+            return Ok(None);
+        };
+        let family = items.first().and_then(Object::as_name).unwrap_or_default();
+        if !matches!(family, b"Separation" | b"DeviceN" | b"Lab") {
+            return Ok(None);
+        }
+        let key = format!("{value:?}");
+        if let Some(number) = self.mapped_numbers.get(&key) {
+            return Ok(Some(ColorSpace::Mapped(*number)));
+        }
+        // The bound first: a space beyond it is not read at all.
+        let Some(number) = u16::try_from(self.mapped.len())
+            .ok()
+            .filter(|_| self.mapped.len() < MAX_MAPPED)
+        else {
+            return Ok(Some(ColorSpace::Other));
+        };
+        let Some(mapped) = self.read_mapped(family, items, budget)? else {
+            return Ok(Some(ColorSpace::Other));
+        };
+        budget.charge_decoded_bytes(2 * key.len() as u64)?;
+        self.mapped.push(mapped);
+        self.mapped_numbers.insert(key, number);
+        Ok(Some(ColorSpace::Mapped(number)))
+    }
+
+    fn read_mapped(
+        &mut self,
+        family: &[u8],
+        items: &[Object],
+        budget: &mut Budget,
+    ) -> Result<Option<Mapped>, Error> {
+        if family == b"Lab" {
+            let Some(target) = self.lab(items.get(1), budget)? else {
+                return Ok(None);
+            };
+            return Ok(Some(Mapped {
+                inputs: 3,
+                function: None,
+                target,
+                invisible: false,
+            }));
+        }
+        let [_, names, alternate, tint, ..] = items else {
+            return Ok(None);
+        };
+        // Colorant names: one for Separation, an array for DeviceN.
+        let names: Vec<Vec<u8>> = match (family, self.direct(names, 0, budget)?) {
+            (b"Separation", Object::Name(name)) => vec![name],
+            (b"DeviceN", Object::Array(names)) => names
+                .iter()
+                .filter_map(|n| n.as_name().map(<[u8]>::to_vec))
+                .collect(),
+            _ => return Ok(None),
+        };
+        if names.is_empty() || names.len() > function::MAX_ARITY {
+            return Ok(None);
+        }
+        let invisible = names.iter().all(|n| n.as_slice() == b"None");
+        let alternate = self.direct(alternate, 0, budget)?;
+        let target = match &alternate {
+            Object::Array(alt) if alt.first().and_then(Object::as_name) == Some(b"Lab") => {
+                self.lab(alt.get(1), budget)?
+            }
+            other => match image::color_space(self.file, other, budget)? {
+                Some(image::Space::Gray) => Some(Target::Gray),
+                Some(image::Space::Rgb) => Some(Target::Rgb),
+                Some(image::Space::Cmyk) => Some(Target::Cmyk),
+                _ => None,
+            },
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let Some(function) = function::read(self.file, tint, budget)? else {
+            return Ok(None);
+        };
+        if function.inputs() != names.len() || function.outputs() != target.components() {
+            return Ok(None);
+        }
+        Ok(Some(Mapped {
+            inputs: names.len(),
+            function: Some(function),
+            target,
+            invisible,
+        }))
+    }
+
+    /// The parameters of a Lab space: white point (required), range of a*
+    /// and b* (default -100 to 100).
+    fn lab(
+        &mut self,
+        parameters: Option<&Object>,
+        budget: &mut Budget,
+    ) -> Result<Option<Target>, Error> {
+        let Some(parameters) = parameters else {
+            return Ok(None);
+        };
+        let Object::Dictionary(parameters) = self.direct(parameters, 0, budget)? else {
+            return Ok(None);
+        };
+        let reals = |key: &[u8]| -> Option<Vec<f64>> {
+            parameters
+                .get(key)
+                .and_then(Object::as_array)
+                .map(|a| a.iter().filter_map(number_of).collect())
+        };
+        let Some([xw, yw, zw]) = reals(b"WhitePoint").and_then(|w| <[f64; 3]>::try_from(w).ok())
+        else {
+            return Ok(None);
+        };
+        if !(xw > 0.0 && yw > 0.0 && zw > 0.0) {
+            return Ok(None);
+        }
+        let range = reals(b"Range")
+            .and_then(|r| <[f64; 4]>::try_from(r).ok())
+            .unwrap_or([-100.0, 100.0, -100.0, 100.0]);
+        Ok(Some(Target::Lab { range }))
+    }
+
+    /// The colour of `values` in mapped space `number`, as paint
+    /// components (RGB); black when the tint transform gives no value, the
+    /// space then reported. The evaluation counts as many operations as
+    /// it may take steps (`max_operations`).
+    fn mapped_color(&mut self, number: u16, values: &[f64]) -> Result<[f32; 4], Error> {
+        let Some(mapped) = self.mapped.get(usize::from(number)) else {
+            return Ok([0.0; 4]);
+        };
+        let cost = mapped.function.as_ref().map_or(1, Function::cost);
+        self.operations = self.operations.saturating_add(cost);
+        if self.operations > self.limits.max_operations {
+            return Err(Error::LimitExceeded {
+                kind: RenderLimitKind::Operations,
+                limit: self.limits.max_operations,
+            });
+        }
+        let converted = match &mapped.function {
+            Some(function) => function.eval(values),
+            None => Some(values.to_vec()),
+        };
+        match converted {
+            Some(c) => {
+                let [r, g, b] = mapped.target.rgb(&c);
+                Ok([r, g, b, 0.0])
+            }
+            None => {
+                self.skipped.insert(Unsupported::ColorSpace);
+                Ok([0.0; 4])
+            }
+        }
+    }
+
+    /// The initial colour of a mapped space (8.6.8, table 73): every tint
+    /// 1 for Separation and DeviceN; L*, a*, b* of 0 (clamped) for Lab.
+    fn mapped_initial(&mut self, number: u16) -> Result<[f32; 4], Error> {
+        let Some(mapped) = self.mapped.get(usize::from(number)) else {
+            return Ok([0.0; 4]);
+        };
+        let values = if mapped.function.is_some() {
+            vec![1.0; mapped.inputs]
+        } else {
+            vec![0.0; 3]
+        };
+        self.mapped_color(number, &values)
     }
 
     /// Resolves a colour space name: the device families directly, other
@@ -2575,6 +2888,10 @@ fn device_space(name: &[u8]) -> Option<ColorSpace> {
         b"Pattern" => Some(ColorSpace::Pattern),
         _ => None,
     }
+}
+
+fn number_of(object: &Object) -> Option<f64> {
+    number(object)
 }
 
 fn number(object: &Object) -> Option<f64> {
