@@ -15,6 +15,15 @@ pas un booléen « compatible PDF 2.0 ».
 | P6 — fonctions avancées séparées | OCR, édition de texte existant, chiffrement, signatures, caviardage | Étude et tests propres à chaque fonction ; aucune promesse de sécurité avant validation dédiée |
 | Stabilisation — diffusion | Packaging, signatures OS, mises à jour, guide utilisateur | Release depuis tag testé, corpus accepté, mesures et limites publiques, récupération après erreur |
 
+## P4 en cours
+
+Ordre ([ADR-0008](adr/0008-p4-writing.md), accepté le 2026-11-16 : réécriture complète depuis
+un plan de pages, « Enregistrer sous » transactionnel vers un autre fichier que la source) :
+4.1 sérialiseur et aller-retour des objets ; 4.2 réécriture d'un document inchangé
+(`castle-pdf rewrite`) ; 4.3 rotation, suppression, réordonnancement ; 4.4 fusion et découpe ;
+4.5 sauvegarde transactionnelle, worker et shell ; 4.6 interface, annuler et rétablir ; 4.7
+signets et liens recalculés, si la mesure le justifie.
+
 ## P3 terminée (`v0.1.0-alpha.4`)
 
 Ordre ([ADR-0006](adr/0006-p3-text-and-compatibility.md), accepté le 2026-11-12) : 3.1 mesure du texte sur le corpus (fait) ; 3.2 lecteur de CMap (fait) ; 3.3 Unicode des
