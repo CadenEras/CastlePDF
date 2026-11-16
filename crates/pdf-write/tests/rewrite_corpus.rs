@@ -2,7 +2,9 @@
 //! every file of a local corpus rewritten unchanged. Counts the files
 //! rewritten, read back by the strict reader with the same pages, and
 //! whose first page renders the same as before, pixel for pixel; the size
-//! of the output against the input. Files are read from
+//! of the output against the input. Then, for a document of two pages or
+//! more, the last page left out (tranche 4.3, resources pruned): read back
+//! strictly, and the first page rendered the same. Files are read from
 //! `CASTLE_REWRITE_DIR` (recursively), never from the repository; only
 //! counts are printed.
 //!
@@ -21,7 +23,7 @@ use std::time::{Duration, Instant};
 use pdf_document::Document;
 use pdf_render::{RenderOptions, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, PdfFile, ResourceLimits};
-use pdf_write::{identity_plan, rewrite};
+use pdf_write::{PlanPage, identity_plan, rewrite};
 
 fn budget() -> Budget {
     Budget::new(ResourceLimits::default(), CancellationToken::new())
@@ -53,6 +55,8 @@ fn rewrite_every_file_of_a_corpus() {
     let mut outcomes: BTreeMap<String, usize> = BTreeMap::new();
     let mut ratios = Vec::new();
     let mut times: Vec<Duration> = Vec::new();
+    let mut pruned_ratios = Vec::new();
+    let mut kept_whole = 0;
     let mut count = |key: &str| *outcomes.entry(key.to_owned()).or_default() += 1;
     for path in &paths {
         let Ok(bytes) = std::fs::read(path) else {
@@ -86,6 +90,17 @@ fn rewrite_every_file_of_a_corpus() {
         ratios.push(rewritten.bytes.len() as f64 / input.max(1) as f64);
         for dropped in &rewritten.dropped {
             count(&format!("not kept: {dropped}"));
+        }
+        if document.page_count() >= 2 {
+            let plan = &plan[..plan.len() - 1];
+            count(&last_page_left_out(
+                &document,
+                plan,
+                limit,
+                input,
+                &mut pruned_ratios,
+                &mut kept_whole,
+            ));
         }
         let Ok(source) = MemorySource::from_vec(rewritten.bytes, &ResourceLimits::default()) else {
             count("output too large to read back");
@@ -131,6 +146,7 @@ fn rewrite_every_file_of_a_corpus() {
         }
     }
     ratios.sort_by(f64::total_cmp);
+    pruned_ratios.sort_by(f64::total_cmp);
     times.sort();
     let at = |v: &[f64], p: f64| {
         v.get(((v.len() as f64 - 1.0) * p).round() as usize)
@@ -147,6 +163,13 @@ fn rewrite_every_file_of_a_corpus() {
         at(&ratios, 0.95),
         at(&ratios, 1.0)
     );
+    eprintln!(
+        "last page left out, size output/input: median {:.2}, p95 {:.2}, max {:.2}",
+        at(&pruned_ratios, 0.5),
+        at(&pruned_ratios, 0.95),
+        at(&pruned_ratios, 1.0)
+    );
+    eprintln!("last page left out, some resources kept whole: {kept_whole} files");
     let t = |p: f64| {
         times
             .get(((times.len() as f64 - 1.0) * p).round() as usize)
@@ -159,4 +182,62 @@ fn rewrite_every_file_of_a_corpus() {
         t(0.95),
         t(1.0)
     );
+}
+
+/// The document without its last page: the outcome, as a count key.
+fn last_page_left_out(
+    document: &Document<MemorySource>,
+    plan: &[PlanPage],
+    limit: u64,
+    input: u64,
+    ratios: &mut Vec<f64>,
+    kept_whole: &mut usize,
+) -> String {
+    let rewritten = match rewrite(document, plan, limit, &mut budget()) {
+        Ok(rewritten) => rewritten,
+        Err(e) => {
+            return format!("last page left out: rewrite failed: {e:?}")
+                .chars()
+                .take(70)
+                .collect();
+        }
+    };
+    ratios.push(rewritten.bytes.len() as f64 / input.max(1) as f64);
+    if !rewritten.resources_kept_whole.is_empty() {
+        *kept_whole += 1;
+    }
+    let written = MemorySource::from_vec(rewritten.bytes, &ResourceLimits::default())
+        .map_err(|e| format!("{e:?}"))
+        .and_then(|source| {
+            PdfFile::open_strict(source, &mut budget()).map_err(|e| format!("{e:?}"))
+        })
+        .and_then(|file| Document::from_file(file, &mut budget()).map_err(|e| format!("{e:?}")));
+    let written = match written {
+        Ok(written) if written.page_count() == plan.len() => written,
+        Ok(_) => return "last page left out: page count differs".to_owned(),
+        Err(e) => {
+            return format!(
+                "last page left out: strict read back failed: {}",
+                e.chars().take(40).collect::<String>()
+            );
+        }
+    };
+    let (Some(a), Some(b)) = (document.page(0), written.page(0)) else {
+        return "last page left out: no first page".to_owned();
+    };
+    let options = RenderOptions::default();
+    match (
+        render_page(document.file(), a, &options, &mut budget()),
+        render_page(written.file(), b, &options, &mut budget()),
+    ) {
+        (Ok(before), Ok(after))
+            if before.bitmap == after.bitmap && before.skipped == after.skipped =>
+        {
+            "last page left out: first page renders the same".to_owned()
+        }
+        (Ok(_), Ok(_)) => "last page left out: first page renders DIFFERENTLY".to_owned(),
+        (Err(_), Err(_)) => "last page left out: first page fails before and after".to_owned(),
+        (Ok(_), Err(_)) => "last page left out: first page fails only AFTER".to_owned(),
+        (Err(_), Ok(_)) => "last page left out: first page fails only before".to_owned(),
+    }
 }

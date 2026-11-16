@@ -15,17 +15,17 @@
 //!   listed in `Rewritten::dropped` (ADR-0008, point 3);
 //! - stream data is copied as stored, still encoded.
 //!
-//! Not yet: resources shared by several pages (an `/XObject` dictionary
-//! inherited from the page tree, say) are copied whole for a page that
-//! uses them, with what only a page left out draws. Pruning them to what
-//! a page's content names comes with page deletion (tranche 4.3), before
-//! a plan that leaves pages out is offered.
+//! - when the plan leaves a page out, each page's resources keep only what
+//!   its content names (`prune`), so that resources shared with a page
+//!   left out do not carry what only it draws; the pages where that cannot
+//!   be told for sure keep them whole and are listed.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use pdf_document::{Document, Page};
 use pdf_syntax::{Budget, Dictionary, IndirectValue, Object, ObjectId, Source};
 
+use crate::prune::Pruner;
 use crate::{Error, FileWriter};
 
 /// One page of the plan: page `page` of the source (0-based), turned by
@@ -43,6 +43,11 @@ pub struct PlanPage {
 pub struct Rewritten {
     pub bytes: Vec<u8>,
     pub dropped: Vec<String>,
+    /// Pages of the source (0-based, in plan order, once each) whose
+    /// resources were copied whole when the plan leaves a page out: what
+    /// they use could not be told for sure, so resources shared with a page
+    /// left out may still carry what it drew (see `prune`).
+    pub resources_kept_whole: Vec<usize>,
 }
 
 /// Catalog entries kept: none of them names a page. `OCProperties` lists
@@ -108,6 +113,8 @@ pub fn rewrite<S: Source>(
 
     // The pages, each as its own new object.
     let mut kids = Vec::with_capacity(plan.len());
+    let mut pruner = Pruner::new(document.file());
+    let mut resources_kept_whole = Vec::new();
     for (index, entry) in plan.iter().enumerate() {
         let page = document.page(entry.page).ok_or(Error::InvalidPlan)?;
         let number = copier
@@ -115,7 +122,11 @@ pub fn rewrite<S: Source>(
             .get(index)
             .copied()
             .ok_or(Error::InvalidPlan)?;
-        let dictionary = copier.page_dictionary(document, page, entry.rotation, budget)?;
+        let (dictionary, kept_whole) =
+            copier.page_dictionary(document, &mut pruner, page, entry.rotation, budget)?;
+        if kept_whole && !resources_kept_whole.contains(&entry.page) {
+            resources_kept_whole.push(entry.page);
+        }
         writer.object(number, &Object::Dictionary(dictionary))?;
         kids.push(reference(number));
     }
@@ -197,6 +208,7 @@ pub fn rewrite<S: Source>(
     Ok(Rewritten {
         bytes: writer.finish(&trailer)?,
         dropped,
+        resources_kept_whole,
     })
 }
 
@@ -222,6 +234,8 @@ struct Copier {
     /// What is never copied: a reference to it becomes `null` (see the
     /// module's rules).
     excluded: BTreeSet<ObjectId>,
+    /// Whether the plan leaves a page out: page resources are then pruned.
+    prune: bool,
     next: u32,
 }
 
@@ -232,6 +246,8 @@ impl Copier {
             pending: VecDeque::new(),
             page_numbers: Vec::with_capacity(plan.len()),
             excluded: BTreeSet::new(),
+            prune: plan.iter().map(|e| e.page).collect::<BTreeSet<_>>().len()
+                < document.page_count(),
             next: PAGES + 1,
         };
         for entry in plan {
@@ -288,13 +304,16 @@ impl Copier {
     /// attributes (boxes, rotation, resources) made explicit from the
     /// model, its rotation turned by `rotation`, its `/Parent` the new page
     /// tree. Left out: articles (`/B`, with the threads they belong to).
+    /// With it, whether its resources had to be kept whole although the
+    /// plan prunes them.
     fn page_dictionary<S: Source>(
         &mut self,
         document: &Document<S>,
+        pruner: &mut Pruner<'_, S>,
         page: &Page,
         rotation: u16,
         budget: &mut Budget,
-    ) -> Result<Dictionary, Error> {
+    ) -> Result<(Dictionary, bool), Error> {
         let own = match document.file().resolve(page.id, budget)? {
             IndirectValue::Object(Object::Dictionary(dictionary)) => dictionary,
             _ => Dictionary::new(),
@@ -328,13 +347,23 @@ impl Copier {
         }
         // Required of a page (7.7.3.3); an empty dictionary when the source
         // has none, even inherited.
+        let mut kept_whole = false;
         let resources = match page.resources.as_deref() {
+            Some(resources) if self.prune => {
+                match pruner.pruned_resources(page, resources, budget)? {
+                    Some(pruned) => self.map(Object::Dictionary(pruned), budget)?,
+                    None => {
+                        kept_whole = true;
+                        self.map(resources.clone(), budget)?
+                    }
+                }
+            }
             Some(resources) => self.map(resources.clone(), budget)?,
             None => Object::Dictionary(Dictionary::new()),
         };
         dictionary.insert(b"Resources".to_vec(), resources);
         dictionary.insert(b"Parent".to_vec(), reference(PAGES));
-        Ok(dictionary)
+        Ok((dictionary, kept_whole))
     }
 }
 
