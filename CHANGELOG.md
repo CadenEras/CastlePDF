@@ -9,6 +9,14 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur : **« Enregistrer sous » transactionnel** (ADR-0008, point 4 ; tranche 4.5a).
+  `pdf_write::save_as` écrit dans un fichier temporaire du dossier de destination, le vide sur
+  disque, le relit avec le lecteur strict (nombre de pages vérifié), puis le renomme à la place
+  de la destination. Tout échec (relecture, nombre de pages, droits, destination verrouillée ou
+  dossier absent) retire le temporaire et laisse la destination telle quelle ; une destination
+  qui est une source, directement ou par un lien, est refusée. Le renommage remplace l’entrée
+  du dossier, jamais le fichier visé : un lien vers une source est remplacé comme lien.
+
 - Moteur et CLI : **fusion et découpe** (ADR-0008, tranche 4.4). `pdf_write::merge` écrit un plan
   dont les pages viennent de plusieurs documents ; les objets de chaque source sont numérotés à
   part (le même fichier donné deux fois est copié deux fois). Le catalogue et `/Info` viennent

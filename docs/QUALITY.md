@@ -200,6 +200,13 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 4.5a, « Enregistrer sous » transactionnel (2026-11-17) : `tests/save.rs` sous Windows et
+Linux (WSL) : écriture relue, autre fichier remplacé, source refusée (même chemin, autre écriture,
+lien symbolique sous Unix), contenu illisible, tronqué ou d’un autre nombre de pages refusé,
+dossier absent, destination dossier, destination en lecture seule (Windows) ou dossier en
+lecture seule (Unix) : la destination reste telle quelle et aucun temporaire ne reste. Non
+simulés : disque plein et arrêt de la machine pendant le renommage.
+
 Tranche 4.4, fusion et découpe (2026-11-17, même protocole ; chaque document fusionné après le
 précédent ouvert) :
 - 1 939 et 2 281 fusions écrites, relues strictement avec toutes les pages ; première page du
