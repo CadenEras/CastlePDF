@@ -9,6 +9,18 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Moteur et CLI : **fusion et découpe** (ADR-0008, tranche 4.4). `pdf_write::merge` écrit un plan
+  dont les pages viennent de plusieurs documents ; les objets de chaque source sont numérotés à
+  part (le même fichier donné deux fois est copié deux fois). Le catalogue et `/Info` viennent
+  du document de la première page ; ce que les autres perdent est listé avec son numéro
+  (`Outlines (document 2)`, `Info`, `Signature`...). Le contenu optionnel de chaque source est
+  fusionné : tous les calques, ceux que chaque configuration par défaut masque restent masqués
+  (`/BaseState /OFF` compris), ordres et groupes mis bout à bout. `castle-pdf merge <sortie.pdf>
+  <fichier>...` fusionne des fichiers entiers (taille cumulée bornée avant lecture, erreurs
+  nommées par position, jamais par chemin) ; `castle-pdf split <fichier> <dossier> <pages>` écrit
+  `part-001.pdf`... dans un dossier existant, aucun si l’un existe, et retire ceux déjà écrits si
+  une partie échoue.
+
 - Moteur et CLI : **plan de pages** (ADR-0008, tranche 4.3) : réordonner, supprimer et tourner
   des pages. `castle-pdf pages <fichier> <sortie.pdf> <plan>` prend une liste de pages numérotées
   depuis 1, d'intervalles (`2-5`, `5-2`) et de rotations (`@90`, `@180`, `@270`) ; une page

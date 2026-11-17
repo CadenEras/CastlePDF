@@ -21,7 +21,7 @@ Ordre ([ADR-0008](adr/0008-p4-writing.md), accepté le 2026-11-16 : réécriture
 un plan de pages, « Enregistrer sous » transactionnel vers un autre fichier que la source) :
 4.1 sérialiseur et aller-retour des objets (fait) ; 4.2 réécriture d'un document inchangé
 (`castle-pdf rewrite`, fait) ; 4.3 rotation, suppression, réordonnancement
-(`castle-pdf pages`, avec l'élagage des ressources partagées, fait) ; 4.4 fusion et découpe ;
+(`castle-pdf pages`, avec l'élagage des ressources partagées, fait) ; 4.4 fusion et découpe (`castle-pdf merge`, `split`, fait) ;
 4.5 sauvegarde transactionnelle, worker et shell ; 4.6 interface, annuler et rétablir ; 4.7
 signets et liens recalculés, si la mesure le justifie.
 
@@ -41,6 +41,11 @@ signets et liens recalculés, si la mesure le justifie.
   budget de la tâche (256 Mio décodés par défaut) : un document au contenu plus gros (un
   fichier de 188 Mo du corpus) échoue avec une erreur de limite, alors que sa réécriture
   inchangée réussit. Budget propre à l’écriture à décider avec la sauvegarde de 4.5.
+- Fusion : les réglages propres de la configuration par défaut du contenu optionnel d’une source
+  autre que la première (`/Intent`, `/Name`...) et ses autres configurations (`/Configs`) ne
+  sont pas fusionnés mais listés ; un calque employé par le contenu sans figurer dans `/OCGs`
+  d’une source en `/BaseState /OFF` peut redevenir visible. `merge` garde chaque fichier en
+  mémoire, dans la limite de 512 Mio cumulés.
 - `castle-pdf rewrite` publie par lien dur, qui échoue sur FAT ou partage SMB ; la
   sauvegarde transactionnelle de 4.5 remplace ce chemin pour l'application.
 

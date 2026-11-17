@@ -200,6 +200,24 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 4.4, fusion et découpe (2026-11-17, même protocole ; chaque document fusionné après le
+précédent ouvert) :
+- 1 939 et 2 281 fusions écrites, relues strictement avec toutes les pages ; première page du
+  second document identique au pixel près pour les 1 919 et 2 228 qui se rendaient, aucune rendue
+  autrement, aucune qui n’échoue qu’après ;
+- relecture : `split` laissait les parties déjà écrites quand une suivante échouait (retirées
+  désormais) ; `merge` lisait tous les fichiers avant de constater qu’ils dépassaient ensemble la
+  limite (taille cumulée vérifiée avant lecture) ; chemins d’entrée affichés dans les erreurs
+  (position désormais) ; `/Info` et réglages `D` des autres sources perdus sans être listés
+  (listés) ; plan non borné (`MAX_PLAN_PAGES`) ;
+- fuzzing `write` (fusion d’un document avec lui-même ajoutée) : 531 380 exécutions, aucun
+  constat ;
+- tests : `rewrite.rs` (fixtures fusionnées rendues comme leur source, même fichier deux fois,
+  calques fusionnés et masqués selon `/OFF` et `/BaseState`, élagage par source, pertes des
+  autres sources listées, version maximale, plans invalides), `pages.rs` (CLI `merge` et
+  `split`, sortie existante, entrée nommée par sa position). Non testé : l’échec d’une partie
+  de `split` après une autre réussie (aucun moyen simple de le provoquer depuis la CLI).
+
 Tranche 4.3, plan de pages (2026-11-16, même protocole ; chaque document de deux pages ou plus
 réécrit sans sa dernière page, ressources élaguées) :
 - première page : identique au pixel près (et mêmes manques) pour les 1 334 et 1 437 qui se
