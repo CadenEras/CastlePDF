@@ -13,7 +13,7 @@ pdf-syntax.workspace = true
 # Rasteriser (ADR-0003). Exact version: its 0.x API is wrapped by `raster.rs`
 # only. No `png` (decoder) nor `text` (glyph stack) nor multithreading.
 vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline"] }
-skrifa = { version = "=0.49.0", default-features = false, features = ["std"] }
+skrifa = { version = "=0.50.0", default-features = false, features = ["std"] }
 # JPEG (DCTDecode) images (ADR-0005). No default features: the SIMD paths
 # (`x86`, `neon`) use `unsafe`; without them the crate forbids it.
 zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
