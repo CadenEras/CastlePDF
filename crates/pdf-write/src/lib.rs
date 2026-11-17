@@ -10,6 +10,7 @@
 //! that they stay reals.
 
 mod document;
+mod prune;
 
 use std::collections::BTreeMap;
 use std::fmt;

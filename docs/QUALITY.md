@@ -200,6 +200,25 @@ donne aussi la page rendue d'un seul tenant et une passe d'interprétation seule
 - décision : aucune des trois optimisations n'est justifiée par la mesure (voir la feuille
   de route) ; elles restent reportées avec ces chiffres.
 
+Tranche 4.3, plan de pages (2026-11-16, même protocole ; chaque document de deux pages ou plus
+réécrit sans sa dernière page, ressources élaguées) :
+- première page : identique au pixel près (et mêmes manques) pour les 1 334 et 1 437 qui se
+  rendaient ; aucune rendue autrement, aucune qui n’échoue qu’après ; relues strictement avec
+  une page de moins ;
+- taille rapportée à l’entrée : médiane 0,93, p95 1,00 ;
+- ressources gardées entières faute de certitude, sur au moins une page : 37 et 35 fichiers
+  (listées par `castle-pdf pages`) ;
+- une réécriture échoue en limite de décodage (fichier de 188 Mo, 152 pages) : limite ouverte ;
+  avant le cache de résolution partagé entre pages, trois échouaient (relecture) ;
+- relecture : une image dont `/ColorSpace` nomme une ressource perdait cet espace, et une image
+  en ligne avec `/L` pouvait cacher la suite du contenu ; corrigés, avec un test qui échoue
+  sans la correction ;
+- tests : `rewrite.rs` (une image dessinée seulement par une page retirée n’est plus écrite,
+  rendu identique, `Default*` gardés, cas gardés entiers : forme, motif, police Type 3,
+  masque, apparence, contenu illisible, image sans fin, contenu en tableau avec `null` ; page
+  donnée deux fois), `prune` (lecture des images en ligne comme au rendu), `pages.rs`
+  (CLI : ordre, suppression, rotation, plans refusés).
+
 Tranches 4.1 et 4.2, écriture (ADR-0008, 2026-11-16, release, WSL ; test ignoré `rewrite_corpus`) :
 - chaque document des deux corpus réécrit inchangé : 1 940 sur 1 940 (SafeDocs) et 2 282 sur
   2 282 (UNSAFE) réécrits, relus par le lecteur strict avec le même nombre de pages ;

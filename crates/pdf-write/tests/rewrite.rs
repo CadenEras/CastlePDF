@@ -377,3 +377,248 @@ fn a_page_object_outside_the_tree_is_written_as_null() {
     assert!(!contains(&rewritten.bytes, b"marker-of-orphan"));
     assert_eq!(open_strict(rewritten.bytes).page_count(), 1);
 }
+
+/// An object body for a stream of `data`, `/Length` computed.
+fn stream(entries: &str, data: &str) -> String {
+    format!(
+        "<< {entries} /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    )
+}
+
+/// Two pages sharing the resources of their page tree node (object 9):
+/// page 1 draws `/Im1` (object 5), page 2 `/Im2` (object 6, which holds a
+/// marker). Each field replaces a part; `objects` are numbered from 10.
+struct Fixture<'a> {
+    im1: String,
+    content1: String,
+    page1: &'a str,
+    spaces: &'a str,
+    resources: &'a str,
+    objects: Vec<String>,
+}
+
+fn image(entries: &str, marker: &str) -> String {
+    stream(
+        &format!(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 {entries} \
+             /BitsPerComponent 8 /Marker ({marker})"
+        ),
+        "\u{7f}",
+    )
+}
+
+impl Default for Fixture<'_> {
+    fn default() -> Self {
+        Self {
+            im1: image("/ColorSpace /DeviceGray", "marker-of-image-1"),
+            content1: stream("", "q 20 0 0 20 0 0 cm /Im1 Do Q"),
+            page1: "/Contents 7 0 R",
+            spaces: "/DefaultRGB /DeviceRGB /Unused /DeviceGray",
+            resources: "",
+            objects: Vec::new(),
+        }
+    }
+}
+
+impl Fixture<'_> {
+    fn pdf(&self) -> Vec<u8> {
+        let page1 = format!("<< /Type /Page /Parent 2 0 R {} >>", self.page1);
+        let resources = format!(
+            "<< /XObject << /Im1 5 0 R /Im2 6 0 R >> /ColorSpace << {} >> /ProcSet [/PDF] {} >>",
+            self.spaces, self.resources
+        );
+        let image2 = image("/ColorSpace /DeviceGray", "marker-of-image-2");
+        let content2 = stream("", "q 20 0 0 20 0 0 cm /Im2 Do Q");
+        let mut bodies: Vec<&str> = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 20 20] /Resources 9 0 R >>",
+            &page1,
+            "<< /Type /Page /Parent 2 0 R /Contents 8 0 R >>",
+            &self.im1,
+            &image2,
+            &self.content1,
+            &content2,
+            &resources,
+        ];
+        bodies.extend(self.objects.iter().map(String::as_str));
+        assemble(&bodies)
+    }
+}
+
+fn shared_resources(im1: &str, content1: &str) -> Vec<u8> {
+    let mut fixture = Fixture {
+        content1: content1.to_owned(),
+        ..Fixture::default()
+    };
+    if !im1.is_empty() {
+        fixture.im1 = im1.to_owned();
+    }
+    fixture.pdf()
+}
+
+const PAGE_1_ONLY: [PlanPage; 1] = [PlanPage {
+    page: 0,
+    rotation: 0,
+}];
+
+#[test]
+fn shared_resources_keep_only_what_the_kept_pages_draw() {
+    let pdf = shared_resources(
+        "",
+        &stream(
+            "",
+            "q 10 0 0 10 0 0 cm /Im1 Do Q\nq 5 0 0 5 10 10 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \u{1f} EI Q",
+        ),
+    );
+    let original = open(pdf);
+    let rewritten = rewrite(&original, &PAGE_1_ONLY, LIMIT, &mut budget()).expect("rewrite");
+    assert!(contains(&rewritten.bytes, b"marker-of-image-1"));
+    assert!(!contains(&rewritten.bytes, b"marker-of-image-2"));
+    let written = open_strict(rewritten.bytes);
+    let page = &written.pages()[0];
+    let resources = page
+        .resources
+        .as_deref()
+        .and_then(pdf_syntax::Object::as_dictionary);
+    let resources = resources.expect("resources");
+    // A default colour space is used without being named; other entries
+    // are copied as they are.
+    let spaces = resources
+        .get(b"ColorSpace")
+        .and_then(pdf_syntax::Object::as_dictionary);
+    let spaces = spaces.expect("color spaces");
+    assert!(spaces.get(b"DefaultRGB").is_some());
+    assert!(spaces.get(b"Unused").is_none());
+    assert!(resources.get(b"ProcSet").is_some());
+    let options = RenderOptions::default();
+    let before = render_page(
+        original.file(),
+        &original.pages()[0],
+        &options,
+        &mut budget(),
+    );
+    let after = render_page(written.file(), page, &options, &mut budget());
+    assert_eq!(before.expect("before").bitmap, after.expect("after").bitmap);
+}
+
+#[test]
+fn an_identity_plan_prunes_nothing() {
+    let pdf = shared_resources("", &stream("", "/Im1 Do"));
+    let original = open(pdf);
+    let rewritten =
+        rewrite(&original, &identity_plan(&original), LIMIT, &mut budget()).expect("rewrite");
+    let written = open_strict(rewritten.bytes);
+    for page in written.pages() {
+        let resources = page.resources.as_deref().expect("resources");
+        // Still one shared object, with every entry.
+        assert!(matches!(resources, pdf_syntax::Object::Reference(_)));
+    }
+}
+
+#[test]
+fn resources_are_kept_whole_when_what_is_used_cannot_be_told() {
+    // Each draws with the page's resources, so may use /Im2: a form, a
+    // tiling pattern, a Type 3 font, a soft mask group, an annotation
+    // appearance, none with /Resources of its own.
+    let form = || stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", "/Im2 Do");
+    let content = |text: &str| stream("", text);
+    let cases = [
+        Fixture {
+            im1: form(),
+            ..Fixture::default()
+        },
+        Fixture {
+            content1: content("/Pattern cs /P1 scn 0 0 1 1 re f /Im1 Do"),
+            resources: "/Pattern << /P1 10 0 R >>",
+            objects: vec![stream(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 1 1] /XStep 1 /YStep 1",
+                "/Im2 Do",
+            )],
+            ..Fixture::default()
+        },
+        Fixture {
+            content1: content("/Im1 Do BT /F1 1 Tf (a) Tj ET"),
+            resources: "/Font << /F1 10 0 R >>",
+            objects: vec![
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] \
+                 /CharProcs << /a 11 0 R >> /Encoding << /Differences [97 /a] >> \
+                 /FirstChar 97 /LastChar 97 /Widths [1] >>"
+                    .to_owned(),
+                stream("", "1 0 d0 /Im2 Do"),
+            ],
+            ..Fixture::default()
+        },
+        Fixture {
+            content1: content("/G1 gs /Im1 Do"),
+            resources: "/ExtGState << /G1 << /SMask << /S /Luminosity /G 10 0 R >> >> >>",
+            objects: vec![form()],
+            ..Fixture::default()
+        },
+        Fixture {
+            page1: "/Contents 7 0 R /Annots [<< /Subtype /Square /Rect [0 0 1 1] /AP << /N 10 0 R >> >>]",
+            objects: vec![form()],
+            ..Fixture::default()
+        },
+        // Content that cannot be decoded, an inline image without its end,
+        // a content array with a part that is not a stream.
+        Fixture {
+            content1: stream("/Filter /NoSuchDecode", "/Im1 Do"),
+            ..Fixture::default()
+        },
+        Fixture {
+            content1: content("/Im1 Do BI /W 1 /H 1 ID xyz"),
+            ..Fixture::default()
+        },
+        Fixture {
+            page1: "/Contents [7 0 R null]",
+            ..Fixture::default()
+        },
+    ];
+    for (index, fixture) in cases.into_iter().enumerate() {
+        let original = open(fixture.pdf());
+        let rewritten = rewrite(&original, &PAGE_1_ONLY, LIMIT, &mut budget()).expect("rewrite");
+        assert!(
+            contains(&rewritten.bytes, b"marker-of-image-2"),
+            "case {index}"
+        );
+        assert_eq!(rewritten.resources_kept_whole, vec![0], "case {index}");
+    }
+}
+
+#[test]
+fn a_colour_space_named_by_an_image_is_kept() {
+    // Found in review: /CS0 is named by the image, not by the content.
+    let fixture = Fixture {
+        im1: image("/ColorSpace /CS0", "marker-of-image-1"),
+        spaces: "/CS0 [/Indexed /DeviceRGB 255 10 0 R] /Unused /DeviceGray",
+        objects: vec![stream("", &"\u{7f}\u{0}\u{0}".repeat(256))],
+        ..Fixture::default()
+    };
+    let original = open(fixture.pdf());
+    let rewritten = rewrite(&original, &PAGE_1_ONLY, LIMIT, &mut budget()).expect("rewrite");
+    assert!(rewritten.resources_kept_whole.is_empty());
+    assert!(!contains(&rewritten.bytes, b"marker-of-image-2"));
+    let written = open_strict(rewritten.bytes);
+    let options = RenderOptions::default();
+    let before = render_page(
+        original.file(),
+        &original.pages()[0],
+        &options,
+        &mut budget(),
+    );
+    let after = render_page(written.file(), &written.pages()[0], &options, &mut budget());
+    let (before, after) = (before.expect("before"), after.expect("after"));
+    assert!(before.skipped.is_empty(), "{:?}", before.skipped);
+    assert_eq!(before.bitmap, after.bitmap);
+    assert_eq!(before.skipped, after.skipped);
+}
+
+#[test]
+fn a_page_given_twice_is_pruned_once_the_same() {
+    let original = open(Fixture::default().pdf());
+    let plan = [PAGE_1_ONLY[0], PAGE_1_ONLY[0]];
+    let rewritten = rewrite(&original, &plan, LIMIT, &mut budget()).expect("rewrite");
+    assert!(!contains(&rewritten.bytes, b"marker-of-image-2"));
+    assert_eq!(open_strict(rewritten.bytes).page_count(), 2);
+}
