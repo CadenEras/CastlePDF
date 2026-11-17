@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use pdf_worker::client::WorkerProcess;
 use pdf_worker::documents::MAX_DOCUMENTS;
-use pdf_worker::protocol::{ErrorCode, Repair, Request, Response, Skipped, TileRect};
+use pdf_worker::protocol::{ErrorCode, Repair, Request, Response, SavePage, Skipped, TileRect};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -400,4 +400,114 @@ fn a_repaired_document_says_so() {
         ),
         "{tile:?}"
     );
+}
+
+#[test]
+fn a_plan_over_open_documents_is_saved_through_the_pipes() {
+    let worker = spawn();
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("worker-save");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let Response::DocumentOpened {
+        document: shapes, ..
+    } = open(&worker, 1, "shapes.pdf")
+    else {
+        panic!("opened");
+    };
+    let Response::DocumentOpened { document: text, .. } = open(&worker, 2, "text.pdf") else {
+        panic!("opened");
+    };
+    let page = |document, page, rotation| SavePage {
+        document,
+        page,
+        rotation,
+    };
+    let destination = directory.join("saved.pdf");
+    let save = |id, destination: String, plan: Vec<SavePage>| {
+        call(
+            &worker,
+            &Request::SaveDocument {
+                id,
+                destination,
+                plan,
+            },
+        )
+    };
+    // Page 3 of one, page 1 of the other turned: a document of two pages.
+    let saved = save(
+        3,
+        destination.to_string_lossy().into_owned(),
+        vec![page(shapes, 2, 0), page(text, 0, 90)],
+    );
+    let Response::DocumentSaved {
+        id: 3,
+        pages: 2,
+        bytes,
+        ..
+    } = saved
+    else {
+        panic!("{saved:?}");
+    };
+    assert_eq!(std::fs::metadata(&destination).unwrap().len(), bytes);
+    let Response::DocumentOpened { pages: 2, .. } = call(
+        &worker,
+        &Request::OpenDocument {
+            id: 4,
+            path: destination.to_string_lossy().into_owned(),
+        },
+    ) else {
+        panic!("reopened");
+    };
+    // Errors: an open document's file, an unknown document, a bad rotation,
+    // an empty plan, a missing folder.
+    let failures = [
+        (
+            fixture("shapes.pdf"),
+            vec![page(shapes, 0, 0)],
+            ErrorCode::SameAsSource,
+        ),
+        (
+            directory.join("other.pdf").to_string_lossy().into_owned(),
+            vec![page(99, 0, 0)],
+            ErrorCode::UnknownDocument,
+        ),
+        (
+            directory.join("other.pdf").to_string_lossy().into_owned(),
+            vec![page(shapes, 0, 45)],
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            directory.join("other.pdf").to_string_lossy().into_owned(),
+            vec![page(shapes, 7, 0)],
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            directory.join("other.pdf").to_string_lossy().into_owned(),
+            Vec::new(),
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            directory
+                .join("missing")
+                .join("other.pdf")
+                .to_string_lossy()
+                .into_owned(),
+            vec![page(shapes, 0, 0)],
+            ErrorCode::InvalidDestination,
+        ),
+    ];
+    for (index, (destination, plan, code)) in failures.into_iter().enumerate() {
+        let id = 10 + index as u64;
+        assert_eq!(
+            save(id, destination, plan),
+            Response::JobFailed { id, code },
+            "case {index}"
+        );
+    }
+    let mut names: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["saved.pdf"]);
 }
