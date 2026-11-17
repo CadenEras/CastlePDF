@@ -141,6 +141,12 @@ de documents permettent de traverser un répertoire ou d'accéder à un document
   réponse vérifie chaque nombre de lignes et de mots avant d'allouer (cible de fuzzing
   `protocol`). Le texte reste une donnée : l'UI le valide (`parseTextLayer`), ne l'insère que
   comme texte (jamais comme HTML) et reconstruit elle-même la copie depuis ses mots ;
+- `save_as` (ADR-0009, tranche 4.5c) reçoit un plan sur le document courant (pages existantes,
+  rotations par quart, au plus 65 536 pages), jamais un chemin : le shell ouvre lui-même le
+  dialogue natif (`tauri-plugin-dialog`, sans aucune permission `dialog:*` ni `fs:*` donnée à
+  la fenêtre), ajoute `.pdf` au besoin, refuse un chemin relatif et le fichier du document
+  (liens résolus), puis le worker refuse encore le fichier de tout document ouvert et écrit
+  par un temporaire relu. Un seul dialogue à la fois ; l'UI n'apprend jamais le chemin ;
 - `search_page` (tranche 3.7) n'accepte que le document courant, une page existante et une
   requête non vide d'au plus 1 024 octets ; le worker la refuse aussi au-delà de 256 caractères
   une fois repliée. Une recherche se fait page par page : chaque page est une tâche courte ;

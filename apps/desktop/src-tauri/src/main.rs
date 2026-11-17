@@ -3,19 +3,22 @@
 
 mod cache;
 mod opening;
+mod saving;
 mod worker;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 use worker::{
-    CommandError, DocumentInfo, JobEvent, PageSize, Pending, SearchHitsDto, SearchRequest,
-    TextLayerDto, TileRequest, WorkerHandle,
+    CommandError, DocumentInfo, JobEvent, PageSize, Pending, PlanEntry, SavedDto, SearchHitsDto,
+    SearchRequest, TextLayerDto, TileRequest, WorkerHandle,
 };
 
 const JOB_EVENT: &str = "worker-job";
@@ -23,6 +26,12 @@ const DOCUMENT_EVENT: &str = "document";
 /// Opening reads and parses the whole file (up to 512 MiB).
 const OPEN_TIMEOUT: Duration = Duration::from_secs(120);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Saving rewrites, writes and reads back the whole document.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Whether a "save as" is under way: one dialog at a time.
+#[derive(Default)]
+struct Saving(AtomicBool);
 
 /// Announced to the UI as the shell opens a document: the file name only.
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +149,54 @@ async fn render_tile(
     Ok(tauri::ipc::Response::new(tile.as_ref().clone()))
 }
 
+/// "Save as" (ADR-0009): the UI gives the plan over the current document,
+/// never a path. The shell asks for the destination with the native dialog
+/// (in the document's folder), checks it (`saving::checked_destination`)
+/// and has the worker write it. `None` when the user cancels the dialog.
+#[tauri::command]
+async fn save_as(
+    app: AppHandle,
+    worker: State<'_, WorkerHandle>,
+    saving: State<'_, Saving>,
+    document: u32,
+    plan: Vec<PlanEntry>,
+) -> Result<Option<SavedDto>, CommandError> {
+    worker.check_plan(document, &plan)?;
+    let source = worker
+        .current_source(document)
+        .ok_or(CommandError::InvalidArgument { field: "document" })?;
+    if saving.0.swap(true, Ordering::AcqRel) {
+        return Err(CommandError::Busy);
+    }
+    let result = async {
+        let mut dialog = app
+            .dialog()
+            .file()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name(saving::suggested_name(&source));
+        if let Some(folder) = source.parent() {
+            dialog = dialog.set_directory(folder);
+        }
+        let chosen = tauri::async_runtime::spawn_blocking(move || dialog.blocking_save_file())
+            .await
+            .map_err(|_| CommandError::WorkerUnavailable)?;
+        let Some(chosen) = chosen else {
+            return Ok(None);
+        };
+        let chosen = chosen.into_path().map_err(|_| CommandError::Failed {
+            reason: "unsupportedPath",
+        })?;
+        let destination = saving::checked_destination(&chosen, &[&source])
+            .map_err(|reason| CommandError::Failed { reason })?;
+        reply(worker.save(document, plan, &destination), SAVE_TIMEOUT)
+            .await
+            .map(Some)
+    }
+    .await;
+    saving.0.store(false, Ordering::Release);
+    result
+}
+
 fn publish_document(app: &AppHandle, event: DocumentEvent) {
     let last = app.state::<LastDocument>();
     // Held while emitting, so that events leave in sequence order.
@@ -182,6 +239,9 @@ fn main() -> ExitCode {
         // Managed before `setup`: events can reach them before it runs.
         .manage(LastDocument::default())
         .manage(opening::Launch::default())
+        .manage(Saving::default())
+        // Called from the shell only: the window has no dialog permission.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let worker =
@@ -208,7 +268,8 @@ fn main() -> ExitCode {
             page_size,
             render_tile,
             page_text,
-            search_page
+            search_page,
+            save_as
         ])
         .build(tauri::generate_context!());
 
