@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use pdf_document::Document;
 use pdf_render::{RenderOptions, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, PdfFile, ResourceLimits};
-use pdf_write::{PlanPage, identity_plan, rewrite};
+use pdf_write::{PlanPage, SourcePage, identity_plan, merge, rewrite};
 
 fn budget() -> Budget {
     Budget::new(ResourceLimits::default(), CancellationToken::new())
@@ -582,7 +582,7 @@ fn resources_are_kept_whole_when_what_is_used_cannot_be_told() {
             contains(&rewritten.bytes, b"marker-of-image-2"),
             "case {index}"
         );
-        assert_eq!(rewritten.resources_kept_whole, vec![0], "case {index}");
+        assert_eq!(rewritten.resources_kept_whole, vec![(0, 0)], "case {index}");
     }
 }
 
@@ -621,4 +621,252 @@ fn a_page_given_twice_is_pruned_once_the_same() {
     let rewritten = rewrite(&original, &plan, LIMIT, &mut budget()).expect("rewrite");
     assert!(!contains(&rewritten.bytes, b"marker-of-image-2"));
     assert_eq!(open_strict(rewritten.bytes).page_count(), 2);
+}
+
+/// Every page of each source, the sources in order.
+fn all_pages(documents: &[&Document<MemorySource>]) -> Vec<SourcePage> {
+    documents
+        .iter()
+        .enumerate()
+        .flat_map(|(document, source)| {
+            (0..source.page_count()).map(move |page| SourcePage {
+                document,
+                page,
+                rotation: 0,
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn merged_fixtures_render_each_page_as_its_source() {
+    let read = |name: &str| {
+        open(std::fs::read(repo(&format!("tests/corpus/public/{name}"))).expect("read"))
+    };
+    // The same file twice: each copy has objects of its own.
+    let (shapes, text, again) = (read("shapes.pdf"), read("text.pdf"), read("shapes.pdf"));
+    let sources = [&shapes, &text, &again];
+    let plan = all_pages(&sources);
+    let merged = merge(&sources, &plan, LIMIT, &mut budget()).expect("merge");
+    let written = open_strict(merged.bytes);
+    assert_eq!(written.page_count(), plan.len());
+    let options = RenderOptions::default();
+    for (index, entry) in plan.iter().enumerate() {
+        let source = sources[entry.document];
+        let before = render_page(
+            source.file(),
+            &source.pages()[entry.page],
+            &options,
+            &mut budget(),
+        );
+        let after = render_page(
+            written.file(),
+            &written.pages()[index],
+            &options,
+            &mut budget(),
+        );
+        let (before, after) = (before.expect("before"), after.expect("after"));
+        assert_eq!(before.bitmap, after.bitmap, "page {index}");
+        assert_eq!(before.skipped, after.skipped, "page {index}");
+    }
+    let ids: std::collections::BTreeSet<_> = written.pages().iter().map(|p| p.id).collect();
+    assert_eq!(ids.len(), plan.len());
+}
+
+/// A one-page document with one optional content group named `name`,
+/// shown or hidden by its default configuration, and `catalog` entries.
+fn layered(name: &str, hidden: bool, base_off: bool, catalog: &str) -> Vec<u8> {
+    let configuration = match (hidden, base_off) {
+        (true, false) => "<< /OFF [5 0 R] /Order [5 0 R] >>",
+        (true, true) => "<< /BaseState /OFF /Order [5 0 R] >>",
+        (false, true) => "<< /BaseState /OFF /ON [5 0 R] /Order [5 0 R] >>",
+        (false, false) => "<< /Order [5 0 R] >>",
+    };
+    assemble(&[
+        &format!(
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R] /D {configuration} >> {catalog} >>"
+        ),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 10 10] >>",
+        "<< /Type /Page /Parent 2 0 R /Contents 4 0 R \
+         /Resources << /Properties << /L 5 0 R >> >> >>",
+        &stream("", "/OC /L BDC 0 0 10 10 re f EMC"),
+        &format!("<< /Type /OCG /Name ({name}) >>"),
+    ])
+}
+
+/// The names of the groups of `document`'s optional content, all and
+/// hidden.
+fn layers(document: &Document<MemorySource>) -> (Vec<String>, Vec<String>) {
+    let file = document.file();
+    let resolve = |object: &pdf_syntax::Object| match object {
+        pdf_syntax::Object::Reference(id) => match file.resolve(*id, &mut budget()) {
+            Ok(pdf_syntax::IndirectValue::Object(object)) => object,
+            _ => panic!("object"),
+        },
+        other => other.clone(),
+    };
+    let names = |items: &pdf_syntax::Object| -> Vec<String> {
+        resolve(items)
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|group| {
+                let group = resolve(group);
+                let name = group.as_dictionary().and_then(|g| g.get(b"Name")).cloned();
+                match name {
+                    Some(pdf_syntax::Object::String(name)) => {
+                        String::from_utf8_lossy(&name).into_owned()
+                    }
+                    _ => panic!("name"),
+                }
+            })
+            .collect()
+    };
+    let properties = resolve(
+        document
+            .catalog()
+            .get(b"OCProperties")
+            .expect("OCProperties"),
+    );
+    let properties = properties.as_dictionary().expect("dictionary");
+    let configuration = resolve(properties.get(b"D").expect("D"));
+    let configuration = configuration.as_dictionary().expect("D dictionary");
+    (
+        names(properties.get(b"OCGs").expect("OCGs")),
+        configuration.get(b"OFF").map(names).unwrap_or_default(),
+    )
+}
+
+#[test]
+fn optional_content_is_merged_hidden_layers_staying_hidden() {
+    let sources = [
+        open(layered("A", false, false, "/Lang (fr)")),
+        open(layered(
+            "B",
+            true,
+            false,
+            "/Lang (en) /Outlines << /Count 0 >>",
+        )),
+        open(layered("C", true, true, "")),
+        open(layered("D", false, true, "")),
+    ];
+    let sources: Vec<&Document<MemorySource>> = sources.iter().collect();
+    let plan = all_pages(&sources);
+    let merged = merge(&sources, &plan, LIMIT, &mut budget()).expect("merge");
+    assert_eq!(
+        merged.dropped,
+        vec!["Lang (document 2)", "Outlines (document 2)"]
+    );
+    let written = open_strict(merged.bytes);
+    let (all, hidden) = layers(&written);
+    assert_eq!(all, vec!["A", "B", "C", "D"]);
+    assert_eq!(hidden, vec!["B", "C"]);
+    assert_eq!(
+        written.catalog().get(b"Lang"),
+        Some(&pdf_syntax::Object::String(b"fr".to_vec()))
+    );
+}
+
+#[test]
+fn pages_left_out_of_one_source_prune_only_that_source() {
+    let a = open(Fixture::default().pdf());
+    let b = open(Fixture::default().pdf());
+    // Both pages of the first source; only page 1 of the second.
+    let plan = [
+        SourcePage {
+            document: 0,
+            page: 0,
+            rotation: 0,
+        },
+        SourcePage {
+            document: 0,
+            page: 1,
+            rotation: 0,
+        },
+        SourcePage {
+            document: 1,
+            page: 0,
+            rotation: 90,
+        },
+    ];
+    let merged = merge(&[&a, &b], &plan, LIMIT, &mut budget()).expect("merge");
+    let written = open_strict(merged.bytes.clone());
+    assert_eq!(written.page_count(), 3);
+    assert_eq!(written.pages()[2].rotation, 90);
+    let count = |needle: &[u8]| {
+        merged
+            .bytes
+            .windows(needle.len())
+            .filter(|w| *w == needle)
+            .count()
+    };
+    assert_eq!(count(b"marker-of-image-2"), 1);
+    assert_eq!(count(b"marker-of-image-1"), 2);
+}
+
+#[test]
+fn a_plan_naming_a_missing_source_is_refused() {
+    let a = open(Fixture::default().pdf());
+    let plan = [SourcePage {
+        document: 1,
+        page: 0,
+        rotation: 0,
+    }];
+    assert!(matches!(
+        merge(&[&a], &plan, LIMIT, &mut budget()),
+        Err(pdf_write::Error::InvalidPlan)
+    ));
+    assert!(matches!(
+        merge(&[&a], &[], LIMIT, &mut budget()),
+        Err(pdf_write::Error::InvalidPlan)
+    ));
+}
+
+#[test]
+fn what_other_sources_lose_is_listed() {
+    let first = open(layered("A", false, false, ""));
+    // Signed, with an /Info, a later version and its own intent.
+    let mut second = assemble(&[
+        "<< /Type /Catalog /Pages 2 0 R /Version /2.0 /AcroForm << /Fields [] /SigFlags 3 >> \
+         /OCProperties << /OCGs [5 0 R] /D << /Intent /Design /OFF [5 0 R] >> >> >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 10 10] >>",
+        "<< /Type /Page /Parent 2 0 R >>",
+        "<< /Title (second) >>",
+        "<< /Type /OCG /Name (B) /Intent /Design >>",
+    ]);
+    let at = second
+        .windows(10)
+        .rposition(|w| w == b"/Root 1 0 ")
+        .expect("trailer");
+    second.splice(at..at, b"/Info 4 0 R ".iter().copied());
+    let second = open(second);
+    let sources = [&first, &second];
+    let merged = merge(&sources, &all_pages(&sources), LIMIT, &mut budget()).expect("merge");
+    assert_eq!(
+        merged.dropped,
+        vec![
+            "AcroForm (document 2)",
+            "Signature (document 2)",
+            "Info (document 2)",
+            "OCProperties D/Intent (document 2)",
+        ]
+    );
+    assert!(merged.bytes.starts_with(b"%PDF-2.0"));
+}
+
+#[test]
+fn a_plan_of_more_pages_than_the_bound_is_refused() {
+    let a = open(Fixture::default().pdf());
+    let plan = vec![
+        SourcePage {
+            document: 0,
+            page: 0,
+            rotation: 0
+        };
+        pdf_write::MAX_PLAN_PAGES + 1
+    ];
+    assert!(matches!(
+        merge(&[&a], &plan, LIMIT, &mut budget()),
+        Err(pdf_write::Error::InvalidPlan)
+    ));
 }

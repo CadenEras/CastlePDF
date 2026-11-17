@@ -4,7 +4,9 @@
 //! whose first page renders the same as before, pixel for pixel; the size
 //! of the output against the input. Then, for a document of two pages or
 //! more, the last page left out (tranche 4.3, resources pruned): read back
-//! strictly, and the first page rendered the same. Files are read from
+//! strictly, and the first page rendered the same. Then each document is
+//! merged after the previous one opened (tranche 4.4): read back strictly
+//! with every page, and its first page rendered the same. Files are read from
 //! `CASTLE_REWRITE_DIR` (recursively), never from the repository; only
 //! counts are printed.
 //!
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 use pdf_document::Document;
 use pdf_render::{RenderOptions, render_page};
 use pdf_syntax::{Budget, CancellationToken, MemorySource, PdfFile, ResourceLimits};
-use pdf_write::{PlanPage, identity_plan, rewrite};
+use pdf_write::{PlanPage, SourcePage, identity_plan, merge, rewrite};
 
 fn budget() -> Budget {
     Budget::new(ResourceLimits::default(), CancellationToken::new())
@@ -57,6 +59,7 @@ fn rewrite_every_file_of_a_corpus() {
     let mut times: Vec<Duration> = Vec::new();
     let mut pruned_ratios = Vec::new();
     let mut kept_whole = 0;
+    let mut previous: Option<Document<MemorySource>> = None;
     let mut count = |key: &str| *outcomes.entry(key.to_owned()).or_default() += 1;
     for path in &paths {
         let Ok(bytes) = std::fs::read(path) else {
@@ -70,6 +73,9 @@ fn rewrite_every_file_of_a_corpus() {
             continue;
         };
         count("opened");
+        if let Some(before) = previous.take() {
+            count(&merged_after(&before, &document));
+        }
         let start = Instant::now();
         let plan = identity_plan(&document);
         let limit = input.saturating_mul(4).max(16 << 20);
@@ -144,6 +150,7 @@ fn rewrite_every_file_of_a_corpus() {
             (Ok(_), Err(_)) => count("first page fails only AFTER"),
             (Err(_), Ok(_)) => count("first page fails only before"),
         }
+        previous = Some(document);
     }
     ratios.sort_by(f64::total_cmp);
     pruned_ratios.sort_by(f64::total_cmp);
@@ -239,5 +246,61 @@ fn last_page_left_out(
         (Err(_), Err(_)) => "last page left out: first page fails before and after".to_owned(),
         (Ok(_), Err(_)) => "last page left out: first page fails only AFTER".to_owned(),
         (Err(_), Ok(_)) => "last page left out: first page fails only before".to_owned(),
+    }
+}
+
+/// `second` merged after `first`: the outcome, as a count key.
+fn merged_after(first: &Document<MemorySource>, second: &Document<MemorySource>) -> String {
+    let sources = [first, second];
+    let plan: Vec<SourcePage> = sources
+        .iter()
+        .enumerate()
+        .flat_map(|(document, source)| {
+            (0..source.page_count()).map(move |page| SourcePage {
+                document,
+                page,
+                rotation: 0,
+            })
+        })
+        .collect();
+    let merged = match merge(&sources, &plan, 256 << 20, &mut budget()) {
+        Ok(merged) => merged,
+        Err(e) => {
+            return format!("merged: failed: {e:?}").chars().take(60).collect();
+        }
+    };
+    let written = MemorySource::from_vec(merged.bytes, &ResourceLimits::default())
+        .map_err(|e| format!("{e:?}"))
+        .and_then(|source| {
+            PdfFile::open_strict(source, &mut budget()).map_err(|e| format!("{e:?}"))
+        })
+        .and_then(|file| Document::from_file(file, &mut budget()).map_err(|e| format!("{e:?}")));
+    let written = match written {
+        Ok(written) if written.page_count() == plan.len() => written,
+        Ok(_) => return "merged: page count differs".to_owned(),
+        Err(e) => {
+            return format!(
+                "merged: strict read back failed: {}",
+                e.chars().take(40).collect::<String>()
+            );
+        }
+    };
+    let (Some(a), Some(b)) = (second.page(0), written.page(first.page_count())) else {
+        return "merged: no first page".to_owned();
+    };
+    let options = RenderOptions::default();
+    match (
+        render_page(second.file(), a, &options, &mut budget()),
+        render_page(written.file(), b, &options, &mut budget()),
+    ) {
+        (Ok(before), Ok(after))
+            if before.bitmap == after.bitmap && before.skipped == after.skipped =>
+        {
+            "merged: second first page renders the same".to_owned()
+        }
+        (Ok(_), Ok(_)) => "merged: second first page renders DIFFERENTLY".to_owned(),
+        (Err(_), Err(_)) => "merged: second first page fails before and after".to_owned(),
+        (Ok(_), Err(_)) => "merged: second first page fails only AFTER".to_owned(),
+        (Err(_), Ok(_)) => "merged: second first page fails only before".to_owned(),
     }
 }
