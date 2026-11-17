@@ -11,6 +11,7 @@
 
 mod document;
 mod prune;
+mod save;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -20,6 +21,7 @@ use pdf_syntax::{Dictionary, Object, is_delimiter, is_regular, is_whitespace};
 pub use document::{
     MAX_PLAN_PAGES, PlanPage, Rewritten, SourcePage, identity_plan, merge, rewrite,
 };
+pub use save::{SaveError, save_as};
 
 /// What can stop a write: the input, never a panic.
 #[derive(Debug, Clone, PartialEq, Eq)]
