@@ -1,17 +1,24 @@
-//! `castle-pdf rewrite <file> <output.pdf>` (ADR-0008, tranche 4.2): the
-//! document written again whole, every page in order, by `pdf-write`.
-//! `castle-pdf pages <file> <output.pdf> <plan>` (tranche 4.3): the pages
-//! of a plan, in its order, turned as it says (see `parse_plan`). The
-//! result is read back by the strict reader (the plan's page count) before
-//! it is written; the output is a new file, never an existing one, never
-//! the source.
+//! Writing commands (ADR-0008), all through `pdf-write`:
+//! - `castle-pdf rewrite <file> <output.pdf>` (tranche 4.2): the document
+//!   written again whole, every page in order;
+//! - `castle-pdf pages <file> <output.pdf> <plan>` (tranche 4.3): the pages
+//!   of a plan, in its order, turned as it says (see `parse_plan`);
+//! - `castle-pdf merge <output.pdf> <file> <file>...` (tranche 4.4): every
+//!   page of each file, the files in order;
+//! - `castle-pdf split <file> <directory> <pages>` (tranche 4.4): the
+//!   document cut into files of `<pages>` pages, `part-001.pdf`... in an
+//!   existing directory.
+//!
+//! Each result is read back by the strict reader (the plan's page count)
+//! before it is written; an output is a new file, never an existing one,
+//! never a source.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pdf_document::Document;
 use pdf_syntax::{Budget, CancellationToken, MemorySource, ResourceLimits};
-use pdf_write::{PlanPage, identity_plan, rewrite};
+use pdf_write::{PlanPage, Rewritten, SourcePage, merge};
 
 use crate::open;
 use crate::render::publish;
@@ -21,90 +28,132 @@ use crate::render::publish;
 const GROWTH: u64 = 4;
 const MIN_LIMIT: u64 = 16 << 20;
 
-/// `plan`: the plan as given on the command line, `None` for every page.
-pub fn run(
-    input: &Path,
-    output: &Path,
-    plan: Option<&str>,
-    out: &mut dyn Write,
+/// Most files `merge` takes, and most files `split` writes.
+const MAX_FILES: usize = 1000;
+
+/// Documents opened from `inputs`, with their total size; `None` when one
+/// cannot be (the error is written, naming the input by its position: a
+/// path may hold control characters or private names). Together they may
+/// not hold more than `max_input_bytes`, checked before any is read, as
+/// the output could not be read back; a document without pages is refused.
+fn open_all(
+    inputs: &[&Path],
+    limits: &ResourceLimits,
+    budget: &mut Budget,
     err: &mut dyn Write,
-) -> io::Result<u8> {
-    let limits = ResourceLimits::default();
-    let Some(source) = open::source(input, &limits, err)? else {
-        return Ok(1);
-    };
-    let input_len = pdf_syntax::Source::len(&source);
-    let mut budget = Budget::new(limits, CancellationToken::new());
-    let document = match Document::open(source, &mut budget) {
-        Ok(document) => document,
-        Err(e) => {
-            writeln!(err, "error: {e}")?;
-            return Ok(1);
+) -> io::Result<Option<(Vec<Document<MemorySource>>, u64)>> {
+    let several = inputs.len() > 1;
+    let mut announced: u64 = 0;
+    for input in inputs {
+        let len = std::fs::metadata(input).map_or(0, |m| m.len());
+        announced = announced.saturating_add(len);
+    }
+    if announced > limits.max_input_bytes {
+        writeln!(
+            err,
+            "error: the files hold more than {} bytes together",
+            limits.max_input_bytes
+        )?;
+        return Ok(None);
+    }
+    let mut documents = Vec::with_capacity(inputs.len());
+    let mut total: u64 = 0;
+    for (index, input) in inputs.iter().enumerate() {
+        let label = if several {
+            format!("input {}: ", index + 1)
+        } else {
+            String::new()
+        };
+        let mut message = Vec::new();
+        let Some(source) = open::source(input, limits, &mut message)? else {
+            let message = message.strip_prefix(b"error: ").unwrap_or(&message);
+            err.write_all(b"error: ")?;
+            err.write_all(label.as_bytes())?;
+            err.write_all(message)?;
+            return Ok(None);
+        };
+        total = total.saturating_add(pdf_syntax::Source::len(&source));
+        if total > limits.max_input_bytes {
+            writeln!(
+                err,
+                "error: the files hold more than {} bytes together",
+                limits.max_input_bytes
+            )?;
+            return Ok(None);
         }
-    };
+        match Document::open(source, budget) {
+            Ok(document) if document.page_count() == 0 => {
+                writeln!(err, "error: {label}the document has no pages")?;
+                return Ok(None);
+            }
+            Ok(document) => documents.push(document),
+            Err(e) => {
+                writeln!(err, "error: {label}{e}")?;
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some((documents, total)))
+}
+
+/// The plan written and read back by the strict reader with its page
+/// count; the error, as text, otherwise.
+fn write_plan(
+    documents: &[Document<MemorySource>],
+    plan: &[SourcePage],
+    input_len: u64,
+    limits: &ResourceLimits,
+    budget: &mut Budget,
+) -> Result<Rewritten, String> {
     // Never more than the reader takes back (it reads the result again).
     let limit = input_len
         .saturating_mul(GROWTH)
         .max(MIN_LIMIT)
         .min(limits.max_input_bytes);
-    let plan = match plan {
-        None => identity_plan(&document),
-        Some(spec) => match parse_plan(spec, document.page_count()) {
-            Ok(plan) => plan,
-            Err(e) => {
-                writeln!(err, "error: invalid page plan: {e}")?;
-                return Ok(2);
-            }
-        },
-    };
-    let rewritten = match rewrite(&document, &plan, limit, &mut budget) {
-        Ok(rewritten) => rewritten,
-        Err(e) => {
-            writeln!(err, "error: cannot rewrite the document: {e}")?;
-            return Ok(1);
-        }
-    };
-    // Read back before it is written: the strict reader, the same pages.
-    let size = rewritten.bytes.len();
-    let check = || -> Result<usize, String> {
-        let source =
-            MemorySource::from_vec(rewritten.bytes.clone(), &limits).map_err(|e| e.to_string())?;
-        let mut budget = Budget::new(limits, CancellationToken::new());
-        let file =
-            pdf_syntax::PdfFile::open_strict(source, &mut budget).map_err(|e| e.to_string())?;
-        let written = Document::from_file(file, &mut budget).map_err(|e| e.to_string())?;
-        Ok(written.page_count())
-    };
-    match check() {
-        Ok(pages) if pages == plan.len() => {}
-        Ok(pages) => {
-            writeln!(
-                err,
-                "error: the rewritten document reads back with {pages} pages, not {}",
-                plan.len()
-            )?;
-            return Ok(1);
-        }
-        Err(e) => {
-            writeln!(err, "error: the rewritten document does not read back: {e}")?;
-            return Ok(1);
-        }
+    let sources: Vec<&Document<MemorySource>> = documents.iter().collect();
+    let rewritten = merge(&sources, plan, limit, budget)
+        .map_err(|e| format!("cannot rewrite the document: {e}"))?;
+    let source = MemorySource::from_vec(rewritten.bytes.clone(), limits)
+        .map_err(|e| format!("the rewritten document does not read back: {e}"))?;
+    let mut budget = Budget::new(*limits, CancellationToken::new());
+    let unreadable =
+        |e: &dyn std::fmt::Display| format!("the rewritten document does not read back: {e}");
+    let file = pdf_syntax::PdfFile::open_strict(source, &mut budget).map_err(|e| unreadable(&e))?;
+    let written = Document::from_file(file, &mut budget).map_err(|e| unreadable(&e))?;
+    if written.page_count() != plan.len() {
+        return Err(format!(
+            "the rewritten document reads back with {} pages, not {}",
+            written.page_count(),
+            plan.len()
+        ));
     }
-    if output.exists() || same_file(input, output) {
-        writeln!(err, "error: cannot create the document: the output exists")?;
-        return Ok(1);
+    Ok(rewritten)
+}
+
+/// `bytes` written to the new file `output`, which names no input.
+fn create(output: &Path, inputs: &[&Path], bytes: &[u8]) -> Result<(), String> {
+    if output.exists() || inputs.iter().any(|input| same_file(input, output)) {
+        return Err("cannot create the document: the output exists".to_owned());
     }
-    if let Err(e) = publish(output, |mut file| {
-        file.write_all(&rewritten.bytes)?;
+    publish(output, |mut file| {
+        file.write_all(bytes)?;
         file.sync_all()
-    }) {
-        writeln!(err, "error: cannot create the document: {}", e.kind())?;
-        return Ok(1);
-    }
+    })
+    .map_err(|e| format!("cannot create the document: {}", e.kind()))
+}
+
+/// The report of a written document: pages, size, what is not kept.
+fn report(
+    out: &mut dyn Write,
+    rewritten: &Rewritten,
+    pages: usize,
+    input_len: u64,
+    several: bool,
+) -> io::Result<()> {
     writeln!(
         out,
-        "rewritten: {} pages, {size} bytes (input {input_len}); not kept: {}",
-        plan.len(),
+        "rewritten: {pages} pages, {} bytes (input {input_len}); not kept: {}",
+        rewritten.bytes.len(),
         if rewritten.dropped.is_empty() {
             "nothing".to_owned()
         } else {
@@ -115,7 +164,13 @@ pub fn run(
         let pages: Vec<String> = rewritten
             .resources_kept_whole
             .iter()
-            .map(|page| (page + 1).to_string())
+            .map(|(document, page)| {
+                if several {
+                    format!("{}:{}", document + 1, page + 1)
+                } else {
+                    (page + 1).to_string()
+                }
+            })
             .collect();
         writeln!(
             out,
@@ -123,7 +178,186 @@ pub fn run(
             pages.join(", ")
         )?;
     }
+    Ok(())
+}
+
+/// `rewrite` and `pages`. `plan`: the plan as given on the command line,
+/// `None` for every page.
+pub fn run(
+    input: &Path,
+    output: &Path,
+    plan: Option<&str>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> io::Result<u8> {
+    let limits = ResourceLimits::default();
+    let mut budget = Budget::new(limits, CancellationToken::new());
+    let Some((documents, input_len)) = open_all(&[input], &limits, &mut budget, err)? else {
+        return Ok(1);
+    };
+    let page_count = documents.first().map_or(0, Document::page_count);
+    let plan = match plan {
+        None => (0..page_count)
+            .map(|page| PlanPage { page, rotation: 0 })
+            .collect(),
+        Some(spec) => match parse_plan(spec, page_count) {
+            Ok(plan) => plan,
+            Err(e) => {
+                writeln!(err, "error: invalid page plan: {e}")?;
+                return Ok(2);
+            }
+        },
+    };
+    let plan: Vec<SourcePage> = plan
+        .iter()
+        .map(|p| SourcePage {
+            document: 0,
+            page: p.page,
+            rotation: p.rotation,
+        })
+        .collect();
+    let written = write_plan(&documents, &plan, input_len, &limits, &mut budget)
+        .and_then(|rewritten| create(output, &[input], &rewritten.bytes).map(|()| rewritten));
+    match written {
+        Ok(rewritten) => {
+            report(out, &rewritten, plan.len(), input_len, false)?;
+            Ok(0)
+        }
+        Err(e) => {
+            writeln!(err, "error: {e}")?;
+            Ok(1)
+        }
+    }
+}
+
+/// `merge`: every page of each input, the inputs in order.
+pub fn run_merge(
+    output: &Path,
+    inputs: &[&Path],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> io::Result<u8> {
+    if inputs.len() > MAX_FILES {
+        writeln!(err, "error: more than {MAX_FILES} files")?;
+        return Ok(2);
+    }
+    let limits = ResourceLimits::default();
+    let mut budget = Budget::new(limits, CancellationToken::new());
+    let Some((documents, input_len)) = open_all(inputs, &limits, &mut budget, err)? else {
+        return Ok(1);
+    };
+    let plan: Vec<SourcePage> = documents
+        .iter()
+        .enumerate()
+        .flat_map(|(document, source)| {
+            (0..source.page_count()).map(move |page| SourcePage {
+                document,
+                page,
+                rotation: 0,
+            })
+        })
+        .collect();
+    let written = write_plan(&documents, &plan, input_len, &limits, &mut budget)
+        .and_then(|rewritten| create(output, inputs, &rewritten.bytes).map(|()| rewritten));
+    match written {
+        Ok(rewritten) => {
+            report(out, &rewritten, plan.len(), input_len, true)?;
+            Ok(0)
+        }
+        Err(e) => {
+            writeln!(err, "error: {e}")?;
+            Ok(1)
+        }
+    }
+}
+
+/// `split`: the document cut into files of `size` pages each (the last
+/// may have fewer), `part-001.pdf`... in `directory`. None is written when
+/// one of them exists already.
+pub fn run_split(
+    input: &Path,
+    directory: &Path,
+    size: &str,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> io::Result<u8> {
+    let Some(size) = size
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n > 0 && size.bytes().all(|b| b.is_ascii_digit()))
+    else {
+        writeln!(
+            err,
+            "error: invalid part size: \"{size}\" is not a number of pages"
+        )?;
+        return Ok(2);
+    };
+    if !directory.is_dir() {
+        writeln!(err, "error: the output directory is not a directory")?;
+        return Ok(1);
+    }
+    let limits = ResourceLimits::default();
+    let mut budget = Budget::new(limits, CancellationToken::new());
+    let Some((documents, input_len)) = open_all(&[input], &limits, &mut budget, err)? else {
+        return Ok(1);
+    };
+    let page_count = documents.first().map_or(0, Document::page_count);
+    let parts = page_count.div_ceil(size);
+    if parts > MAX_FILES {
+        writeln!(err, "error: more than {MAX_FILES} files")?;
+        return Ok(2);
+    }
+    let names: Vec<PathBuf> = (1..=parts)
+        .map(|part| directory.join(format!("part-{part:03}.pdf")))
+        .collect();
+    if let Some(existing) = names.iter().find(|name| name.exists()) {
+        writeln!(
+            err,
+            "error: cannot create the documents: {} exists",
+            part_name(existing)
+        )?;
+        return Ok(1);
+    }
+    // Parts written so far: removed if a later one fails, so that a failed
+    // split leaves the directory as it was (ADR-0008, point 4). Each was
+    // created new by `publish`, never an existing file.
+    let mut created: Vec<&PathBuf> = Vec::new();
+    for (part, name) in names.iter().enumerate() {
+        let first = part * size;
+        let plan: Vec<SourcePage> = (first..page_count.min(first + size))
+            .map(|page| SourcePage {
+                document: 0,
+                page,
+                rotation: 0,
+            })
+            .collect();
+        // Each part is a task of its own, with its own budget.
+        let mut budget = Budget::new(limits, CancellationToken::new());
+        let written = write_plan(&documents, &plan, input_len, &limits, &mut budget)
+            .and_then(|rewritten| create(name, &[input], &rewritten.bytes).map(|()| rewritten));
+        match written {
+            Ok(rewritten) => {
+                created.push(name);
+                write!(out, "{}: ", part_name(name))?;
+                report(out, &rewritten, plan.len(), input_len, false)?;
+            }
+            Err(e) => {
+                for written in created {
+                    let _ = std::fs::remove_file(written);
+                }
+                writeln!(err, "error: {}: {e}", part_name(name))?;
+                return Ok(1);
+            }
+        }
+    }
     Ok(0)
+}
+
+/// The file name of a part (`part-001.pdf`), never its directory.
+fn part_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Most entries a plan may have, pages repeated included.

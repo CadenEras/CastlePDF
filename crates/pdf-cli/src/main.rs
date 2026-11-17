@@ -32,6 +32,11 @@ Usage:
   castle-pdf render <file> <page> <output.ppm> [--scale <factor>]
                               Render a page (numbered from 1) to a new PPM
                               image; scale 1 is 72 pixels per inch
+  castle-pdf merge <output.pdf> <file> <file>...
+                              Write every page of each file, the files in
+                              order, to a new file; optional content is
+                              merged, the rest of the first file catalog
+                              kept; read back and listed as with rewrite
   castle-pdf pages <file> <output.pdf> <plan>
                               Write the pages of a plan to a new file: pages
                               from 1, ranges, each optionally turned, in the
@@ -39,6 +44,10 @@ Usage:
                               (3,1-2@90: page 3, then pages 1 and 2 turned
                               a quarter clockwise); read back and listed as
                               with rewrite
+  castle-pdf split <file> <directory> <pages>
+                              Cut the document into new files of <pages>
+                              pages each, part-001.pdf... in an existing
+                              directory; none is written if one exists
   castle-pdf rewrite <file> <output.pdf>
                               Write the document again whole, every page in
                               order, to a new file; the result is read back
@@ -102,6 +111,14 @@ fn run(args: &[std::ffi::OsString], out: &mut dyn Write, err: &mut dyn Write) ->
         [command, input, output] if *command == "rewrite" => {
             rewrite::run(input.as_ref(), output.as_ref(), None, out, err)
         }
+        [command, output, inputs @ ..] if *command == "merge" && inputs.len() >= 2 => {
+            let inputs: Vec<&std::path::Path> = inputs.iter().map(|i| i.as_ref()).collect();
+            rewrite::run_merge(output.as_ref(), &inputs, out, err)
+        }
+        [command, input, directory, size] if *command == "split" => match size.to_str() {
+            Some(size) => rewrite::run_split(input.as_ref(), directory.as_ref(), size, out, err),
+            None => err.write_all(USAGE.as_bytes()).map(|()| 2),
+        },
         [command, input, output, plan] if *command == "pages" => match plan.to_str() {
             Some(plan) => rewrite::run(input.as_ref(), output.as_ref(), Some(plan), out, err),
             None => err.write_all(USAGE.as_bytes()).map(|()| 2),

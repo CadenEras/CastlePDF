@@ -106,3 +106,86 @@ fn an_invalid_plan_or_an_existing_output_is_refused() {
     assert_eq!(code, 1);
     assert!(err.contains("the output exists"), "{err}");
 }
+
+#[test]
+fn merge_writes_every_page_of_each_file_in_order() {
+    let (shapes, text) = (corpus("shapes.pdf"), corpus("text.pdf"));
+    let output = fresh("merged.pdf");
+    let (code, out, err) = castle(&[
+        "merge".as_ref(),
+        output.as_os_str(),
+        shapes.as_os_str(),
+        text.as_os_str(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("rewritten: 5 pages, "), "{out}");
+    assert_eq!(
+        render(&text, "2", "text-source-2.ppm"),
+        render(&output, "5", "merged-5.ppm")
+    );
+    // An output that is one of the inputs, or exists, is refused.
+    let (code, _, err) = castle(&[
+        "merge".as_ref(),
+        shapes.as_os_str(),
+        text.as_os_str(),
+        text.as_os_str(),
+    ]);
+    assert_eq!(code, 1);
+    assert!(err.contains("the output exists"), "{err}");
+}
+
+#[test]
+fn split_cuts_a_document_into_new_files() {
+    let input = corpus("shapes.pdf");
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("split");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("directory");
+    let (code, out, err) = castle(&[
+        "split".as_ref(),
+        input.as_os_str(),
+        directory.as_os_str(),
+        "2".as_ref(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.lines().count(), 2, "{out}");
+    let second = directory.join("part-002.pdf");
+    assert_eq!(
+        render(&input, "3", "split-source-3.ppm"),
+        render(&second, "1", "split-part-2.ppm")
+    );
+    // Again: the parts exist, none is written.
+    let (code, _, err) = castle(&[
+        "split".as_ref(),
+        input.as_os_str(),
+        directory.as_os_str(),
+        "1".as_ref(),
+    ]);
+    assert_eq!(code, 1);
+    assert!(err.contains("part-001.pdf exists"), "{err}");
+    assert!(!directory.join("part-003.pdf").exists());
+    for size in ["0", "+1", "x"] {
+        let (code, _, _) = castle(&[
+            "split".as_ref(),
+            input.as_os_str(),
+            directory.as_os_str(),
+            size.as_ref(),
+        ]);
+        assert_eq!(code, 2, "{size}");
+    }
+}
+
+#[test]
+fn a_merge_input_that_cannot_be_read_is_named_by_its_position() {
+    let output = fresh("merged-missing.pdf");
+    let missing = fresh("no-such-input.pdf");
+    let (code, _, err) = castle(&[
+        "merge".as_ref(),
+        output.as_os_str(),
+        corpus("shapes.pdf").as_os_str(),
+        missing.as_os_str(),
+    ]);
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: input 2: "), "{err}");
+    assert!(!err.contains("no-such-input"), "{err}");
+    assert!(!output.exists());
+}
