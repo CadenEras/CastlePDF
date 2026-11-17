@@ -9,6 +9,13 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Worker : **enregistrement d’un plan de pages** (protocole v8, tranche 4.5b). `SaveDocument`
+  écrit les pages de documents ouverts (page, rotation) vers une destination choisie par le
+  shell, par `pdf_write::save_as` ; `DocumentSaved` donne pages, taille, ce qui n’est pas
+  gardé et les pages aux ressources gardées entières. Nouveaux codes d’erreur :
+  `SameAsSource` (le fichier d’un document ouvert), `InvalidDestination`, `Unwritable`,
+  `NotReadBack`.
+
 - Moteur : **« Enregistrer sous » transactionnel** (ADR-0008, point 4 ; tranche 4.5a).
   `pdf_write::save_as` écrit dans un fichier temporaire du dossier de destination, le vide sur
   disque, le relit avec le lecteur strict (nombre de pages vérifié), puis le renomme à la place

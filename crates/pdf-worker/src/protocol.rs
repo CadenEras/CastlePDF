@@ -27,6 +27,13 @@ pub const MAX_QUERY_BYTES: usize = 1024;
 /// Most occurrences a `SearchHits` response carries for a page; the others
 /// are left out (`truncated`).
 pub const MAX_PAGE_HITS: usize = 1000;
+/// Most pages a `SaveDocument` plan has (10 bytes each, within a default
+/// frame of 1 MiB).
+pub const MAX_SAVE_PAGES: usize = 65_536;
+/// Most entries of `DocumentSaved::dropped`, each at most
+/// `MAX_DROPPED_BYTES` long: what is beyond is left out.
+pub const MAX_DROPPED: usize = 256;
+pub const MAX_DROPPED_BYTES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
@@ -91,6 +98,25 @@ pub enum Request {
         match_case: bool,
         match_diacritics: bool,
     },
+    /// Writes the pages of `plan`, taken from open documents, to the file
+    /// at `destination` (chosen by the shell, never by the UI), through a
+    /// checked temporary file (ADR-0008, tranche 4.5); answered by
+    /// `DocumentSaved`. An open document's file is never the destination.
+    SaveDocument {
+        id: u64,
+        destination: String,
+        plan: Vec<SavePage>,
+    },
+}
+
+/// A page of a save plan: page `page` (from 0) of open document
+/// `document`, turned by `rotation` degrees clockwise (0, 90, 180 or 270)
+/// on top of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavePage {
+    pub document: u32,
+    pub page: u32,
+    pub rotation: u16,
 }
 
 /// A rectangle of device pixels of a page rendering (see `pdf_render::PixelRect`).
@@ -155,6 +181,17 @@ pub enum Response {
         /// Text the page shows is missing, as for `TextLayer::incomplete`:
         /// an occurrence there cannot be found.
         incomplete: bool,
+    },
+    /// The document written: its pages and size, what the sources had that
+    /// it does not keep (`pdf_write::Rewritten::dropped`, at most
+    /// `MAX_DROPPED`), and the pages, as (document, page), whose resources
+    /// were copied whole.
+    DocumentSaved {
+        id: u64,
+        pages: u32,
+        bytes: u64,
+        dropped: Vec<String>,
+        kept_whole: Vec<(u32, u32)>,
     },
 }
 
@@ -279,6 +316,15 @@ pub enum ErrorCode {
     Encrypted = 14,
     /// The worker already holds `MAX_DOCUMENTS` documents.
     TooManyDocuments = 15,
+    /// The save destination is the file of an open document.
+    SameAsSource = 16,
+    /// The save destination is not a file in an existing folder.
+    InvalidDestination = 17,
+    /// The save destination cannot be written: permission, full disk,
+    /// locked file.
+    Unwritable = 18,
+    /// The written document does not read back as expected: not saved.
+    NotReadBack = 19,
 }
 
 impl ErrorCode {
@@ -299,6 +345,10 @@ impl ErrorCode {
             13 => Self::Unsupported,
             14 => Self::Encrypted,
             15 => Self::TooManyDocuments,
+            16 => Self::SameAsSource,
+            17 => Self::InvalidDestination,
+            18 => Self::Unwritable,
+            19 => Self::NotReadBack,
             _ => return None,
         })
     }
@@ -339,6 +389,7 @@ const RENDER_TILE: u8 = 0x07;
 const CLOSE_DOCUMENT: u8 = 0x08;
 const PAGE_TEXT: u8 = 0x09;
 const SEARCH_PAGE: u8 = 0x0A;
+const SAVE_DOCUMENT: u8 = 0x0B;
 const HELLO_ACK: u8 = 0x81;
 const JOB_DONE: u8 = 0x82;
 const JOB_FAILED: u8 = 0x83;
@@ -348,6 +399,10 @@ const PAGE_SIZE_REPLY: u8 = 0x86;
 const TILE: u8 = 0x87;
 const PAGE_TEXT_REPLY: u8 = 0x88;
 const SEARCH_HITS: u8 = 0x89;
+const DOCUMENT_SAVED: u8 = 0x8A;
+/// Encoded bytes of a `SavePage` and of a kept-whole page.
+const SAVE_PAGE_LEN: usize = 10;
+const PAGE_REF_LEN: usize = 8;
 /// Encoded bytes of a `PageHit`.
 const HIT_LEN: usize = 24;
 /// Bytes of a `PageText` response before its lines: tag, id, flags, count.
@@ -476,6 +531,23 @@ impl Request {
                 .u32(*page)
                 .u8(u8::from(*match_case) | u8::from(*match_diacritics) << 1)
                 .str(query),
+            Self::SaveDocument {
+                id,
+                destination,
+                plan,
+            } => {
+                let mut out = Writer::new(
+                    SAVE_DOCUMENT,
+                    15 + destination.len() + plan.len() * SAVE_PAGE_LEN,
+                )
+                .u64(*id)
+                .str(destination)
+                .u32(u32::try_from(plan.len()).unwrap_or(u32::MAX));
+                for entry in plan {
+                    out = out.u32(entry.document).u32(entry.page).u16(entry.rotation);
+                }
+                out
+            }
         }
         .0
     }
@@ -532,6 +604,26 @@ impl Request {
                     query: r.str()?,
                     match_case: flags & 1 != 0,
                     match_diacritics: flags & 2 != 0,
+                }
+            }
+            SAVE_DOCUMENT => {
+                let (id, destination) = (r.u64()?, r.str()?);
+                let count = r.count(SAVE_PAGE_LEN)?;
+                if count > MAX_SAVE_PAGES {
+                    return Err(DecodeError);
+                }
+                let mut plan = Vec::with_capacity(count);
+                for _ in 0..count {
+                    plan.push(SavePage {
+                        document: r.u32()?,
+                        page: r.u32()?,
+                        rotation: r.u16()?,
+                    });
+                }
+                Self::SaveDocument {
+                    id,
+                    destination,
+                    plan,
                 }
             }
             _ => return Err(DecodeError),
@@ -612,6 +704,34 @@ impl Response {
                     for value in hit.start.iter().chain(&hit.end) {
                         out = out.u32(*value);
                     }
+                }
+                out
+            }
+            Self::DocumentSaved {
+                id,
+                pages,
+                bytes,
+                dropped,
+                kept_whole,
+            } => {
+                let dropped = dropped
+                    .get(..dropped.len().min(MAX_DROPPED))
+                    .unwrap_or_default();
+                let mut out = Writer::new(DOCUMENT_SAVED, 28 + kept_whole.len() * PAGE_REF_LEN)
+                    .u64(*id)
+                    .u32(*pages)
+                    .u64(*bytes)
+                    .u32(u32::try_from(dropped.len()).unwrap_or(u32::MAX));
+                for entry in dropped {
+                    let mut end = entry.len().min(MAX_DROPPED_BYTES);
+                    while !entry.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    out = out.str(entry.get(..end).unwrap_or_default());
+                }
+                out = out.u32(u32::try_from(kept_whole.len()).unwrap_or(u32::MAX));
+                for (document, page) in kept_whole {
+                    out = out.u32(*document).u32(*page);
                 }
                 out
             }
@@ -720,6 +840,33 @@ impl Response {
                     incomplete: flags & 2 != 0,
                 }
             }
+            DOCUMENT_SAVED => {
+                let (id, pages, bytes) = (r.u64()?, r.u32()?, r.u64()?);
+                let count = r.count(2)?;
+                if count > MAX_DROPPED {
+                    return Err(DecodeError);
+                }
+                let mut dropped = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let entry = r.str()?;
+                    if entry.len() > MAX_DROPPED_BYTES {
+                        return Err(DecodeError);
+                    }
+                    dropped.push(entry);
+                }
+                let count = r.count(PAGE_REF_LEN)?;
+                let mut kept_whole = Vec::with_capacity(count);
+                for _ in 0..count {
+                    kept_whole.push((r.u32()?, r.u32()?));
+                }
+                Self::DocumentSaved {
+                    id,
+                    pages,
+                    bytes,
+                    dropped,
+                    kept_whole,
+                }
+            }
             _ => return Err(DecodeError),
         };
         r.finish()?;
@@ -801,6 +948,22 @@ mod tests {
     fn requests() -> Vec<Request> {
         vec![
             Request::Hello { version: 1 },
+            Request::SaveDocument {
+                id: 12,
+                destination: r"D:\é\out.pdf".to_owned(),
+                plan: vec![
+                    SavePage {
+                        document: 1,
+                        page: 0,
+                        rotation: 0,
+                    },
+                    SavePage {
+                        document: u32::MAX,
+                        page: u32::MAX,
+                        rotation: 270,
+                    },
+                ],
+            },
             Request::RunSynthetic {
                 id: u64::MAX,
                 units: 42,
@@ -858,6 +1021,20 @@ mod tests {
     fn responses() -> Vec<Response> {
         vec![
             Response::HelloAck { version: 1 },
+            Response::DocumentSaved {
+                id: 13,
+                pages: 3,
+                bytes: u64::MAX,
+                dropped: vec!["Outlines (document 2)".to_owned(), String::new()],
+                kept_whole: vec![(1, 0), (u32::MAX, u32::MAX)],
+            },
+            Response::DocumentSaved {
+                id: 14,
+                pages: 1,
+                bytes: 0,
+                dropped: Vec::new(),
+                kept_whole: Vec::new(),
+            },
             Response::JobDone { id: 3, units: 9 },
             Response::JobFailed {
                 id: 3,
@@ -1028,12 +1205,54 @@ mod tests {
     }
 
     #[test]
+    fn save_plans_and_dropped_lists_are_bounded() {
+        let page = SavePage {
+            document: 1,
+            page: 0,
+            rotation: 0,
+        };
+        let request = |pages: usize| Request::SaveDocument {
+            id: 1,
+            destination: "out.pdf".to_owned(),
+            plan: vec![page; pages],
+        };
+        let bytes = request(MAX_SAVE_PAGES).encode();
+        assert!(bytes.len() < 1 << 20);
+        assert_eq!(Request::decode(&bytes), Ok(request(MAX_SAVE_PAGES)));
+        assert_eq!(
+            Request::decode(&request(MAX_SAVE_PAGES + 1).encode()),
+            Err(DecodeError)
+        );
+        // Encoding keeps the first MAX_DROPPED entries, each cut at a
+        // character boundary within MAX_DROPPED_BYTES.
+        let long = "é".repeat(MAX_DROPPED_BYTES);
+        let saved = Response::DocumentSaved {
+            id: 1,
+            pages: 1,
+            bytes: 1,
+            dropped: vec![long; MAX_DROPPED + 1],
+            kept_whole: Vec::new(),
+        };
+        let Ok(Response::DocumentSaved { dropped, .. }) = Response::decode(&saved.encode()) else {
+            panic!("decodes");
+        };
+        assert_eq!(dropped.len(), MAX_DROPPED);
+        assert!(dropped.iter().all(|d| d.len() == MAX_DROPPED_BYTES));
+    }
+
+    #[test]
     fn unknown_tags_and_codes_are_rejected() {
         assert_eq!(Request::decode(&[]), Err(DecodeError));
         assert_eq!(Request::decode(&[0x7f]), Err(DecodeError));
         assert_eq!(Request::decode(&[HELLO_ACK, 1, 0]), Err(DecodeError));
         assert_eq!(Response::decode(&[PROTOCOL_ERROR, 0]), Err(DecodeError));
-        assert_eq!(Response::decode(&[PROTOCOL_ERROR, 16]), Err(DecodeError));
+        assert_eq!(Response::decode(&[PROTOCOL_ERROR, 20]), Err(DecodeError));
+        assert_eq!(
+            Response::decode(&[PROTOCOL_ERROR, 19]),
+            Ok(Response::ProtocolError {
+                code: ErrorCode::NotReadBack
+            })
+        );
     }
 
     #[test]

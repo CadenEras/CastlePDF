@@ -281,6 +281,27 @@ fn job_of(request: Request, documents: &Shared<Documents>) -> Option<(u64, Work)
             };
             (id, Box::new(work))
         }
+        Request::SaveDocument {
+            id,
+            destination,
+            plan,
+        } => {
+            // The documents as they are now: one closed later still saves.
+            let (open, sources) = {
+                let documents = lock(documents);
+                let sources: Vec<std::path::PathBuf> = documents
+                    .all()
+                    .values()
+                    .map(|document| document.path().to_path_buf())
+                    .collect();
+                (documents.all().clone(), sources)
+            };
+            let work = move |budget: &mut Budget| {
+                documents::save(&open, &sources, &destination, &plan, id, budget)
+                    .unwrap_or_else(|code| failed(id, code))
+            };
+            (id, Box::new(work))
+        }
         Request::Hello { .. }
         | Request::Cancel { .. }
         | Request::Shutdown

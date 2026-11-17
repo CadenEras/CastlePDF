@@ -2312,6 +2312,7 @@ dependencies = [
  "pdf-document",
  "pdf-render",
  "pdf-syntax",
+ "pdf-write",
 ]
 
 [[package]]

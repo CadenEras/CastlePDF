@@ -657,6 +657,10 @@ fn reason(code: ErrorCode) -> &'static str {
         ErrorCode::Unsupported => "unsupported",
         ErrorCode::Encrypted => "encrypted",
         ErrorCode::TooManyDocuments => "tooManyDocuments",
+        ErrorCode::SameAsSource => "sameAsSource",
+        ErrorCode::InvalidDestination => "invalidDestination",
+        ErrorCode::Unwritable => "unwritable",
+        ErrorCode::NotReadBack => "notReadBack",
         ErrorCode::MalformedMessage
         | ErrorCode::UnsupportedVersion
         | ErrorCode::FrameTooLarge
@@ -940,7 +944,8 @@ impl Manager<'_> {
             | Response::PageSize { id, .. }
             | Response::Tile { id, .. }
             | Response::PageText { id, .. }
-            | Response::SearchHits { id, .. } => *id,
+            | Response::SearchHits { id, .. }
+            | Response::DocumentSaved { id, .. } => *id,
             Response::HelloAck { .. } | Response::ProtocolError { .. } => {
                 eprintln!("castle-pdf: unexpected worker response: {response:?}");
                 self.lose_worker();

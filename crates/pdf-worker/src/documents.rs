@@ -1,5 +1,5 @@
 //! Documents held by the worker and the jobs that use them: open a file,
-//! size a page, render a tile, give a page's text layer. Each job runs under its own `Budget`; the
+//! size a page, render a tile, give a page's text layer, save a page plan. Each job runs under its own `Budget`; the
 //! documents themselves are immutable once opened and shared with the job
 //! thread. Each keeps the cache of its renders (`RenderCache`), which its
 //! tiles reuse.
@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use pdf_document::Document;
@@ -17,11 +17,12 @@ use pdf_render::{
     page_size, page_text_cached, page_transform, reading_lines, render_area_cached,
 };
 use pdf_syntax::{Budget, MemorySource};
+use pdf_write::{SaveError, SourcePage};
 
 use crate::protocol::{
     ErrorCode, LAYER_UNITS_PER_PIXEL, LayerLine, LayerWord, MAX_PAGE_HITS, MAX_PATH_BYTES,
-    MAX_QUERY_BYTES, MAX_TEXT_LAYER_BYTES, MAX_TILE_SIDE, PAGE_TEXT_HEADER_LEN, PageHit, Repair,
-    Response, Skipped, TextLayer, TileRect, word_len,
+    MAX_QUERY_BYTES, MAX_SAVE_PAGES, MAX_TEXT_LAYER_BYTES, MAX_TILE_SIDE, PAGE_TEXT_HEADER_LEN,
+    PageHit, Repair, Response, SavePage, Skipped, TextLayer, TileRect, word_len,
 };
 
 /// Documents open at once; each holds its whole file in memory (ADR-0002).
@@ -33,6 +34,16 @@ pub const MAX_DOCUMENTS: usize = 4;
 pub struct Open {
     document: Document<MemorySource>,
     cache: Mutex<RenderCache>,
+    /// The file it was read from, never a save destination.
+    path: PathBuf,
+    /// Its size in bytes.
+    len: u64,
+}
+
+impl Open {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Deref for Open {
@@ -75,6 +86,11 @@ impl Documents {
     pub fn remove(&mut self, id: u32) {
         self.open.remove(&id);
     }
+
+    /// The open documents, by id.
+    pub fn all(&self) -> &BTreeMap<u32, Shared> {
+        &self.open
+    }
 }
 
 /// Reads and opens the file at `path`.
@@ -97,9 +113,112 @@ pub fn open(path: &str, budget: &mut Budget) -> Result<Shared, ErrorCode> {
             Arc::new(Open {
                 document,
                 cache: Mutex::new(RenderCache::default()),
+                path: path.to_path_buf(),
+                len: metadata.len(),
             })
         })
         .map_err(|e| document_code(&e))
+}
+
+/// The output may be this many times the sources together (object streams
+/// are written out as plain objects), and at least `MIN_SAVE_LIMIT`; never
+/// more than the reader takes back.
+const SAVE_GROWTH: u64 = 4;
+const MIN_SAVE_LIMIT: u64 = 16 << 20;
+
+/// Writes `plan` to `destination` (see `Request::SaveDocument`):
+/// `documents` are the open documents the plan names, by id, and
+/// `sources` the files of every open document, none of which may be the
+/// destination.
+pub fn save(
+    documents: &BTreeMap<u32, Shared>,
+    sources: &[PathBuf],
+    destination: &str,
+    plan: &[SavePage],
+    id: u64,
+    budget: &mut Budget,
+) -> Result<Response, ErrorCode> {
+    if destination.is_empty()
+        || destination.len() > usize::from(MAX_PATH_BYTES)
+        || plan.is_empty()
+        || plan.len() > MAX_SAVE_PAGES
+    {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    // The documents in order of first use, and the plan over them.
+    let mut order: Vec<u32> = Vec::new();
+    let mut entries = Vec::with_capacity(plan.len());
+    for entry in plan {
+        if !matches!(entry.rotation, 0 | 90 | 180 | 270) {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let index = match order.iter().position(|d| *d == entry.document) {
+            Some(index) => index,
+            None => {
+                order.push(entry.document);
+                order.len() - 1
+            }
+        };
+        entries.push(SourcePage {
+            document: index,
+            page: usize::try_from(entry.page).map_err(|_| ErrorCode::InvalidRequest)?,
+            rotation: entry.rotation,
+        });
+    }
+    let mut opened = Vec::with_capacity(order.len());
+    for document in &order {
+        opened.push(documents.get(document).ok_or(ErrorCode::UnknownDocument)?);
+    }
+    let sources_len = opened
+        .iter()
+        .fold(0u64, |total, open| total.saturating_add(open.len));
+    let limits = budget.limits();
+    let limit = sources_len
+        .saturating_mul(SAVE_GROWTH)
+        .max(MIN_SAVE_LIMIT)
+        .min(limits.max_input_bytes);
+    let inputs: Vec<&Document<MemorySource>> = opened.iter().map(|open| &open.document).collect();
+    let rewritten =
+        pdf_write::merge(&inputs, &entries, limit, budget).map_err(|e| write_code(&e))?;
+    let sources: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
+    pdf_write::save_as(
+        &rewritten.bytes,
+        plan.len(),
+        Path::new(destination),
+        &sources,
+        &limits,
+    )
+    .map_err(|e| save_code(&e))?;
+    let kept_whole = rewritten
+        .resources_kept_whole
+        .iter()
+        .filter_map(|(index, page)| Some((*order.get(*index)?, u32::try_from(*page).ok()?)))
+        .collect();
+    Ok(Response::DocumentSaved {
+        id,
+        pages: u32::try_from(plan.len()).map_err(|_| ErrorCode::InvalidRequest)?,
+        bytes: rewritten.bytes.len() as u64,
+        dropped: rewritten.dropped,
+        kept_whole,
+    })
+}
+
+fn write_code(error: &pdf_write::Error) -> ErrorCode {
+    match error {
+        pdf_write::Error::InvalidPlan => ErrorCode::InvalidRequest,
+        pdf_write::Error::TooLarge { .. } => ErrorCode::LimitExceeded,
+        pdf_write::Error::Syntax(e) => ErrorCode::from(e),
+        _ => ErrorCode::Internal,
+    }
+}
+
+fn save_code(error: &SaveError) -> ErrorCode {
+    match error {
+        SaveError::SameAsSource => ErrorCode::SameAsSource,
+        SaveError::InvalidDestination => ErrorCode::InvalidDestination,
+        SaveError::Io(_) => ErrorCode::Unwritable,
+        _ => ErrorCode::NotReadBack,
+    }
 }
 
 pub fn size(document: &Shared, page: u32, scale: f64, id: u64) -> Result<Response, ErrorCode> {

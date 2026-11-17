@@ -18,11 +18,15 @@ décompression et codecs doivent échouer proprement. Les annulations interrompe
 étapes longues ; si un codec ne peut pas être interrompu, le worker doit pouvoir être
 tué sans bloquer l'application. Définir droits et limites de processus pour chaque OS.
 
-État du worker (protocole v7) :
+État du worker (protocole v8) :
 - le chemin d'un document est choisi par le shell, jamais transmis par l'UI ; le worker
   le lit sous `max_input_bytes`, refuse ce qui n'est pas un fichier régulier et ne
   reçoit pas plus de 4 096 octets de chemin en UTF-8 ;
 - il garde au plus 4 documents ouverts, chacun entier en mémoire (ADR-0002) ;
+- il enregistre un plan de pages (`SaveDocument`, ADR-0008) vers un chemin choisi par le
+  shell, jamais par l’UI, par un temporaire relu strictement puis renommé ; le fichier d’un
+  document ouvert n’est jamais la destination (liens résolus), et un plan a au plus 65 536
+  pages ;
 - chaque tâche a son propre budget et son jeton d'annulation ;
 - un document réparé (ADR-0004) est signalé à l'ouverture et dans chaque tuile, et l'UI
   le dit à l'utilisateur ;

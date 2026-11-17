@@ -11,6 +11,7 @@ license.workspace = true
 pdf-document.workspace = true
 pdf-render.workspace = true
 pdf-syntax.workspace = true
+pdf-write.workspace = true
 
 [lints]
 workspace = true
