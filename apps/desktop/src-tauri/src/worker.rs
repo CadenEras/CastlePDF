@@ -20,8 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pdf_worker::client::{ClientError, WorkerProcess};
 use pdf_worker::protocol::{
-    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_TILE_SIDE, Repair,
-    Request, Response, TextLayer, TileRect,
+    ErrorCode, LAYER_UNITS_PER_PIXEL, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_SAVE_PAGES,
+    MAX_TILE_SIDE, Repair, Request, Response, SavePage, TextLayer, TileRect,
 };
 use serde::{Deserialize, Serialize};
 
@@ -199,6 +199,27 @@ pub struct HitDto {
     pub end: [u32; 3],
 }
 
+/// A page of a save plan, as sent by the UI: a page of the current
+/// document (from 0) and the quarter turns added to its own rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanEntry {
+    pub page: u32,
+    pub rotation: u16,
+}
+
+/// A saved document, for the UI (ADR-0008, tranche 4.5): its pages and
+/// size, what the source had that it does not keep, and the pages (from 0)
+/// whose resources were kept whole. Never its path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedDto {
+    pub pages: u32,
+    pub bytes: u64,
+    pub dropped: Vec<String>,
+    pub kept_whole: Vec<u32>,
+}
+
 /// What `search_page` looks for, as sent by the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRequest {
@@ -308,6 +329,14 @@ enum Job {
     },
     /// Opens the current document again in a restarted worker.
     Reopen { path: String },
+    /// Writes a plan over the current document to `destination`, chosen
+    /// and checked by the shell (ADR-0009).
+    Save {
+        document: u32,
+        plan: Vec<PlanEntry>,
+        destination: String,
+        reply: Reply<SavedDto>,
+    },
 }
 
 impl Job {
@@ -463,6 +492,64 @@ impl WorkerHandle {
         match self.queue(Job::Open {
             path: path.to_owned(),
             name,
+            reply,
+        }) {
+            Ok(()) => Pending::Waiting(receiver),
+            Err(error) => Pending::Ready(Err(error)),
+        }
+    }
+
+    /// Whether `plan` can be saved from the current document `document`
+    /// (see `save`).
+    pub fn check_plan(&self, document: u32, plan: &[PlanEntry]) -> Result<(), CommandError> {
+        if plan.is_empty() || plan.len() > MAX_SAVE_PAGES {
+            return Err(CommandError::InvalidArgument { field: "plan" });
+        }
+        for entry in plan {
+            if !matches!(entry.rotation, 0 | 90 | 180 | 270) {
+                return Err(CommandError::InvalidArgument { field: "rotation" });
+            }
+            self.check_page(document, entry.page)?;
+        }
+        Ok(())
+    }
+
+    /// The file the current document `document` was read from: the save
+    /// dialog starts in its folder, and a save never writes over it.
+    pub fn current_source(&self, document: u32) -> Option<PathBuf> {
+        lock(&self.shared.current)
+            .as_ref()
+            .filter(|current| current.document == document)
+            .map(|current| PathBuf::from(&current.path))
+    }
+
+    /// Writes `plan` over the current document `document` to
+    /// `destination`, a path the shell chose and checked (never the UI).
+    /// The plan is refused when empty, longer than `MAX_SAVE_PAGES`, naming
+    /// a page the document does not have, or turning by other than a
+    /// quarter.
+    pub fn save(
+        &self,
+        document: u32,
+        plan: Vec<PlanEntry>,
+        destination: &Path,
+    ) -> Pending<SavedDto> {
+        if let Err(error) = self.check_plan(document, &plan) {
+            return Pending::Ready(Err(error));
+        }
+        let Some(destination) = destination
+            .to_str()
+            .filter(|p| !p.is_empty() && p.len() <= usize::from(MAX_PATH_BYTES))
+        else {
+            return Pending::Ready(Err(CommandError::Failed {
+                reason: "unsupportedPath",
+            }));
+        };
+        let (reply, receiver) = channel();
+        match self.queue(Job::Save {
+            document,
+            plan,
+            destination: destination.to_owned(),
             reply,
         }) {
             Ok(()) => Pending::Waiting(receiver),
@@ -812,6 +899,9 @@ impl Manager<'_> {
                 let _ = reply.send(Err(error));
             }
             Job::Reopen { .. } => {}
+            Job::Save { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
         }
     }
 
@@ -864,7 +954,8 @@ impl Manager<'_> {
             let target = match &job {
                 Job::Size { document, .. }
                 | Job::Text { document, .. }
-                | Job::Search { document, .. } => Some(*document),
+                | Job::Search { document, .. }
+                | Job::Save { document, .. } => Some(*document),
                 Job::Tile { key, .. } => Some(key.document),
                 _ => None,
             };
@@ -923,6 +1014,20 @@ impl Manager<'_> {
                 Job::Reopen { path } => Request::OpenDocument {
                     id,
                     path: path.clone(),
+                },
+                Job::Save {
+                    plan, destination, ..
+                } => Request::SaveDocument {
+                    id,
+                    destination: destination.clone(),
+                    plan: plan
+                        .iter()
+                        .map(|entry| SavePage {
+                            document: worker_document,
+                            page: entry.page,
+                            rotation: entry.rotation,
+                        })
+                        .collect(),
                 },
             };
             match worker.send(&request) {
@@ -1063,6 +1168,23 @@ impl Manager<'_> {
             }
             (Job::Size { reply, .. }, Response::PageSize { width, height, .. }) => {
                 let _ = reply.send(Ok(PageSize { width, height }));
+            }
+            (
+                Job::Save { reply, .. },
+                Response::DocumentSaved {
+                    pages,
+                    bytes,
+                    dropped,
+                    kept_whole,
+                    ..
+                },
+            ) => {
+                let _ = reply.send(Ok(SavedDto {
+                    pages,
+                    bytes,
+                    dropped,
+                    kept_whole: kept_whole.into_iter().map(|(_, page)| page).collect(),
+                }));
             }
             (Job::Text { reply, .. }, Response::PageText { layer, .. }) => {
                 let _ = reply.send(Ok(TextLayerDto::from(layer)));

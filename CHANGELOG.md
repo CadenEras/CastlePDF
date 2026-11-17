@@ -9,6 +9,14 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Application : **commande « Enregistrer sous »** (ADR-0009, tranche 4.5c). `save_as` reçoit de
+  l’UI un plan sur le document courant (pages, rotations), jamais un chemin ; le shell ouvre le
+  dialogue natif (`tauri-plugin-dialog`, appelé seulement depuis Rust) dans le dossier du
+  document, avec « <nom> (copie).pdf » proposé, ajoute `.pdf` au besoin, refuse le fichier du
+  document (liens résolus), puis fait écrire le worker. Seule la permission `allow-save-as`
+  est ajoutée ; la fenêtre n’a toujours aucune permission de fichier ni de dialogue.
+  L’interface l’appellera en 4.6.
+
 - Worker : **enregistrement d’un plan de pages** (protocole v8, tranche 4.5b). `SaveDocument`
   écrit les pages de documents ouverts (page, rotation) vers une destination choisie par le
   shell, par `pdf_write::save_as` ; `DocumentSaved` donne pages, taille, ce qui n’est pas

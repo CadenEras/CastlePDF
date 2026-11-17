@@ -22,8 +22,8 @@ un plan de pages, « Enregistrer sous » transactionnel vers un autre fichier qu
 4.1 sérialiseur et aller-retour des objets (fait) ; 4.2 réécriture d'un document inchangé
 (`castle-pdf rewrite`, fait) ; 4.3 rotation, suppression, réordonnancement
 (`castle-pdf pages`, avec l'élagage des ressources partagées, fait) ; 4.4 fusion et découpe (`castle-pdf merge`, `split`, fait) ;
-4.5 sauvegarde transactionnelle (4.5a moteur, fait), worker (4.5b, protocole v8, fait) et shell (4.5c, dialogue
-natif par `tauri-plugin-dialog` côté Rust, ADR à écrire) ; 4.6 interface, annuler et rétablir ; 4.7
+4.5 sauvegarde transactionnelle (4.5a moteur, fait), worker (4.5b, protocole v8, fait) et shell (4.5c, commande
+`save_as`, dialogue natif côté Rust, [ADR-0009](adr/0009-save-dialog.md), fait) ; 4.6 interface, annuler et rétablir ; 4.7
 signets et liens recalculés, si la mesure le justifie.
 
 ### Limites ouvertes de P4 (écriture)
