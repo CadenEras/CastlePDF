@@ -9,6 +9,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Ajouté
 
+- Application : **panneau des pages à enregistrer** (ADR-0008, tranche 4.6a). À côté du
+  visualiseur, la liste des pages du document dans l’ordre d’enregistrement : pivoter
+  (`R`, `Maj+R`), retirer (`Suppr`, jamais la dernière page), monter et descendre
+  (`Alt+↑`, `Alt+↓`), annuler et rétablir (`Ctrl+Z`, `Ctrl+Y`, 100 étapes), au clavier comme à
+  la souris ; seules les lignes visibles sont rendues. « Enregistrer sous… » passe le plan au
+  shell, qui ouvre le dialogue natif ; le résultat dit les pages, la taille, ce qui n’est pas
+  gardé et les pages aux ressources gardées entières. Le document ouvert n’est jamais modifié.
+  Le visualiseur montre encore le document d’origine, sans miniatures : 4.6b.
+
 - Application : **commande « Enregistrer sous »** (ADR-0009, tranche 4.5c). `save_as` reçoit de
   l’UI un plan sur le document courant (pages, rotations), jamais un chemin ; le shell ouvre le
   dialogue natif (`tauri-plugin-dialog`, appelé seulement depuis Rust) dans le dossier du

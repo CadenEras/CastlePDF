@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_DROPPED,
   MAX_LAYER_WORDS,
   MAX_PAGE_HITS,
   ShellError,
@@ -11,6 +12,7 @@ import {
   parseJobEvent,
   parseJobId,
   parsePageSize,
+  parseSaved,
   parseSearchHits,
   parseTextLayer,
   parseTile,
@@ -221,5 +223,39 @@ describe("documents and tiles", () => {
     }
     const many = Array.from({ length: MAX_PAGE_HITS + 1 }, () => hit);
     expect(() => parseSearchHits({ hits: many, truncated: true, incomplete: false })).toThrow();
+  });
+});
+
+describe("parseSaved", () => {
+  it("reads a save result, null for a cancelled dialog", () => {
+    expect(parseSaved(null)).toBeNull();
+    expect(
+      parseSaved({ pages: 2, bytes: 1024, dropped: ["Outlines"], keptWhole: [0, 3] }),
+    ).toEqual({ pages: 2, bytes: 1024, dropped: ["Outlines"], keptWhole: [0, 3] });
+  });
+
+  it("refuses what the shell would not send", () => {
+    const valid = { pages: 2, bytes: 1024, dropped: [], keptWhole: [] };
+    for (const value of [
+      undefined,
+      "saved",
+      { ...valid, pages: -1 },
+      { ...valid, bytes: 1.5 },
+      { ...valid, dropped: [3] },
+      { ...valid, dropped: Array.from({ length: MAX_DROPPED + 1 }, () => "x") },
+      { ...valid, keptWhole: [-1] },
+      { ...valid, keptWhole: "0" },
+    ]) {
+      expect(() => parseSaved(value)).toThrow("invalid save result from shell");
+    }
+  });
+
+  it("names the save refusals", () => {
+    expect(describeCommandError({ code: "failed", reason: "sameAsSource" })).toBe(
+      "le fichier du document ouvert ne peut pas être remplacé",
+    );
+    expect(describeCommandError({ code: "failed", reason: "notReadBack" })).toBe(
+      "le fichier écrit ne se relit pas : rien n'a été enregistré",
+    );
   });
 });

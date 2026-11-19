@@ -185,6 +185,21 @@ describe("App", () => {
     expect(screen.getByRole("group", { name: "Page 1 de shapes.pdf" })).toBeTruthy();
   });
 
+  it("replaces the document shown by the one opened next", async () => {
+    // Found by hand: each dropped file added a viewer beside the others.
+    await renderApp();
+    open({ sequence: 1, kind: "opened", document: 1, pages: 4, name: "plan.pdf", repair: "none" });
+    open({ sequence: 2, kind: "opened", document: 2, pages: 1, name: "scan.pdf", repair: "none" });
+    open({ sequence: 3, kind: "opened", document: 3, pages: 2, name: "note.pdf", repair: "none" });
+    expect(screen.getAllByRole("button", { name: "Page précédente" })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: /^Pages à enregistrer/ })).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /^Pages à enregistrer/ }).textContent).toBe(
+      "Pages à enregistrer (2 sur 2)",
+    );
+    expect(screen.queryByRole("group", { name: "Page 1 de plan.pdf" })).toBeNull();
+    expect(screen.getByRole("group", { name: "Page 1 de note.pdf" })).toBeTruthy();
+  });
+
   it("keeps the document shown when another file cannot be opened", async () => {
     await renderApp();
     open({ sequence: 1, kind: "opened", document: 1, pages: 4, name: "plan.pdf", repair: "none" });
