@@ -224,8 +224,8 @@ fn a_damaged_or_missing_glyph_affects_only_itself() {
     let rendering = render(text.into_bytes());
     assert_eq!(skipped(&rendering), [Unsupported::Text]);
     assert_eq!(at(&rendering, 30, 50), BLUE);
-    // d0 outside a glyph is misplaced.
-    assert!(render_with(simple("1000 0 d0"), &RenderOptions::default()).is_err());
+    // d0 outside a glyph: ignored, as other readers do.
+    assert!(render_with(simple("1000 0 d0"), &RenderOptions::default()).is_ok());
 }
 
 #[test]
@@ -349,16 +349,19 @@ fn an_unreadable_glyph_is_read_once() {
 
 #[test]
 fn glyph_operators_and_colours_follow_the_rules() {
-    // d1 must be the first operator of the glyph: elsewhere the glyph is
-    // drawn up to it and reported.
+    // d1 must be the first operator of the glyph: elsewhere it is ignored,
+    // as other readers do, and the glyph keeps its own colours.
     let rendering = render(page(
         "0 0 1 rg BT /T3 40 Tf 10 30 Td (A) Tj ET",
         "",
-        ["0 0 500 1000 re f 1000 0 0 0 1000 1000 d1", RED_BAR],
+        [
+            "1 0 0 rg 0 0 500 1000 re f 1000 0 0 0 1000 1000 d1",
+            RED_BAR,
+        ],
         &[],
     ));
-    assert_eq!(skipped(&rendering), [Unsupported::Text]);
-    assert_eq!(at(&rendering, 15, 50), BLUE);
+    assert!(skipped(&rendering).is_empty(), "{:?}", skipped(&rendering));
+    assert_eq!(at(&rendering, 15, 50), RED);
     // A form called by an uncoloured glyph: its own d1 is misplaced (the
     // form is reported), its colour operators are ignored too.
     let form = stream(
