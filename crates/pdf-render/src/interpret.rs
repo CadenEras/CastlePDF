@@ -789,9 +789,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
     }
 
     /// Runs every operation of `content`, then returns the canvas and the
-    /// capabilities skipped. The content must end outside any text object,
-    /// path, `q`, marked content or compatibility section (ISO 32000-2,
-    /// 7.8.2, 8.4.2, 14.6). The caches come back whatever the result.
+    /// capabilities skipped. Operators out of place are run as other
+    /// readers run them, and content may end inside a text object, path,
+    /// `q`, marked content or compatibility section (see `execute`). The
+    /// caches come back whatever the result.
     pub fn run(
         mut self,
         content: &[u8],
@@ -806,17 +807,10 @@ impl<'a, S: Source> Interpreter<'a, S> {
         // The initial colour spaces are DeviceGray: apply `DefaultGray`.
         self.state.fill.space = self.device(ColorSpace::Gray, 0, budget)?;
         self.state.stroke.space = self.state.fill.space;
-        self.run_content(content, budget)?;
-        if self.in_text
-            || !self.path.is_empty()
-            || self.pending_clip.is_some()
-            || !self.saved.is_empty()
-            || self.marked_content > 0
-            || self.compatibility > 0
-        {
-            return Err(self.error(content.len() as u64, ContentErrorKind::Unterminated));
-        }
-        Ok(())
+        // Content that ends inside a text object, a path, a `q`, marked
+        // content or a compatibility section is drawn as far as it goes, as
+        // other readers do: a path never painted paints nothing.
+        self.run_content(content, budget)
     }
 
     /// Executes every operation of `content`, counted against
@@ -888,26 +882,18 @@ impl<'a, S: Source> Interpreter<'a, S> {
         let ops = op.operands;
         let page = self.page;
         let bad = move || content_error(page, at, ContentErrorKind::InvalidOperands);
-        let misplaced = move || content_error(page, at, ContentErrorKind::MisplacedOperator);
-        let in_path = !self.path.is_empty() || self.pending_clip.is_some();
-
-        // Operators allowed at this point (ISO 32000-2, 8.2, figure 9). A
-        // painting operator may end an empty path: it paints nothing.
+        // An operator where ISO 32000-2 (8.2, figure 9) does not allow it is
+        // run all the same, as other readers do: a colour or state set in
+        // the middle of a path, `cm` or a path inside a text object, text
+        // shown outside one (the text matrix then is the last one set). The
+        // corpus had 25 first pages refused for this alone. Only what
+        // cannot take effect is ignored: `ET` outside a text object, `EMC`
+        // or `EX` with nothing open, `d0`/`d1` after a glyph's first
+        // operation; `BT` inside a text object starts a new one.
         match category(op.operator) {
-            Category::PathConstruction | Category::Clip | Category::Painting if self.in_text => {
-                return Err(misplaced());
-            }
-            Category::PathConstruction | Category::Clip | Category::Painting => {}
             Category::Unknown if self.compatibility > 0 => return Ok(()),
             Category::Unknown => {
                 return Err(self.error(at, ContentErrorKind::UnknownOperator));
-            }
-            _ if in_path => return Err(misplaced()),
-            Category::SpecialState | Category::External if self.in_text => {
-                return Err(misplaced());
-            }
-            Category::TextPosition | Category::TextShow if !self.in_text => {
-                return Err(misplaced());
             }
             // An uncoloured glyph is painted in the colour of the text.
             Category::Color if self.uncolored => return Ok(()),
@@ -1136,18 +1122,14 @@ impl<'a, S: Source> Interpreter<'a, S> {
             // (ADR-0005); other fonts set `Text`.
             b"BT" => {
                 no_operands(ops).ok_or_else(bad)?;
-                if self.in_text {
-                    return Err(misplaced());
-                }
+                // Inside a text object: a new one starts (see `execute`).
                 self.in_text = true;
                 self.text_matrix = Matrix::IDENTITY;
                 self.line_matrix = Matrix::IDENTITY;
             }
             b"ET" => {
                 no_operands(ops).ok_or_else(bad)?;
-                if !self.in_text {
-                    return Err(misplaced());
-                }
+                // Outside a text object: nothing to end.
                 self.in_text = false;
             }
             b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" => {
@@ -1235,8 +1217,9 @@ impl<'a, S: Source> Interpreter<'a, S> {
             // Type 3 glyph metrics (9.6.4): the width is the font's; `d1`
             // makes the glyph uncoloured.
             b"d0" | b"d1" => {
+                // After a glyph's first operation: ignored (see `execute`).
                 if !glyph_start {
-                    return Err(misplaced());
+                    return Ok(());
                 }
                 let valid = match op.operator {
                     b"d0" => numbers::<2>(ops).is_some(),
@@ -1303,7 +1286,11 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             b"EMC" => {
                 no_operands(ops).ok_or_else(bad)?;
-                self.marked_content = self.marked_content.checked_sub(1).ok_or_else(misplaced)?;
+                // With no sequence open: ignored (see `execute`).
+                if self.marked_content == 0 {
+                    return Ok(());
+                }
+                self.marked_content -= 1;
                 if let Some(Some(span)) = self.marks.pop() {
                     self.end_actual_text(span);
                 }
@@ -1315,7 +1302,8 @@ impl<'a, S: Source> Interpreter<'a, S> {
             }
             b"EX" => {
                 no_operands(ops).ok_or_else(bad)?;
-                self.compatibility = self.compatibility.checked_sub(1).ok_or_else(misplaced)?;
+                // With no section open: ignored (see `execute`).
+                self.compatibility = self.compatibility.saturating_sub(1);
             }
             _ => return Err(self.error(at, ContentErrorKind::UnknownOperator)),
         }

@@ -465,13 +465,16 @@ fn form_entries_change_what_is_reported_or_inherited() {
     ));
     assert_eq!(skipped(&page), [Unsupported::XObject]);
     assert_eq!(at(&page, 110, 110), BLUE);
-    // Marked content of the page cannot be closed by a form.
+    // Marked content of the page cannot be closed by a form: the form's
+    // `EMC` closes nothing and is ignored, as an `EMC` with nothing open
+    // anywhere; the form is drawn.
     let page = render(pdf(
         "/T BMC /F Do EMC",
         "/XObject << /F 5 0 R >>",
         &[form("/BBox [0 0 200 200]", &format!("{square} EMC"))],
     ));
-    assert_eq!(skipped(&page), [Unsupported::XObject]);
+    assert!(skipped(&page).is_empty());
+    assert_eq!(at(&page, 25, 25), RED);
 }
 
 #[test]
