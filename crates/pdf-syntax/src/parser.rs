@@ -47,6 +47,9 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     /// Tokens read ahead to recognise `n g R`; at most two.
     lookahead: VecDeque<Spanned<'a>>,
+    /// Accept, after `stream`, spaces and a lone CR as well (see
+    /// `tolerating_stream_eol`).
+    tolerant_stream_eol: bool,
 }
 
 enum Frame {
@@ -76,7 +79,19 @@ impl<'a> Parser<'a> {
             data,
             lexer: Lexer::new(data),
             lookahead: VecDeque::new(),
+            tolerant_stream_eol: false,
         }
+    }
+
+    /// A parser that accepts, between `stream` and the data, spaces or tabs
+    /// and then CRLF, LF or a lone CR, as the repair scan does (ADR-0004):
+    /// for a file not read strictly. ISO 32000-2 (7.3.8.1) asks for CRLF or
+    /// LF only; some producers (scanners) end the line with CR alone, which
+    /// other readers accept. A CR followed by LF is always one end of line.
+    #[must_use]
+    pub fn tolerating_stream_eol(mut self) -> Self {
+        self.tolerant_stream_eol = true;
+        self
     }
 
     /// Offset of the next token not yet consumed, or of the next byte to read.
@@ -221,9 +236,23 @@ impl<'a> Parser<'a> {
         let eol = usize::try_from(keyword_end).map_err(|_| Error::Truncated {
             offset: keyword_end,
         })?;
+        // Spaces before the end of line, only when tolerated.
+        let spaces = if self.tolerant_stream_eol {
+            self.data
+                .get(eol..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count()
+        } else {
+            0
+        };
+        let eol = eol + spaces;
+        let keyword_end = keyword_end + spaces as u64;
         let data_start = match (self.data.get(eol), self.data.get(eol.wrapping_add(1))) {
             (Some(b'\n'), _) => keyword_end + 1,
             (Some(b'\r'), Some(b'\n')) => keyword_end + 2,
+            (Some(b'\r'), Some(_)) if self.tolerant_stream_eol => keyword_end + 1,
             (None, _) | (Some(b'\r'), None) => {
                 return Err(Error::Truncated {
                     offset: keyword_end,

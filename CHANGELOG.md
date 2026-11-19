@@ -83,6 +83,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   donne les mêmes octets ; `qpdf --check` ne trouve aucune erreur (workflow `oracle`). Aucune
   opération sur les documents encore (tranches 4.2 et suivantes).
 
+### Corrigé
+
+- Lecture : un fichier qui termine ses lignes par CR seul (logiciel de numérisation) ne se
+  rendait pas. Lu sans l’option stricte, il était bien réparé (table de références de 19 octets
+  par entrée), mais chaque flux échouait en `MissingStreamEol`. Hors lecture stricte, `stream`
+  peut désormais être suivi d’espaces puis de CRLF, LF ou CR seul, comme l’accepte déjà le
+  balayage de réparation (ADR-0004) ; le lecteur strict (ADR-0002), qui vérifie nos propres
+  fichiers, refuse toujours. Test de non-régression synthétique, sans le document signalé.
+
 ## [0.1.0-alpha.5] — 2026-11-16
 
 Préversion intermédiaire après la fin de P3 : le rendu de la couleur et des dégradés. Les tracés

@@ -715,3 +715,45 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_tolerant_parser_accepts_a_lone_cr_or_spaces_after_stream() {
+    let tolerant = |input: &[u8]| -> Result<Stream, Error> {
+        match Parser::new(input)
+            .tolerating_stream_eol()
+            .parse_indirect_object(&mut budget(), &mut no_indirect_length)?
+            .value
+        {
+            IndirectValue::Stream(stream) => Ok(stream),
+            IndirectValue::Object(other) => panic!("expected a stream, got {other:?}"),
+        }
+    };
+    // Data starts after the lone CR, after the spaces and the end of line.
+    let lone = b"1 0 obj<</Length 3>>stream\rabc\rendstream\rendobj";
+    assert_eq!(tolerant(lone).map(|s| s.data), Ok(27..30));
+    let spaced = b"1 0 obj<</Length 3>>stream  \t\r\nabc\nendstream endobj";
+    assert_eq!(tolerant(spaced).map(|s| s.data), Ok(31..34));
+    // CR LF stays one end of line, even when the data could start with LF.
+    let crlf = b"1 0 obj<</Length 3>>stream\r\nabc\nendstream endobj";
+    assert_eq!(tolerant(crlf).map(|s| s.data), Ok(28..31));
+    // Still refused: no end of line at all, or the input ending on CR.
+    assert_eq!(
+        tolerant(b"1 0 obj<</Length 0>>stream endstream endobj"),
+        Err(Error::Malformed {
+            offset: 27,
+            kind: MalformedKind::MissingStreamEol
+        })
+    );
+    assert_eq!(
+        tolerant(b"1 0 obj<</Length 0>>stream\r"),
+        Err(Error::Truncated { offset: 26 })
+    );
+    // The strict parser is unchanged.
+    assert_eq!(
+        stream(lone),
+        Err(Error::Malformed {
+            offset: 26,
+            kind: MalformedKind::MissingStreamEol
+        })
+    );
+}
