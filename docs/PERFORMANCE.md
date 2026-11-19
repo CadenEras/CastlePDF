@@ -66,6 +66,19 @@ Deux catégories, toujours indiquées avec le relevé :
 | 2026-11-05 | Référence | Plancher au repos, Windows 11 x64 | [P0 Windows](perf/2026-11-05-p0-windows.md) |
 | 2026-11-05 | Indicatif | Plancher au repos, Ubuntu 22.04 sous WSL2 | [P0 WSL2](perf/2026-11-05-p0-wsl2.md) |
 
+### Machine de référence Windows
+
+Machine physique des relevés de référence Windows (consignée le 2026-11-18) :
+- Windows 11 Professionnel 10.0.26300 x64, Intel Core i7-12700KF, 64 GiB de RAM ;
+- GPU NVIDIA GeForce RTX 5070, pilote 32.0.16.1088 (2026-07-22) ; mémoire vidéo non relevée
+  (WMI la plafonne à 4 Gio) ;
+- un écran 1920 × 1080 à 164 Hz, 32 bits ;
+- profil d'alimentation « Haute performance ».
+
+Le profil, le pilote et l'écran sont à revérifier avant chaque relevé de référence et
+consignés s'ils ont changé (`powercfg /getactivescheme`,
+`Get-CimInstance Win32_VideoController`).
+
 macOS et Linux n'ont pas encore de relevé de référence : il faut une machine physique
 pour chacun. Les relevés indicatifs du workflow `memory` sont dans le résumé de chaque
 exécution GitHub Actions.
