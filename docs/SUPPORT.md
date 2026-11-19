@@ -64,7 +64,7 @@ signalés et jamais devinés.
 | `BleedBox`, `TrimBox`, `ArtBox`, libellés de pages | Absent | Non lus : la page est rendue selon sa `CropBox` comme le font les lecteurs | — |
 | Chiffrement (`/Encrypt`) | Refusé | Erreur de capacité `Encryption` ; jamais réparé ni deviné. 42 et 52 fichiers du corpus | Tests `pdf-syntax` |
 | Données de flux externes (`/F`) | Refusé | `ExternalStreamData` ; aucun accès à un autre fichier | Tests `pdf-syntax` |
-| Contenu de page non conforme | Refusé (la page) | Opérateur mal placé, flux sans fin de ligne après `stream`, contenu non terminé : la page échoue avec une erreur localisée, sans réparation du contenu | `survey` |
+| Contenu de page non conforme | Partiel | Comme les autres lecteurs : un opérateur mal placé est exécuté (couleur ou état au milieu d'un chemin, `cm` ou chemin dans un objet texte, texte hors de `BT`), ce qui ne peut rien fermer est ignoré (`ET`, `EMC`, `EX`, `d0`/`d1` hors place), un contenu non terminé est dessiné jusqu'où il va ; hors lecture stricte, `stream` suivi d'un CR seul ou d'espaces est lu. Un opérateur inconnu, des opérandes invalides ou une ressource absente font encore échouer la page | `survey`, tests `render.rs` |
 
 ## Filtres de flux
 

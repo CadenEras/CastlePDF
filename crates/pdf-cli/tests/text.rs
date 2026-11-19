@@ -145,13 +145,13 @@ fn bidirectional_controls_are_not_printed() {
 
 #[test]
 fn a_failing_page_does_not_stop_the_next_ones() {
-    // Page 1 ends inside a text object: an error; page 2 is printed.
+    // Page 1 has an unknown operator: an error; page 2 is printed.
     let bodies = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>".to_owned(),
-        "<< /Length 25 >>\nstream\nBT /F1 10 Tf (Broken) Tj\nendstream".to_owned(),
+        "<< /Length 31 >>\nstream\nBT /F1 10 Tf (Broken) Tj ET zz\nendstream".to_owned(),
         "<< /Length 28 >>\nstream\nBT /F1 10 Tf (Second) Tj ET\nendstream".to_owned(),
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
     ];

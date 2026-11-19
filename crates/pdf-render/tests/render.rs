@@ -299,17 +299,6 @@ fn content_errors_are_located() {
     assert_eq!(content_error("1 1 l"), (4, NoCurrentPoint));
     assert_eq!(content_error("1 1 2 2 v"), (8, NoCurrentPoint));
     assert_eq!(content_error("q Q Q"), (4, UnbalancedRestore));
-    assert_eq!(
-        content_error("1 0 0 rg 0 0 m 1 0 0 rg"),
-        (21, MisplacedOperator)
-    );
-    assert_eq!(content_error("BT 0 0 m ET"), (7, MisplacedOperator));
-    assert_eq!(content_error("BT q ET"), (3, MisplacedOperator));
-    assert_eq!(content_error("BT BT"), (3, MisplacedOperator));
-    assert_eq!(content_error("ET"), (0, MisplacedOperator));
-    assert_eq!(content_error("(x) Tj"), (4, MisplacedOperator));
-    assert_eq!(content_error("EX"), (0, MisplacedOperator));
-    assert_eq!(content_error("0 0 d0"), (4, MisplacedOperator));
     assert_eq!(content_error("1 2 rg"), (4, InvalidOperands));
     assert_eq!(content_error("(a) g"), (4, InvalidOperands));
     assert_eq!(content_error("-1 w"), (3, InvalidOperands));
@@ -652,14 +641,6 @@ fn dash_arrays_and_clips_are_bounded() {
 #[test]
 fn content_must_be_terminated_and_operands_checked() {
     use ContentErrorKind::*;
-    for content in ["BT", "0 0 m", "0 0 1 1 re W", "q", "/X BMC", "BX"] {
-        assert_eq!(
-            content_error(content),
-            (content.len() as u64 + 1, Unterminated),
-            "{content}"
-        );
-    }
-    assert_eq!(content_error("EMC"), (0, MisplacedOperator));
     assert_eq!(content_error("/Absent Do"), (8, InvalidResource));
     assert_eq!(content_error("/Sh9 sh"), (5, InvalidResource));
     assert_eq!(content_error("/OC /L9 BDC EMC"), (8, InvalidResource));
@@ -832,4 +813,40 @@ fn a_file_ending_its_lines_with_cr_alone_renders() {
     assert!(strict.is_err());
     let rendering = render(pdf, 0, &RenderOptions::default()).expect("renders");
     assert_eq!(rendering.bitmap.pixel(50, 50), Some([255, 0, 0, 255]));
+}
+
+#[test]
+fn operators_out_of_place_are_run_as_other_readers_run_them() {
+    // Found on the corpus (25 first pages refused) and on a user's file:
+    // each now renders as pdf.js and MuPDF draw it.
+    let colour = |content: &str| {
+        let rendering = render_small(content).unwrap_or_else(|e| panic!("{content}: {e}"));
+        rendering.bitmap.pixel(10, 10).expect("pixel")
+    };
+    // A colour, a width or a restore in the middle of a path.
+    assert_color(colour("0 0 20 20 re 1 0 0 rg f"), [255, 0, 0]);
+    assert_color(
+        colour("0 0 m 0 1 0 rg 20 0 l 20 20 l 0 20 l h f"),
+        [0, 255, 0],
+    );
+    assert_color(colour("q 0 0 1 rg 0 0 20 20 re Q f"), [0, 0, 0]);
+    // `cm` and a path inside a text object.
+    assert_color(colour("BT 2 0 0 2 0 0 cm 0 0 10 10 re f ET"), [0, 0, 0]);
+    // Nothing open to end: ignored.
+    assert_color(
+        colour("EMC EX ET 0 0 d0 1 0 0 rg 0 0 20 20 re f"),
+        [255, 0, 0],
+    );
+    // `BT` inside a text object starts a new one.
+    assert_color(colour("BT BT ET 0 0 1 rg 0 0 20 20 re f"), [0, 0, 255]);
+    // Content ending inside a text object, a `q`, marked content, a
+    // compatibility section or a path: drawn as far as it goes; the path
+    // left unpainted paints nothing.
+    for tail in ["BT", "q", "/X BMC", "BX", "0 0 5 5 re", "0 0 1 1 re W"] {
+        assert_color(
+            colour(&format!("0 1 0 rg 0 0 20 20 re f {tail}")),
+            [0, 255, 0],
+        );
+    }
+    assert_color(colour("0 0 20 20 re"), [255, 255, 255]);
 }

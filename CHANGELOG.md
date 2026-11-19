@@ -94,6 +94,15 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
 
 ### Corrigé
 
+- Rendu : une page dont le contenu place un opérateur là où la norme ne le permet pas
+  (`MisplacedOperator`) ou se termine sans fermer un objet texte, un `q`, un chemin ou un
+  contenu marqué (`Unterminated`) échouait entière, quand Adobe, pdf.js et MuPDF la dessinent.
+  Ces opérateurs sont désormais exécutés (couleur, épaisseur ou `Q` au milieu d'un chemin,
+  `cm` ou chemin dans un objet texte, texte hors de `BT`) ; ce qui ne peut rien fermer est
+  ignoré (`ET`, `EMC`, `EX`, `d0`/`d1` hors place) ; `BT` dans un objet texte en ouvre un
+  nouveau ; un contenu non terminé est dessiné jusqu'où il va. Signalé sur un document
+  d'utilisatrice (non copié) ; le corpus avait 25 premières pages refusées pour ces raisons.
+
 - Lecture : un fichier qui termine ses lignes par CR seul (logiciel de numérisation) ne se
   rendait pas. Lu sans l’option stricte, il était bien réparé (table de références de 19 octets
   par entrée), mais chaque flux échouait en `MissingStreamEol`. Hors lecture stricte, `stream`

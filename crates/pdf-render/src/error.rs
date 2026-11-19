@@ -42,10 +42,6 @@ pub enum ContentErrorKind {
     InvalidOperands,
     /// More operands than `MAX_OPERANDS` before an operator.
     TooManyOperands,
-    /// An operator where the content state forbids it: a path or `q`/`Q`
-    /// inside a text object, a non-path operator inside a path, `BT` inside
-    /// a text object, `ET` or `EX` without its opening operator.
-    MisplacedOperator,
     /// `Q` without a matching `q`.
     UnbalancedRestore,
     /// A path operator that needs a current point, without one.
@@ -57,9 +53,6 @@ pub enum ContentErrorKind {
     /// A matrix is not finite, or a point (with the stroke width around it)
     /// lies more than 10^12 pixels away from the device origin.
     NumberOutOfRange,
-    /// The content ends inside a text object, a path, a `q`, marked content
-    /// or a compatibility section; the offset is the end of the content.
-    Unterminated,
 }
 
 /// Which `RenderLimits` entry was reached.
