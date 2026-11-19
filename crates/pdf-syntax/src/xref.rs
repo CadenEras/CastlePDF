@@ -557,7 +557,7 @@ impl<S: Source> PdfFile<S> {
         resolve_length: &mut LengthResolver<'_>,
     ) -> Result<IndirectObject, Error> {
         let parse = |at: u64, budget: &mut Budget, resolve_length: &mut LengthResolver<'_>| {
-            let object = parse_at(data, at, budget, resolve_length)?;
+            let object = parse_at(data, at, !self.options.strict, budget, resolve_length)?;
             check_id(&object, id, at).map(|()| object)
         };
         let error = match parse(offset, budget, resolve_length) {
@@ -654,10 +654,12 @@ fn lock_relocation(relocation: &Mutex<Relocation>) -> std::sync::MutexGuard<'_, 
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Parses `n g obj` starting exactly at `offset`.
+/// Parses `n g obj` starting exactly at `offset`; `tolerant` for a file not
+/// read strictly (`Parser::tolerating_stream_eol`).
 fn parse_at(
     data: &[u8],
     offset: u64,
+    tolerant: bool,
     budget: &mut Budget,
     resolve_length: &mut LengthResolver<'_>,
 ) -> Result<IndirectObject, Error> {
@@ -669,7 +671,11 @@ fn parse_at(
     {
         return Err(malformed(offset, MalformedKind::ObjectIdMismatch));
     }
-    let mut parser = Parser::new(data);
+    let mut parser = if tolerant {
+        Parser::new(data).tolerating_stream_eol()
+    } else {
+        Parser::new(data)
+    };
     parser.seek(offset)?;
     parser.parse_indirect_object(budget, resolve_length)
 }
@@ -970,7 +976,7 @@ fn read_xref_stream(data: &[u8], offset: u64, budget: &mut Budget) -> Result<Sec
     let len = data.len() as u64;
     let invalid = || malformed(offset, MalformedKind::InvalidXrefStream);
     let mut refuse = |_: ObjectId, _: &mut Budget| Err(invalid());
-    let object = parse_at(data, offset, budget, &mut refuse)?;
+    let object = parse_at(data, offset, false, budget, &mut refuse)?;
     let IndirectValue::Stream(stream) = object.value else {
         return Err(invalid());
     };
