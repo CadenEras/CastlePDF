@@ -60,10 +60,12 @@ function DocumentSection({ state }: { state: DocumentState }) {
       {shown !== null && (
         <>
           <p className="name">{shown.name}</p>
-          {/* A new document starts on its first page. */}
-          <div className="workspace">
-            <Viewer key={shown.document} info={shown} />
-            <PagePanel key={shown.document} info={shown} />
+          {/* A new document replaces the shown one and starts on its first
+              page, with a new plan: one key for both, never one each (two
+              siblings with the same key left the old viewers in place). */}
+          <div className="workspace" key={shown.document}>
+            <Viewer info={shown} />
+            <PagePanel info={shown} />
           </div>
         </>
       )}

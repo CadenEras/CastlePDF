@@ -270,6 +270,10 @@ export function PagePanel({ info }: { info: DocumentInfo }) {
         />
       </ol>
       <p className="note">
+        L'aperçu montre encore le document d'origine : l'ordre et les rotations du plan ne
+        s'y voient pas encore, seulement dans cette liste et dans le fichier enregistré.
+      </p>
+      <p className="note">
         Le document ouvert n'est jamais modifié : « Enregistrer sous » écrit un nouveau fichier.
         Signets, formulaires, arbre de structure et signatures ne sont pas conservés ; retirer
         une page n'est pas un caviardage.
