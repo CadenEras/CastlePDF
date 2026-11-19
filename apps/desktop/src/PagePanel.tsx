@@ -3,13 +3,11 @@ import { useEffect, useRef, useState, type KeyboardEvent, type UIEvent } from "r
 import { describeCommandError, saveAs, type DocumentInfo, type Saved } from "./ipc";
 import {
   commit,
-  identityPlan,
   isIdentity,
   move,
   redo,
   remove,
   rotate,
-  startHistory,
   undo,
   type History,
   type Plan,
@@ -89,8 +87,17 @@ function SaveResult({ state }: { state: SaveState }) {
  * 4.6a): turn, remove and move pages, undo and redo, then "save as". The
  * document itself never changes; the shell chooses the file.
  */
-export function PagePanel({ info }: { info: DocumentInfo }) {
-  const [history, setHistory] = useState<History>(() => startHistory(identityPlan(info.pages)));
+export function PagePanel({
+  info,
+  history,
+  onHistory,
+}: {
+  info: DocumentInfo;
+  /** The plan and its history, kept by the parent: the viewer shows it. */
+  history: History;
+  onHistory: (update: (current: History) => History) => void;
+}) {
+  const setHistory = onHistory;
   const [selected, setSelected] = useState(0);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [scrollTop, setScrollTop] = useState(0);
@@ -121,7 +128,7 @@ export function PagePanel({ info }: { info: DocumentInfo }) {
   };
   const step = (go: (h: History) => History) => {
     const next = go(history);
-    setHistory(next);
+    setHistory(() => next);
     setSelected((s) => Math.min(s, next.present.length - 1));
     setSave({ kind: "idle" });
   };
@@ -270,11 +277,7 @@ export function PagePanel({ info }: { info: DocumentInfo }) {
         />
       </ol>
       <p className="note">
-        L'aperçu montre encore le document d'origine : l'ordre et les rotations du plan ne
-        s'y voient pas encore, seulement dans cette liste et dans le fichier enregistré.
-      </p>
-      <p className="note">
-        Le document ouvert n'est jamais modifié : « Enregistrer sous » écrit un nouveau fichier.
+                Le document ouvert n'est jamais modifié : « Enregistrer sous » écrit un nouveau fichier.
         Signets, formulaires, arbre de structure et signatures ne sont pas conservés ; retirer
         une page n'est pas un caviardage.
       </p>

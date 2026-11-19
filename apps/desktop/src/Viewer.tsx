@@ -24,6 +24,7 @@ import {
   type TextLayer,
 } from "./ipc";
 import { SearchBar } from "./SearchBar";
+import { identityPlan, type Plan, type Rotation } from "./plan";
 import { useSearch, type Place } from "./search";
 import { TextLayerView } from "./TextLayerView";
 import { describeTimings, record, summarize, type TileTiming } from "./timings";
@@ -188,8 +189,32 @@ function useSize(element: RefObject<HTMLElement | null>): {
 /** A page measured at the scale it is drawn at. */
 interface Measured {
   scale: number;
-  /** Size of its rendering in device pixels. */
+  /** Size of its rendering in device pixels, before the plan's rotation. */
   pixels: PageSize;
+  /** Measured to fit turned by a quarter (its height across the view). */
+  turned: boolean;
+}
+
+/** Whether a rotation lays the page on its side. */
+function sideways(rotation: Rotation): boolean {
+  return rotation === 90 || rotation === 270;
+}
+
+/**
+ * The CSS transform that turns a page's drawing (`width` × `height` CSS
+ * pixels, origin at its top left) clockwise by `rotation` inside its box.
+ */
+export function turnTransform(rotation: Rotation, width: number, height: number): string | undefined {
+  switch (rotation) {
+    case 0:
+      return undefined;
+    case 90:
+      return `translate(${String(height)}px, 0) rotate(90deg)`;
+    case 180:
+      return `translate(${String(width)}px, ${String(height)}px) rotate(180deg)`;
+    case 270:
+      return `translate(0, ${String(width)}px) rotate(270deg)`;
+  }
 }
 
 /** A page canvas on screen and the tiles drawn on it. */
@@ -201,8 +226,25 @@ interface Mounted {
 
 type Failure = { page: number; message: string } | null;
 
-export function Viewer({ info }: { info: DocumentInfo }) {
+/**
+ * The pages of `plan` (by default every page in order), one under the
+ * other, each turned by its plan rotation (ADR-0008, tranche 4.6b). The
+ * worker draws the page as it is; the turn is the view's. Positions on
+ * screen are plan entries ("slots"); what is measured, drawn and read is
+ * kept by page, so a page moved in the plan keeps its drawing.
+ */
+export function Viewer({ info, plan }: { info: DocumentInfo; plan?: Plan }) {
   const { document, pages } = info;
+  const entries = useMemo(() => plan ?? identityPlan(pages), [plan, pages]);
+  const slots = entries.length;
+  // The slot of each page in the plan; a page left out has none.
+  const slotOf = useMemo(
+    () => new Map(entries.map((entry, slot) => [entry.page, slot])),
+    [entries],
+  );
+  const planKey = entries
+    .map((entry) => `${String(entry.page)}:${String(entry.rotation)}`)
+    .join(",");
   const scroller = useRef<HTMLDivElement>(null);
   const { width, height: viewHeight } = useSize(scroller);
   const ratio =
@@ -252,23 +294,52 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   const [measures, setMeasures] = useState(() => summarize([]));
 
   const fallback = points.find((size) => size !== null) ?? null;
+  // The measure of a slot's page, if it is measured for its rotation.
+  const measureOf = useCallback(
+    (slot: number): Measured | undefined => {
+      const entry = entries[slot];
+      if (entry === undefined) {
+        return undefined;
+      }
+      const exact = measured.get(entry.page);
+      return exact?.turned === sideways(entry.rotation) ? exact : undefined;
+    },
+    [entries, measured],
+  );
+  // CSS size of a slot's page drawing before its turn: measured, or
+  // estimated from its size in points (or another page's).
+  const drawingSize = useCallback(
+    (slot: number): { width: number; height: number } => {
+      const entry = entries[slot];
+      const exact = measureOf(slot);
+      if (exact !== undefined) {
+        return {
+          width: exact.pixels.width / ratio,
+          height: exact.pixels.height / ratio,
+        };
+      }
+      const size = (entry === undefined ? null : points[entry.page]) ?? fallback;
+      if (size === null || entry === undefined) {
+        return { width, height: width * 1.3 };
+      }
+      const scale = sideways(entry.rotation)
+        ? fitScale(width, size.height, size.width, ratio)
+        : fitScale(width, size.width, size.height, ratio);
+      return {
+        width: (size.width * scale) / ratio,
+        height: (size.height * scale) / ratio,
+      };
+    },
+    [entries, measureOf, points, fallback, width, ratio],
+  );
   const cssHeights = useMemo(
     () =>
-      Array.from({ length: pages }, (_, page) => {
-        const exact = measured.get(page);
-        if (exact !== undefined) {
-          return exact.pixels.height / ratio;
-        }
-        const size = points[page] ?? fallback;
-        if (size === null) {
-          return width * 1.3;
-        }
-        return (
-          (size.height * fitScale(width, size.width, size.height, ratio)) /
-          ratio
-        );
+      Array.from({ length: slots }, (_, slot) => {
+        const size = drawingSize(slot);
+        const entry = entries[slot];
+        return entry !== undefined && sideways(entry.rotation) ? size.width : size.height;
       }),
-    [pages, measured, points, fallback, width, ratio],
+    [slots, entries, drawingSize],
   );
   const { tops, total } = useMemo(() => pageOffsets(cssHeights), [cssHeights]);
   const [firstVisible, lastVisible] = pagesBetween(
@@ -278,17 +349,22 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     scrollTop + viewHeight,
   );
   const keepFirst = Math.max(0, firstVisible - KEEP_AROUND);
-  const keepLast = Math.min(pages - 1, lastVisible + KEEP_AROUND);
+  const keepLast = Math.min(slots - 1, lastVisible + KEEP_AROUND);
+  const keptSlot = (page: number) => {
+    const slot = slotOf.get(page);
+    return slot !== undefined && slot >= keepFirst && slot <= keepLast;
+  };
 
-  // Releases the canvases of pages scrolled far away (their element is
-  // unmounted; the registry must not keep it alive).
+  // Releases the canvases of pages scrolled far away or left out of the
+  // plan (their element is unmounted; the registry must not keep it).
   useEffect(() => {
     for (const page of mounted.current.keys()) {
-      if (page < keepFirst || page > keepLast) {
+      const slot = slotOf.get(page);
+      if (slot === undefined || slot < keepFirst || slot > keepLast) {
         mounted.current.delete(page);
       }
     }
-  }, [keepFirst, keepLast]);
+  }, [keepFirst, keepLast, slotOf]);
 
   // Keeps the page at the top of the view in place when pages above it
   // change height (measured, or a new width).
@@ -323,23 +399,27 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   // Measures the pages kept that are not measured yet, nearest first.
   useEffect(() => {
     let cancelled = false;
-    const wanted: number[] = [];
-    for (let page = keepFirst; page <= keepLast; page += 1) {
-      if (!measured.has(page)) {
-        wanted.push(page);
+    const wanted: { page: number; turned: boolean }[] = [];
+    for (let slot = keepFirst; slot <= keepLast; slot += 1) {
+      const entry = entries[slot];
+      if (entry !== undefined && measureOf(slot) === undefined) {
+        wanted.push({ page: entry.page, turned: sideways(entry.rotation) });
       }
     }
     if (wanted.length === 0) {
       return;
     }
     const measure = async () => {
-      for (const page of wanted) {
+      for (const { page, turned } of wanted) {
         const base = await pageSize(document, page, MEASURE_SCALE);
         const size = {
           width: base.width / MEASURE_SCALE,
           height: base.height / MEASURE_SCALE,
         };
-        const scale = fitScale(width, size.width, size.height, ratio);
+        // A page on its side fits the view by its height.
+        const scale = turned
+          ? fitScale(width, size.height, size.width, ratio)
+          : fitScale(width, size.width, size.height, ratio);
         const pixels = await pageSize(document, page, scale);
         if (cancelled) {
           return;
@@ -354,6 +434,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
             {
               scale,
               pixels,
+              turned,
             },
           ),
         }));
@@ -361,25 +442,28 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     };
     measure().catch((error: unknown) => {
       if (!cancelled && !isStale(error)) {
-        setFailure({ page: wanted[0] ?? 0, message: errorMessage(error) });
+        setFailure({ page: wanted[0]?.page ?? 0, message: errorMessage(error) });
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [document, keepFirst, keepLast, measured, width, ratio]);
+    // `planKey` names the pages and rotations of `entries`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document, keepFirst, keepLast, measured, width, ratio, planKey]);
 
   // The pages to draw now: those in view that are measured.
   const drawable = useMemo(() => {
-    const list: { page: number; scale: number; pixels: PageSize }[] = [];
-    for (let page = firstVisible; page <= lastVisible; page += 1) {
-      const exact = measured.get(page);
-      if (exact !== undefined) {
-        list.push({ page, ...exact });
+    const list: { slot: number; page: number; scale: number; pixels: PageSize }[] = [];
+    for (let slot = firstVisible; slot <= lastVisible; slot += 1) {
+      const entry = entries[slot];
+      const exact = measureOf(slot);
+      if (entry !== undefined && exact !== undefined) {
+        list.push({ slot, page: entry.page, scale: exact.scale, pixels: exact.pixels });
       }
     }
     return list;
-  }, [firstVisible, lastVisible, measured]);
+  }, [firstVisible, lastVisible, entries, measureOf]);
   const drawKey = drawable
     .map(({ page, scale }) => `${String(page)}@${String(scale)}`)
     .join(",");
@@ -491,10 +575,13 @@ export function Viewer({ info }: { info: DocumentInfo }) {
         }
         // Only the layers of pages near this view stay: a page coming back
         // fetches its layer again.
-        const near = (other: number) =>
-          drawable.some(
-            (shown) => Math.abs(shown.page - other) <= KEEP_AROUND,
+        const near = (other: number) => {
+          const slot = slotOf.get(other);
+          return (
+            slot !== undefined &&
+            drawable.some((shown) => Math.abs(shown.slot - slot) <= KEEP_AROUND)
           );
+        };
         setLayers((current) =>
           new Map([...current].filter(([other]) => near(other))).set(
             page,
@@ -518,9 +605,9 @@ export function Viewer({ info }: { info: DocumentInfo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [document, drawKey]);
 
-  const scrollToPage = (page: number) => {
+  const scrollToSlot = (slot: number) => {
     const element = scroller.current;
-    const top = tops[page];
+    const top = tops[slot];
     if (element === null || top === undefined) {
       return;
     }
@@ -534,13 +621,15 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   const [reveal, setReveal] = useState<Place | null>(null);
   const show = (place: Place) => {
     setReveal(place);
+    // A page left out of the plan is not shown: nothing to bring in view.
+    const slot = slotOf.get(place.page);
+    if (slot === undefined) {
+      return;
+    }
     // A page already shown with its text scrolls to the occurrence itself.
-    const shown =
-      place.page >= firstVisible &&
-      place.page <= lastVisible &&
-      layers.has(place.page);
+    const shown = slot >= firstVisible && slot <= lastVisible && layers.has(place.page);
     if (!shown) {
-      scrollToPage(place.page);
+      scrollToSlot(slot);
     }
   };
   const found = useSearch(document, pages, show);
@@ -560,10 +649,12 @@ export function Viewer({ info }: { info: DocumentInfo }) {
       element.scrollLeft += box.left - view.left - (view.width - box.width) / 2;
     }
   }, []);
-  const firstVisibleRef = useRef(firstVisible);
+  // The page at the top of the view, where a new search starts.
+  const firstVisiblePage = entries[firstVisible]?.page ?? 0;
+  const firstVisibleRef = useRef(firstVisiblePage);
   useEffect(() => {
-    firstVisibleRef.current = firstVisible;
-  }, [firstVisible]);
+    firstVisibleRef.current = firstVisiblePage;
+  }, [firstVisiblePage]);
   const { search, next, previous } = found;
   // Ctrl+F (Cmd+F) goes to the search field; F3 and Shift+F3 move between
   // occurrences from anywhere in the window.
@@ -590,7 +681,8 @@ export function Viewer({ info }: { info: DocumentInfo }) {
 
   const current = firstVisible;
   const loading = progress.done < progress.total;
-  const where = `Page ${String(current + 1)} sur ${String(pages)}`;
+  const where = `Page ${String(current + 1)} sur ${String(slots)}`;
+  // A failure names the page of the document, wherever the plan puts it.
   const status =
     failure !== null
       ? `Page ${String(failure.page + 1)} sur ${String(pages)} : échec du rendu (${failure.message}).`
@@ -604,43 +696,51 @@ export function Viewer({ info }: { info: DocumentInfo }) {
   const repair = worseRepair(info.repair, reported.repair);
   // Text partly missing on a page kept: selection and copy miss it too.
   const partialText = [...layers].some(
-    ([page, layer]) =>
-      page >= keepFirst &&
-      page <= keepLast &&
-      (layer.incomplete || layer.truncated),
+    ([page, layer]) => keptSlot(page) && (layer.incomplete || layer.truncated),
   );
 
   // Only the pages near the view are in the document: the track's height
   // keeps the place of the others. A page is announced as soon as it is
   // there, drawn or not; its canvas comes once it is measured.
   const pageViews = Array.from(
-    { length: keepLast - keepFirst + 1 },
+    { length: Math.max(0, keepLast - keepFirst + 1) },
     (_, index) => {
-      const page = keepFirst + index;
-      const top = tops[page] ?? 0;
-      const cssHeight = cssHeights[page] ?? 0;
-      const exact = measured.get(page);
-      const size = points[page] ?? fallback;
-      const cssWidth =
-        exact !== undefined
-          ? exact.pixels.width / ratio
-          : size === null
-            ? width
-            : (size.width * fitScale(width, size.width, size.height, ratio)) /
-              ratio;
+      const slot = keepFirst + index;
+      const entry = entries[slot];
+      if (entry === undefined) {
+        return null;
+      }
+      const { page, rotation } = entry;
+      const top = tops[slot] ?? 0;
+      const drawing = drawingSize(slot);
+      const turned = sideways(rotation);
+      const exact = measureOf(slot);
       const layer = layers.get(page);
+      const label =
+        rotation === 0
+          ? `Page ${String(page + 1)} de ${info.name}`
+          : `Page ${String(page + 1)} de ${info.name}, tournée de ${String(rotation)}°`;
       return (
         <div
+          // By page: a page moved in the plan keeps its canvas and drawing.
           key={page}
           className="sheet"
           role="group"
-          aria-label={`Page ${String(page + 1)} de ${info.name}`}
+          aria-label={label}
           style={{
             top: `${String(top)}px`,
-            height: `${String(cssHeight)}px`,
-            width: `${String(cssWidth)}px`,
+            height: `${String(turned ? drawing.width : drawing.height)}px`,
+            width: `${String(turned ? drawing.height : drawing.width)}px`,
           }}
         >
+          <div
+            className="turn"
+            style={{
+              width: `${String(drawing.width)}px`,
+              height: `${String(drawing.height)}px`,
+              transform: turnTransform(rotation, drawing.width, drawing.height),
+            }}
+          >
           {exact !== undefined && (
             <canvas
               // Another scale is another canvas: what was drawn is gone.
@@ -681,6 +781,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
               onRevealed={revealed}
             />
           )}
+          </div>
         </div>
       );
     },
@@ -692,7 +793,7 @@ export function Viewer({ info }: { info: DocumentInfo }) {
         <button
           type="button"
           onClick={() => {
-            scrollToPage(Math.max(0, current - 1));
+            scrollToSlot(Math.max(0, current - 1));
           }}
           disabled={current === 0}
         >
@@ -701,9 +802,9 @@ export function Viewer({ info }: { info: DocumentInfo }) {
         <button
           type="button"
           onClick={() => {
-            scrollToPage(Math.min(pages - 1, current + 1));
+            scrollToSlot(Math.min(slots - 1, current + 1));
           }}
-          disabled={current + 1 >= pages}
+          disabled={current + 1 >= slots}
         >
           Page suivante
         </button>

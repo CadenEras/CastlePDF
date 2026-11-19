@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Saved } from "./ipc";
+import type { DocumentInfo, Saved } from "./ipc";
 import { PagePanel, ROW_HEIGHT, visibleRows } from "./PagePanel";
+import { identityPlan, startHistory, type History } from "./plan";
 
 // Mocks the IPC layer only: this does not prove the Tauri binary works.
 const ipc = vi.hoisted(() => ({
@@ -15,6 +17,12 @@ vi.mock("./ipc", async (original) => ({
 }));
 
 const info = { document: 7, pages: 3, name: "doc.pdf", repair: "none" as const };
+
+/** The panel with its plan kept here, as `App` keeps it. */
+function Panel({ info }: { info: DocumentInfo }) {
+  const [history, setHistory] = useState<History>(() => startHistory(identityPlan(info.pages)));
+  return <PagePanel info={info} history={history} onHistory={setHistory} />;
+}
 
 function rows(): string[] {
   return screen.getAllByRole("option").map((option) => option.textContent);
@@ -38,7 +46,7 @@ afterEach(() => {
 
 describe("page panel", () => {
   it("edits the plan from the keyboard, with undo and redo", () => {
-    render(<PagePanel info={info} />);
+    render(<Panel info={info} />);
     expect(rows()).toEqual(["Page 1", "Page 2", "Page 3"]);
     press("ArrowDown");
     expect(selected()).toBe("Page 2");
@@ -63,7 +71,7 @@ describe("page panel", () => {
   });
 
   it("never removes the last page", () => {
-    render(<PagePanel info={{ ...info, pages: 1 }} />);
+    render(<Panel info={{ ...info, pages: 1 }} />);
     press("Delete");
     expect(rows()).toEqual(["Page 1"]);
     expect(screen.getByRole("button", { name: "Retirer" })).toHaveProperty("disabled", true);
@@ -76,7 +84,7 @@ describe("page panel", () => {
       dropped: ["Outlines", "AcroForm"],
       keptWhole: [0],
     });
-    render(<PagePanel info={info} />);
+    render(<Panel info={info} />);
     fireEvent.click(screen.getByRole("button", { name: "Retirer" }));
     fireEvent.click(screen.getByRole("button", { name: "Pivoter à droite" }));
     await act(async () => {
@@ -95,7 +103,7 @@ describe("page panel", () => {
 
   it("says nothing when the dialog is cancelled, and reports a refusal", async () => {
     ipc.saveAs.mockResolvedValueOnce(null);
-    render(<PagePanel info={info} />);
+    render(<Panel info={info} />);
     const save = screen.getByRole("button", { name: "Enregistrer sous…" });
     await act(async () => {
       fireEvent.click(save);
@@ -114,7 +122,7 @@ describe("page panel", () => {
   });
 
   it("renders only the rows in sight of a long plan", () => {
-    render(<PagePanel info={{ ...info, pages: 50_000 }} />);
+    render(<Panel info={{ ...info, pages: 50_000 }} />);
     expect(rows().length).toBeLessThan(40);
     const list = screen.getByRole("listbox");
     act(() => {
