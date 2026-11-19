@@ -790,3 +790,46 @@ fn dashing_a_degenerate_subpath_does_not_panic() {
         assert!(rendering.is_ok(), "{content}: {rendering:?}");
     }
 }
+
+#[test]
+fn a_file_ending_its_lines_with_cr_alone_renders() {
+    // Found on a scanned document (its content not used): every line ends
+    // with CR alone, so the cross-reference entries are 19 bytes (refused,
+    // the file is repaired) and `stream` is followed by CR alone. The page
+    // renders when the file is read normally; the strict reader refuses it.
+    let content = "1 0 0 rg 10 10 80 80 re f";
+    let bodies = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>".to_owned(),
+        format!(
+            "<< /Length {} >>\rstream\r{content}\rendstream",
+            content.len()
+        ),
+    ];
+    let mut pdf = b"%PDF-1.7\r".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\r{body}\rendobj\r", index + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\r0 {}\r0000000000 65535 f\r", bodies.len() + 1).as_bytes());
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n\r").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\r<< /Size {} /Root 1 0 R >>\rstartxref\r{xref}\r%%EOF\r",
+            bodies.len() + 1
+        )
+        .as_bytes(),
+    );
+    let strict = pdf_syntax::PdfFile::open_strict(
+        MemorySource::from_vec(pdf.clone(), &ResourceLimits::default()).expect("source"),
+        &mut budget(),
+    );
+    assert!(strict.is_err());
+    let rendering = render(pdf, 0, &RenderOptions::default()).expect("renders");
+    assert_eq!(rendering.bitmap.pixel(50, 50), Some([255, 0, 0, 255]));
+}
