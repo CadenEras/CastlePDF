@@ -10,6 +10,7 @@ import {
   type DocumentInfo,
   type JobOutcome,
 } from "./ipc";
+import { PagePanel } from "./PagePanel";
 import { Viewer } from "./Viewer";
 
 /**
@@ -60,7 +61,10 @@ function DocumentSection({ state }: { state: DocumentState }) {
         <>
           <p className="name">{shown.name}</p>
           {/* A new document starts on its first page. */}
-          <Viewer key={shown.document} info={shown} />
+          <div className="workspace">
+            <Viewer key={shown.document} info={shown} />
+            <PagePanel key={shown.document} info={shown} />
+          </div>
         </>
       )}
     </>

@@ -161,6 +161,10 @@ const FAILURES: Record<string, string> = {
   cancelled: "annulé",
   busy: "worker occupé",
   internal: "erreur interne du worker",
+  sameAsSource: "le fichier du document ouvert ne peut pas être remplacé",
+  invalidDestination: "destination invalide",
+  unwritable: "impossible d'écrire le fichier (droits, disque plein ou fichier verrouillé)",
+  notReadBack: "le fichier écrit ne se relit pas : rien n'a été enregistré",
 };
 
 /** Turns a rejected command (a serialized Rust `CommandError`) into a message. */
@@ -499,4 +503,56 @@ export function onDocumentEvent(handler: (event: DocumentEvent) => void): Promis
       handler(event);
     }
   });
+}
+
+/**
+ * A saved document (ADR-0008): its pages and size, what the source had
+ * that it does not keep, and the pages (from 0) whose resources were kept
+ * whole. Never its path.
+ */
+export interface Saved {
+  pages: number;
+  bytes: number;
+  dropped: string[];
+  keptWhole: number[];
+}
+
+/** Most entries of `Saved.dropped`, as the worker bounds them. */
+export const MAX_DROPPED = 256;
+
+/** `null` for a dialog the user cancelled. */
+export function parseSaved(value: unknown): Saved | null {
+  if (value === null) {
+    return null;
+  }
+  if (
+    !isRecord(value) ||
+    !isU32(value.pages) ||
+    !isCount(value.bytes) ||
+    !Array.isArray(value.dropped) ||
+    value.dropped.length > MAX_DROPPED ||
+    !value.dropped.every((entry) => typeof entry === "string") ||
+    !Array.isArray(value.keptWhole) ||
+    !value.keptWhole.every(isU32)
+  ) {
+    throw new Error("invalid save result from shell");
+  }
+  return {
+    pages: value.pages,
+    bytes: value.bytes,
+    dropped: value.dropped,
+    keptWhole: value.keptWhole,
+  };
+}
+
+/**
+ * Asks the shell to save `plan` over `document`: the shell opens the native
+ * dialog and chooses the file, never the UI. `null` when the user cancels.
+ */
+export async function saveAs(
+  document: number,
+  plan: readonly { page: number; rotation: number }[],
+): Promise<Saved | null> {
+  const entries = plan.map(({ page, rotation }) => ({ page, rotation }));
+  return parseSaved(await command("save_as", { document, plan: entries }));
 }
