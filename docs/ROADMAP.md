@@ -24,7 +24,8 @@ un plan de pages, « Enregistrer sous » transactionnel vers un autre fichier qu
 (`castle-pdf pages`, avec l'élagage des ressources partagées, fait) ; 4.4 fusion et découpe (`castle-pdf merge`, `split`, fait) ;
 4.5 sauvegarde transactionnelle (4.5a moteur, fait), worker (4.5b, protocole v8, fait) et shell (4.5c, commande
 `save_as`, dialogue natif côté Rust, [ADR-0009](adr/0009-save-dialog.md), fait) ; 4.6 interface, annuler et rétablir
-(4.6a panneau des pages et enregistrement, fait ; 4.6b miniatures et visualiseur suivant le plan) ; 4.7
+(4.6a panneau des pages et enregistrement, fait ; 4.6b visualiseur suivant le plan, fait ;
+miniatures ensuite, avec des tuiles hors de la vue courante) ; 4.7
 signets et liens recalculés, si la mesure le justifie.
 
 ### Limites ouvertes de P4 (écriture)

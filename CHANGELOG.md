@@ -16,7 +16,11 @@ Versions selon [SemVer](https://semver.org/) ; règles propres à `0.x` dans
   la souris ; seules les lignes visibles sont rendues. « Enregistrer sous… » passe le plan au
   shell, qui ouvre le dialogue natif ; le résultat dit les pages, la taille, ce qui n’est pas
   gardé et les pages aux ressources gardées entières. Le document ouvert n’est jamais modifié.
-  Le visualiseur montre encore le document d’origine, sans miniatures : 4.6b.
+  Le visualiseur suit le plan (tranche 4.6b) : pages dans l’ordre du plan, chacune tournée
+  par sa rotation, celles retirées absentes ; le worker dessine la page telle quelle et la vue
+  la tourne, si bien que sélection, copie et recherche restent posées sur le texte. Une page
+  déplacée garde son dessin. Miniatures : plus tard (elles demandent des tuiles hors de la vue
+  courante, donc un changement de protocole).
 
 - Application : **commande « Enregistrer sous »** (ADR-0009, tranche 4.5c). `save_as` reçoit de
   l’UI un plan sur le document courant (pages, rotations), jamais un chemin ; le shell ouvre le

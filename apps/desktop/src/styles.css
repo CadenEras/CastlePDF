@@ -136,6 +136,15 @@ button:focus-visible {
   box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
 }
 
+/* The page drawing inside its sheet, turned by the plan (tranche 4.6b):
+   sized as drawn, rotated about its top left corner into the sheet. */
+.turn {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
 .sheet canvas {
   display: block;
   width: 100%;

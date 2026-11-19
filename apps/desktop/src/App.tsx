@@ -11,6 +11,7 @@ import {
   type JobOutcome,
 } from "./ipc";
 import { PagePanel } from "./PagePanel";
+import { identityPlan, startHistory, type History } from "./plan";
 import { Viewer } from "./Viewer";
 
 /**
@@ -44,6 +45,20 @@ function apply(current: DocumentState, event: DocumentEvent): DocumentState {
     : { sequence: event.sequence, shown: current.shown, notice: event };
 }
 
+/**
+ * The viewer and the page panel of one document: the panel edits the plan,
+ * the viewer shows it (ADR-0008, tranche 4.6b).
+ */
+function Workspace({ info }: { info: DocumentInfo }) {
+  const [history, setHistory] = useState<History>(() => startHistory(identityPlan(info.pages)));
+  return (
+    <div className="workspace">
+      <Viewer info={info} plan={history.present} />
+      <PagePanel info={info} history={history} onHistory={setHistory} />
+    </div>
+  );
+}
+
 function DocumentSection({ state }: { state: DocumentState }) {
   const { shown, notice } = state;
   return (
@@ -63,10 +78,7 @@ function DocumentSection({ state }: { state: DocumentState }) {
           {/* A new document replaces the shown one and starts on its first
               page, with a new plan: one key for both, never one each (two
               siblings with the same key left the old viewers in place). */}
-          <div className="workspace" key={shown.document}>
-            <Viewer info={shown} />
-            <PagePanel info={shown} />
-          </div>
+          <Workspace key={shown.document} info={shown} />
         </>
       )}
     </>

@@ -22,6 +22,7 @@ import {
   pageOffsets,
   pagesBetween,
   tileGrid,
+  turnTransform,
   Viewer,
 } from "./Viewer";
 
@@ -515,5 +516,67 @@ describe("Viewer", () => {
     expect(
       screen.getByRole("button", { name: "Résultat suivant" }),
     ).toHaveProperty("disabled", true);
+  });
+});
+
+describe("the plan in the view (tranche 4.6b)", () => {
+  it("turns a drawing into its box by quarters", () => {
+    expect(turnTransform(0, 400, 300)).toBeUndefined();
+    expect(turnTransform(90, 400, 300)).toBe("translate(300px, 0) rotate(90deg)");
+    expect(turnTransform(180, 400, 300)).toBe("translate(400px, 300px) rotate(180deg)");
+    expect(turnTransform(270, 400, 300)).toBe("translate(0, 400px) rotate(270deg)");
+  });
+
+  it("shows the pages of the plan in its order, turned, without those left out", async () => {
+    render(
+      <Viewer
+        info={INFO}
+        plan={[
+          { page: 2, rotation: 90 },
+          { page: 0, rotation: 0 },
+        ]}
+      />,
+    );
+    await settle();
+    expect(status()).toBe("Page 1 sur 2.");
+    expect(screen.getAllByRole("group", { name: /^Page / }).map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Page 3 de plan.pdf, tournée de 90°",
+      "Page 1 de plan.pdf",
+    ]);
+    // Page 2 is left out: never measured, never drawn.
+    expect(ipc.pageSize).not.toHaveBeenCalledWith(3, 1, expect.anything());
+    // On its side, page 3 fits the 800-pixel width by its 300-point height.
+    const scale = 800 / 300;
+    expect(ipc.pageSize).toHaveBeenCalledWith(3, 2, scale);
+    const sheet = screen.getByRole("group", { name: "Page 3 de plan.pdf, tournée de 90°" });
+    expect([sheet.style.width, sheet.style.height]).toEqual(["800px", "1067px"]);
+    const turn = sheet.querySelector<HTMLElement>(".turn");
+    // As the browser normalises it.
+    expect(turn?.style.transform).toBe("translate(800px) rotate(90deg)");
+    // Drawn as the worker renders it: 1067 x 800 pixels, 5 x 4 tiles.
+    expect(tilesOf(2)).toHaveLength(20);
+  });
+
+  it("keeps a page's drawing when the plan moves another one", async () => {
+    const { rerender } = render(<Viewer info={INFO} />);
+    await settle();
+    expect(tilesOf(0)).toHaveLength(12);
+    rerender(
+      <Viewer
+        info={INFO}
+        plan={[
+          { page: 0, rotation: 0 },
+          { page: 2, rotation: 0 },
+          { page: 1, rotation: 0 },
+        ]}
+      />,
+    );
+    await settle();
+    // Page 1 stays first, its canvas and tiles kept; page 3 now follows it.
+    expect(tilesOf(0)).toHaveLength(12);
+    expect(screen.getAllByRole("group", { name: /^Page / }).map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Page 1 de plan.pdf",
+      "Page 3 de plan.pdf",
+    ]);
   });
 });
