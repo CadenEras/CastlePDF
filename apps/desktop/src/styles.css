@@ -246,13 +246,21 @@ button:focus-visible {
 
 /* The viewer and, beside it, the page plan to save (tranche 4.6a). */
 .workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
   flex-direction: row;
   gap: 1.5rem;
+}
+
+.workspace .viewer {
+  min-width: 0;
 }
 
 .plan {
   flex: 0 0 18rem;
   min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
